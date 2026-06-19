@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nuxt build",
+    "typecheck": "nuxt typecheck",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
@@ -11,7 +12,6 @@
   },
   "dependencies": {
     "nuxt": "^4.4.8",
-    "vue": "^3.5.35",
-    "vue-router": "^5.1.0"
+    "vue": "^3.5.35"
   }
 }
