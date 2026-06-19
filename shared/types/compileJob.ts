@@ -1,0 +1,59 @@
+import type { AgentTraceEvent } from "./agentTrace";
+import type {
+  AutomationReadinessScore,
+  RiskSummary,
+  SafeAutomationBlueprint,
+  SignalSummary,
+} from "./workflow";
+
+export type CompileMode = "demo" | "rule_only" | "balanced" | "full";
+
+export type CompileJobStatus = "queued" | "running" | "needs_user" | "done" | "failed";
+
+export type PipelineStepStatus = "queued" | "running" | "done" | "skipped" | "failed";
+
+export type PipelineStep = {
+  id: string;
+  label: string;
+  description: string;
+  status: PipelineStepStatus;
+  tool_name?: string;
+  output_summary?: string;
+  token_cost?: number;
+};
+
+export type TokenUsage = {
+  mode: CompileMode;
+  llm_calls_used: number;
+  llm_calls_limit: number;
+  estimated_input_tokens: number;
+  rule_based_checks: number;
+  skipped_ai_calls: number;
+};
+
+export type CompileRequest = {
+  input: string;
+  mode: CompileMode;
+};
+
+export type CompileInput = {
+  raw: string;
+  trimmed: string;
+};
+
+export type CompileJob = {
+  id: string;
+  status: CompileJobStatus;
+  mode: CompileMode;
+  created_at: string;
+  updated_at: string;
+  input: CompileInput;
+  steps: PipelineStep[];
+  signals: SignalSummary;
+  risks: RiskSummary;
+  readiness: AutomationReadinessScore;
+  result: SafeAutomationBlueprint;
+  agent_trace: AgentTraceEvent[];
+  token_usage: TokenUsage;
+  error?: string;
+};
