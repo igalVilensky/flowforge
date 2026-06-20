@@ -9,224 +9,251 @@ useHead({
     },
   ],
 });
+
+const workflowTiles = [
+  {
+    label: "Scan",
+    value: "Signals",
+    note: "Trigger, actors, outputs",
+  },
+  {
+    label: "Route",
+    value: "Boundary",
+    note: "Automate, approve, block",
+  },
+  {
+    label: "Review",
+    value: "Gates",
+    note: "Human checkpoints",
+  },
+  {
+    label: "Export",
+    value: "Plan",
+    note: "Non-executing blueprint",
+  },
+];
 </script>
 
 <template>
-  <main class="page">
-    <section class="hero">
-      <p class="eyebrow">Safe AI automation blueprint compiler</p>
-      <h1>FlowForge</h1>
-      <p class="lede">
-        Messy process in. Safe automation blueprint out.
-      </p>
-      <p class="summary">
-        FlowForge does not blindly automate every request. It finds the safest
-        useful automation boundary, separates what can be automated from what
-        needs review, and keeps real-world execution human-gated.
-      </p>
-      <div class="actions">
-        <NuxtLink to="/compiler" class="primary-action">
-          Open compiler preview
+  <main class="ff-page">
+    <section class="ff-shell">
+      <header class="ff-topbar">
+        <NuxtLink to="/" class="ff-brand" aria-label="FlowForge home">
+          <span class="ff-brand-mark">F</span>
+          <span>FlowForge</span>
         </NuxtLink>
-      </div>
-    </section>
 
-    <section class="boundary" aria-label="Automation boundary preview">
-      <article>
-        <span class="status safe">Automate</span>
-        <h2>Classification and drafting</h2>
-        <p>
-          FlowForge can classify process intent, detect obvious risks, and draft
-          internal notes or replies.
-        </p>
-      </article>
+        <nav class="ff-nav" aria-label="Primary navigation">
+          <span class="ff-status ff-status-neutral">Milestone 1 UI</span>
+          <NuxtLink to="/compiler" class="ff-toplink">Compiler</NuxtLink>
+        </nav>
+      </header>
 
-      <article>
-        <span class="status review">Approve</span>
-        <h2>External or sensitive actions</h2>
-        <p>
-          Customer messages, payment topics, legal issues, medical issues, and
-          employment decisions stay behind human approval gates.
-        </p>
-      </article>
+      <section class="ff-grid home-grid" aria-label="FlowForge overview">
+        <article class="ff-tile ff-tile-primary hero-tile">
+          <div class="ff-tile-inner hero-inner">
+            <div>
+              <p class="ff-kicker">Safe automation compiler</p>
+              <h1 class="ff-title">Find the automation boundary.</h1>
+              <p class="ff-copy">
+                Messy process in. Human-gated blueprint out.
+              </p>
+            </div>
 
-      <article>
-        <span class="status blocked">Block</span>
-        <h2>Automatic execution</h2>
-        <p>
-          The MVP does not send, delete, charge, approve, reject, or update real
-          systems automatically.
-        </p>
-      </article>
-    </section>
+            <div class="hero-actions">
+              <NuxtLink to="/compiler" class="ff-button hero-button">
+                Open compiler preview
+              </NuxtLink>
+              <span class="ff-chip hero-chip">0 provider calls in M0/M1</span>
+            </div>
+          </div>
+        </article>
 
-    <section class="milestone">
-      <div>
-        <p class="eyebrow">Milestone 0</p>
-        <h2>Project setup and documentation</h2>
-      </div>
-      <p>
-        This repository currently contains the docs, shared TypeScript
-        contracts, a compiler preview page, and a mock compile API. Real AI
-        providers, persistence, authentication, n8n export, and background jobs
-        are intentionally out of scope.
-      </p>
+        <article class="ff-tile ff-tile-safe outcome-tile">
+          <div class="ff-tile-inner">
+            <span class="ff-status ff-status-safe">Safe</span>
+            <h2 class="ff-section-title">Automate</h2>
+            <ul class="ff-list">
+              <li>Classification</li>
+              <li>Risk detection</li>
+              <li>Draft-only outputs</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="ff-tile ff-tile-approval outcome-tile">
+          <div class="ff-tile-inner">
+            <span class="ff-status ff-status-approval">Approval</span>
+            <h2 class="ff-section-title">Human gate</h2>
+            <ul class="ff-list">
+              <li>External messages</li>
+              <li>Sensitive decisions</li>
+              <li>High-stakes routing</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="ff-tile ff-tile-blocked outcome-tile">
+          <div class="ff-tile-inner">
+            <span class="ff-status ff-status-blocked">Blocked</span>
+            <h2 class="ff-section-title">No auto-run</h2>
+            <ul class="ff-list">
+              <li>No sending</li>
+              <li>No charging</li>
+              <li>No destructive actions</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="ff-tile flow-tile">
+          <div class="ff-tile-inner">
+            <p class="ff-kicker">How it works</p>
+            <h2 class="ff-page-title">A compiler pass, not a chatbot guess.</h2>
+            <div class="flow-grid" aria-label="Compiler stages">
+              <section v-for="tile in workflowTiles" :key="tile.label" class="flow-step">
+                <span>{{ tile.label }}</span>
+                <strong>{{ tile.value }}</strong>
+                <small>{{ tile.note }}</small>
+              </section>
+            </div>
+          </div>
+        </article>
+
+        <article class="ff-tile ff-tile-muted scope-tile">
+          <div class="ff-tile-inner">
+            <p class="ff-kicker">Current scope</p>
+            <p class="ff-metric">M1</p>
+            <h2 class="ff-section-title">Tile-based prototype</h2>
+            <p class="ff-copy">
+              UI only. No backend logic, AI integration, database, auth, n8n
+              export, or real-world execution.
+            </p>
+          </div>
+        </article>
+      </section>
     </section>
   </main>
 </template>
 
 <style scoped>
-.page {
-  min-height: 100vh;
-  padding: 56px 24px;
-  background: #f7f7fb;
-  color: #202124;
+.home-grid {
+  grid-auto-flow: dense;
 }
 
-.hero,
-.boundary,
-.milestone {
-  width: min(1080px, 100%);
-  margin: 0 auto;
+.hero-tile {
+  grid-column: span 8;
+  min-height: 352px;
 }
 
-.hero {
-  padding: 48px 0 36px;
+.hero-inner {
+  display: flex;
+  min-height: 352px;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
-.eyebrow {
-  margin: 0 0 12px;
-  color: #0f766e;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-h1,
-h2,
-p {
-  margin-top: 0;
-}
-
-h1 {
-  max-width: 760px;
-  margin-bottom: 18px;
-  font-size: clamp(3.25rem, 8vw, 6.5rem);
-  line-height: 0.94;
-}
-
-h2 {
-  margin-bottom: 10px;
-  font-size: 1.25rem;
-}
-
-.lede {
-  max-width: 720px;
-  margin-bottom: 14px;
-  font-size: 1.6rem;
-  line-height: 1.35;
-}
-
-.summary {
-  max-width: 760px;
-  color: #4b5563;
-  font-size: 1.05rem;
-  line-height: 1.7;
-}
-
-.actions {
+.hero-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 28px;
-}
-
-.primary-action {
-  display: inline-flex;
+  gap: 10px;
   align-items: center;
-  min-height: 44px;
-  padding: 0 18px;
-  border: 1px solid #0f766e;
-  border-radius: 8px;
-  background: #0f766e;
+}
+
+.hero-button {
+  background: #ffffff;
+  color: var(--ff-primary-strong);
+}
+
+.hero-button:hover {
+  background: var(--ff-primary-soft);
+}
+
+.hero-chip {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.14);
   color: #ffffff;
-  font-weight: 700;
-  text-decoration: none;
 }
 
-.primary-action:hover {
-  background: #115e59;
+.outcome-tile {
+  grid-column: span 4;
+  min-height: 164px;
 }
 
-.boundary {
+.outcome-tile .ff-status {
+  margin-bottom: 18px;
+}
+
+.flow-tile {
+  grid-column: span 8;
+}
+
+.scope-tile {
+  grid-column: span 4;
+}
+
+.flow-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
   margin-top: 18px;
 }
 
-.boundary article,
-.milestone {
-  border: 1px solid #d8dee8;
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 16px 42px rgba(32, 33, 36, 0.08);
-}
-
-.boundary article {
-  padding: 20px;
-}
-
-.boundary p,
-.milestone p {
-  color: #4b5563;
-  line-height: 1.65;
-}
-
-.status {
-  display: inline-flex;
-  margin-bottom: 18px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.safe {
-  background: #d1fae5;
-  color: #065f46;
-}
-
-.review {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.blocked {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.milestone {
+.flow-step {
   display: grid;
-  grid-template-columns: 0.8fr 1.2fr;
-  gap: 24px;
-  margin-top: 16px;
-  padding: 24px;
+  min-height: 112px;
+  align-content: space-between;
+  padding: 12px;
+  border: 1px solid var(--ff-border);
+  border-radius: 12px;
+  background: var(--ff-surface-muted);
+}
+
+.flow-step span {
+  color: var(--ff-primary);
+  font-size: 0.74rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.flow-step strong {
+  font-size: 1.12rem;
+}
+
+.flow-step small {
+  color: var(--ff-muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 920px) {
+  .hero-tile,
+  .flow-tile {
+    grid-column: span 12;
+  }
+
+  .outcome-tile,
+  .scope-tile {
+    grid-column: span 6;
+  }
+
+  .flow-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
-  .page {
-    padding: 32px 18px;
+  .hero-tile,
+  .outcome-tile,
+  .flow-tile,
+  .scope-tile {
+    grid-column: span 1;
   }
 
-  .hero {
-    padding-top: 24px;
+  .hero-tile,
+  .hero-inner {
+    min-height: 320px;
   }
 
-  .boundary,
-  .milestone {
+  .flow-grid {
     grid-template-columns: 1fr;
   }
 }

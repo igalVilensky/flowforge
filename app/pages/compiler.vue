@@ -1,22 +1,39 @@
 <script setup lang="ts">
 import type { CompileJob, CompileMode } from "../../shared/types/compileJob";
 
+useHead({
+  title: "FlowForge Compiler Preview",
+  meta: [
+    {
+      name: "description",
+      content: "Preview a mock safe automation blueprint compile in FlowForge.",
+    },
+  ],
+});
+
 const examples = [
   {
-    label: "Refund request",
+    label: "Refund",
     value:
       "When a customer asks for a refund, classify the reason, detect angry or legal language, draft a reply, and route high-risk cases to a human.",
   },
   {
-    label: "Student inquiry",
+    label: "Student",
     value:
       "When a student asks about a course, classify the inquiry, draft a helpful reply, and create a follow-up task for admissions if needed.",
   },
   {
-    label: "Risky auto-send",
+    label: "Risky send",
     value:
       "When a student asks about visa eligibility or payment problems, draft a reply and send it automatically.",
   },
+];
+
+const modes: Array<{ label: string; value: CompileMode }> = [
+  { label: "Demo", value: "demo" },
+  { label: "Rule", value: "rule_only" },
+  { label: "Balanced", value: "balanced" },
+  { label: "Full", value: "full" },
 ];
 
 const processInput = ref(examples[0]?.value ?? "");
@@ -26,18 +43,56 @@ const isCompiling = ref(false);
 const errorMessage = ref("");
 const showDetails = ref(false);
 
-const verdictLabel = computed(() => {
-  if (!job.value) return "Ready to compile";
-  return "Partially automatable";
+const activeExample = computed(() => {
+  return examples.find((example) => example.value === processInput.value)?.label ?? "";
 });
 
-const verdictText = computed(() => {
+const verdict = computed(() => {
   if (!job.value) {
-    return "Describe a process and FlowForge will identify the safest useful automation boundary.";
+    return {
+      label: "Ready",
+      title: "Waiting for process input",
+      note: "Paste a process to preview the automation boundary.",
+    };
   }
 
-  return "Automate low-risk support work. Keep sensitive decisions human-reviewed. Block automatic real-world execution.";
+  return {
+    label: "Verdict",
+    title: "Human-gated automation",
+    note: "Automate classification and drafts. Keep external actions and high-stakes decisions under review.",
+  };
 });
+
+const safeItems = computed(
+  () =>
+    job.value?.result?.safe_to_automate.slice(0, 4) ?? [
+      "Classification",
+      "Risk detection",
+      "Draft-only outputs",
+    ],
+);
+const approvalItems = computed(
+  () =>
+    job.value?.result?.needs_human_approval.slice(0, 3) ?? [
+      "External messages",
+      "Sensitive decisions",
+      "High-stakes routing",
+    ],
+);
+const blockedItems = computed(
+  () =>
+    job.value?.result?.not_safe_to_automate.slice(0, 3) ?? [
+      "Automatic sending",
+      "Payment or account changes",
+      "Destructive actions",
+    ],
+);
+const gateCount = computed(() => job.value?.result?.human_approval_gates.length ?? 0);
+const riskLevel = computed(() => job.value?.risks?.risk_level ?? "medium");
+
+function chooseExample(value: string) {
+  processInput.value = value;
+}
 
 async function compilePreview() {
   errorMessage.value = "";
@@ -66,589 +121,414 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="page">
-    <section class="shell">
-      <header class="topbar">
-        <NuxtLink to="/" class="brand">
-          FlowForge
+  <main class="ff-page">
+    <section class="ff-shell">
+      <header class="ff-topbar">
+        <NuxtLink to="/" class="ff-brand" aria-label="FlowForge home">
+          <span class="ff-brand-mark">F</span>
+          <span>FlowForge</span>
         </NuxtLink>
 
-```
-    <span class="status-pill">
-      Demo preview
-    </span>
-  </header>
+        <nav class="ff-nav" aria-label="Primary navigation">
+          <span class="ff-status ff-status-neutral">Compiler preview</span>
+          <NuxtLink to="/" class="ff-toplink">Home</NuxtLink>
+        </nav>
+      </header>
 
-  <section class="hero">
-    <p class="eyebrow">
-      Safe automation compiler
-    </p>
+      <section class="ff-grid compiler-grid" aria-label="Compiler workspace">
+        <form class="ff-tile input-tile" @submit.prevent="compilePreview">
+          <div class="ff-tile-inner input-inner">
+            <div class="input-head">
+              <div>
+                <p class="ff-kicker">Input</p>
+                <h1 class="ff-page-title">Describe the process.</h1>
+              </div>
+              <span class="ff-status ff-status-neutral">{{ mode }}</span>
+            </div>
 
-    <h1>Find the safest automation boundary.</h1>
+            <label class="ff-field-label" for="process-input">
+              Process
+              <textarea
+                id="process-input"
+                v-model="processInput"
+                class="ff-textarea"
+                :disabled="isCompiling"
+                placeholder="When a customer asks for a refund, classify the request, draft a reply, and route risky cases to a human."
+              />
+            </label>
 
-    <p>
-      Paste a messy process. FlowForge shows what can be automated, what
-      needs human approval, and what should stay blocked.
-    </p>
-  </section>
+            <div class="compact-row" aria-label="Example processes">
+              <button
+                v-for="example in examples"
+                :key="example.label"
+                type="button"
+                :class="['ff-chip-button', { 'is-active': activeExample === example.label }]"
+                @click="chooseExample(example.value)"
+              >
+                {{ example.label }}
+              </button>
+            </div>
 
-  <section class="workspace">
-    <form class="card input-card" @submit.prevent="compilePreview">
-      <div class="card-heading">
-        <p class="eyebrow">
-          Step 1
+            <div class="input-actions">
+              <fieldset class="mode-group">
+                <legend>Mode</legend>
+                <label v-for="item in modes" :key="item.value" class="mode-option">
+                  <input
+                    v-model="mode"
+                    type="radio"
+                    name="mode"
+                    :value="item.value"
+                    :disabled="isCompiling"
+                  />
+                  <span>{{ item.label }}</span>
+                </label>
+              </fieldset>
+
+              <button class="ff-button compile-button" type="submit" :disabled="isCompiling">
+                {{ isCompiling ? "Compiling" : "Compile preview" }}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <article class="ff-tile ff-tile-primary verdict-tile">
+          <div class="ff-tile-inner verdict-inner">
+            <div>
+              <p class="ff-kicker">{{ verdict.label }}</p>
+              <h2 class="verdict-title">{{ verdict.title }}</h2>
+              <p class="ff-copy">{{ verdict.note }}</p>
+            </div>
+
+            <dl class="verdict-metrics" aria-label="Compile summary">
+              <div>
+                <dt>Gates</dt>
+                <dd>{{ gateCount }}</dd>
+              </div>
+              <div>
+                <dt>Risk</dt>
+                <dd>{{ riskLevel }}</dd>
+              </div>
+              <div>
+                <dt>LLM</dt>
+                <dd>{{ job?.token_usage.llm_calls_used ?? 0 }}</dd>
+              </div>
+            </dl>
+          </div>
+        </article>
+
+        <p v-if="errorMessage" class="ff-error error-tile" role="alert">
+          {{ errorMessage }}
         </p>
-        <h2>Describe the workflow</h2>
-      </div>
 
-      <textarea
-        v-model="processInput"
-        :disabled="isCompiling"
-        aria-label="Process description"
-        placeholder="Example: When a customer asks for a refund, classify the request, draft a reply, and route risky cases to a human."
-      />
+        <article class="ff-tile ff-tile-safe outcome-tile">
+          <div class="ff-tile-inner">
+            <span class="ff-status ff-status-safe">Safe</span>
+            <h2 class="ff-section-title">Automate</h2>
+            <ul class="ff-list">
+              <li v-for="item in safeItems" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+        </article>
 
-      <div class="example-row">
-        <button
-          v-for="example in examples"
-          :key="example.label"
-          type="button"
-          class="ghost-button"
-          @click="processInput = example.value"
-        >
-          {{ example.label }}
-        </button>
-      </div>
+        <article class="ff-tile ff-tile-approval outcome-tile">
+          <div class="ff-tile-inner">
+            <span class="ff-status ff-status-approval">Approval</span>
+            <h2 class="ff-section-title">Human review</h2>
+            <ul class="ff-list">
+              <li v-for="item in approvalItems" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+        </article>
 
-      <div class="controls">
-        <label>
-          Mode
-          <select v-model="mode" :disabled="isCompiling">
-            <option value="demo">Demo</option>
-            <option value="rule_only">Rule only</option>
-            <option value="balanced">Balanced</option>
-            <option value="full">Full</option>
-          </select>
-        </label>
+        <article class="ff-tile ff-tile-blocked outcome-tile">
+          <div class="ff-tile-inner">
+            <span class="ff-status ff-status-blocked">Blocked</span>
+            <h2 class="ff-section-title">No auto-run</h2>
+            <ul class="ff-list">
+              <li v-for="item in blockedItems" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+        </article>
 
-        <button class="primary-button" type="submit" :disabled="isCompiling">
-          {{ isCompiling ? "Compiling..." : "Compile safe blueprint" }}
-        </button>
-      </div>
-    </form>
+        <article class="ff-tile recommendation-tile">
+          <div class="ff-tile-inner recommendation-inner">
+            <div>
+              <p class="ff-kicker">Recommendation</p>
+              <h2 class="ff-page-title">Plan first. Execute later.</h2>
+            </div>
+            <p class="ff-copy">
+              Start with classification, risk detection, draft generation, and
+              approval routing. Keep sending, payments, account changes, and
+              destructive actions disconnected in the MVP.
+            </p>
+          </div>
+        </article>
 
-    <aside class="card verdict-card">
-      <p class="eyebrow">
-        Step 2
-      </p>
-
-      <h2>{{ verdictLabel }}</h2>
-      <p>{{ verdictText }}</p>
-
-      <div v-if="job" class="verdict-pill">
-        Human approval required
-      </div>
-    </aside>
-  </section>
-
-  <p v-if="errorMessage" class="error" role="alert">
-    {{ errorMessage }}
-  </p>
-
-  <section v-if="job?.result" class="result-focus">
-    <article class="boundary-card safe">
-      <p class="mini-label">
-        Safe to automate
-      </p>
-      <ul>
-        <li v-for="item in job.result.safe_to_automate" :key="item">
-          {{ item }}
-        </li>
-      </ul>
-    </article>
-
-    <article class="boundary-card review">
-      <p class="mini-label">
-        Needs approval
-      </p>
-      <ul>
-        <li v-for="item in job.result.needs_human_approval" :key="item">
-          {{ item }}
-        </li>
-      </ul>
-    </article>
-
-    <article class="boundary-card blocked">
-      <p class="mini-label">
-        Blocked
-      </p>
-      <ul>
-        <li v-for="item in job.result.not_safe_to_automate" :key="item">
-          {{ item }}
-        </li>
-      </ul>
-    </article>
-  </section>
-
-  <section v-if="job?.result" class="recommendation card">
-    <p class="eyebrow">
-      Recommendation
-    </p>
-    <h2>Use FlowForge as a planning and review layer first.</h2>
-    <p>
-      Start with classification, risk detection, draft generation, and
-      approval routing. Do not connect real sending, payment, account, or
-      destructive actions until the blueprint is reviewed.
-    </p>
-  </section>
-
-  <section v-if="job" class="details">
-    <button
-      type="button"
-      class="details-toggle"
-      @click="showDetails = !showDetails"
-    >
-      {{ showDetails ? "Hide technical details" : "Show technical details" }}
-    </button>
-
-    <div v-if="showDetails" class="details-grid">
-      <article class="card">
-        <p class="eyebrow">
-          Pipeline
-        </p>
-        <ol class="timeline">
-          <li v-for="step in job.steps" :key="step.id">
-            <strong>{{ step.label }}</strong>
-            <span>{{ step.outputSummary }}</span>
-          </li>
-        </ol>
-      </article>
-
-      <article v-if="job.result" class="card">
-        <p class="eyebrow">
-          Approval gates
-        </p>
-        <div class="gate-list">
-          <section
-            v-for="gate in job.result.human_approval_gates"
-            :key="gate.id"
+        <section v-if="job" class="details-control" aria-label="Technical details">
+          <button
+            type="button"
+            class="ff-details-toggle"
+            :aria-expanded="showDetails"
+            @click="showDetails = !showDetails"
           >
-            <h3>{{ gate.label }}</h3>
-            <p>{{ gate.reason }}</p>
-          </section>
-        </div>
-      </article>
+            {{ showDetails ? "Hide technical details" : "Show technical details" }}
+          </button>
+        </section>
 
-      <article class="card">
-        <p class="eyebrow">
-          Token budget
-        </p>
-        <dl class="metrics">
-          <div>
-            <dt>Mode</dt>
-            <dd>{{ job.token_usage?.mode ?? mode }}</dd>
-          </div>
-          <div>
-            <dt>LLM calls</dt>
-            <dd>
-              {{ job.token_usage?.llm_calls_used ?? 0 }} /
-              {{ job.token_usage?.llm_calls_limit ?? 0 }}
-            </dd>
-          </div>
-          <div>
-            <dt>Rule checks</dt>
-            <dd>{{ job.token_usage?.rule_based_checks ?? 0 }}</dd>
-          </div>
-        </dl>
-      </article>
+        <template v-if="job && showDetails">
+          <article class="ff-tile detail-tile">
+            <div class="ff-tile-inner">
+              <p class="ff-kicker">Pipeline</p>
+              <ol class="ff-detail-list">
+                <li v-for="step in job.steps" :key="step.id">
+                  <strong>{{ step.label }}</strong>
+                  <span>{{ step.output_summary }}</span>
+                </li>
+              </ol>
+            </div>
+          </article>
 
-      <article class="card">
-        <p class="eyebrow">
-          Agent trace
-        </p>
-        <ul class="trace">
-          <li v-for="event in job.agent_trace ?? []" :key="event.id">
-            <strong>{{ event.action }}</strong>
-            <span>{{ event.status }}</span>
-          </li>
-        </ul>
-      </article>
-    </div>
-  </section>
-</section>
-```
+          <article class="ff-tile detail-tile">
+            <div class="ff-tile-inner">
+              <p class="ff-kicker">Approval gates</p>
+              <ul class="ff-detail-list">
+                <li v-for="gate in job.result?.human_approval_gates" :key="gate.id">
+                  <strong>{{ gate.label }}</strong>
+                  <span>{{ gate.reason }}</span>
+                </li>
+              </ul>
+            </div>
+          </article>
 
+          <article class="ff-tile detail-tile">
+            <div class="ff-tile-inner">
+              <p class="ff-kicker">Token usage</p>
+              <dl class="ff-metrics">
+                <div>
+                  <dt>Mode</dt>
+                  <dd>{{ job.token_usage.mode }}</dd>
+                </div>
+                <div>
+                  <dt>LLM calls</dt>
+                  <dd>{{ job.token_usage.llm_calls_used }} / {{ job.token_usage.llm_calls_limit }}</dd>
+                </div>
+                <div>
+                  <dt>Rule checks</dt>
+                  <dd>{{ job.token_usage.rule_based_checks }}</dd>
+                </div>
+              </dl>
+            </div>
+          </article>
+
+          <article class="ff-tile detail-tile">
+            <div class="ff-tile-inner">
+              <p class="ff-kicker">Agent trace</p>
+              <ul class="ff-detail-list">
+                <li v-for="event in job.agent_trace" :key="event.id">
+                  <strong>{{ event.action }}</strong>
+                  <span>{{ event.status }}</span>
+                </li>
+              </ul>
+            </div>
+          </article>
+        </template>
+      </section>
+    </section>
   </main>
 </template>
 
 <style scoped>
-:global(body) {
-  margin: 0;
+.compiler-grid {
+  grid-auto-flow: dense;
 }
 
-:global(*) {
-  box-sizing: border-box;
+.input-tile {
+  grid-column: span 8;
 }
 
-.page {
-  min-height: 100vh;
-  padding: 16px;
-  color: #202124;
+.verdict-tile {
+  grid-column: span 4;
 }
 
-.shell {
-width: min(1080px, 100%);
-margin: 0 auto;
+.input-inner {
+  display: grid;
+  gap: 14px;
 }
 
-
-.topbar {
+.input-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 20px;
+  gap: 14px;
 }
 
-.brand {
-  color: #0f766e;
-  font-size: 1.05rem;
+.compact-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.input-actions {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mode-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mode-group legend {
+  width: 100%;
+  color: var(--ff-muted);
+  font-size: 0.78rem;
   font-weight: 900;
-  text-decoration: none;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid #d8dee8;
-  border-radius: 999px;
-  color: #4b5563;
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.hero {
-  max-width: 720px;
-  margin-bottom: 18px;
-}
-
-.eyebrow,
-.mini-label {
-  margin: 0 0 6px;
-  color: #0f766e;
-  font-size: 0.72rem;
-  font-weight: 900;
-  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-h1,
-h2,
-h3,
-p {
-  margin-top: 0;
+.mode-option {
+  position: relative;
 }
 
-h1 {
-  max-width: 720px;
-  margin-bottom: 8px;
-  font-size: clamp(2rem, 4vw, 3.4rem);
-  line-height: 1;
-  letter-spacing: -0.05em;
+.mode-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
-h2 {
-  margin-bottom: 8px;
-  font-size: 1.15rem;
-}
-
-h3 {
-  margin-bottom: 4px;
-  font-size: 0.98rem;
-}
-
-.hero p,
-.card p,
-.boundary-card li {
-  color: #4b5563;
-  line-height: 1.55;
-}
-
-.workspace {
-display: grid;
-grid-template-columns: minmax(0, 1fr) minmax(260px, 0.45fr);
-gap: 12px;
-}
-
-
-.card,
-.boundary-card {
-  border: 1px solid #d8dee8;
-  border-radius: 12px;
-  box-shadow: 0 10px 28px rgba(32, 33, 36, 0.06);
-}
-
-.card {
-  padding: 16px;
-}
-
-.card-heading {
-  margin-bottom: 10px;
-}
-
-textarea {
-  width: 100%;
-  min-height: 150px;
-  padding: 12px;
-  border: 1px solid #cfd7e3;
-  border-radius: 10px;
-  color: #202124;
-  font: inherit;
-  line-height: 1.5;
-  resize: vertical;
-}
-
-textarea:focus,
-select:focus {
-  border-color: #0f766e;
-  outline: 3px solid #ccfbf1;
-}
-
-.example-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.ghost-button,
-.details-toggle {
-  border: 1px solid #cfd7e3;
+.mode-option span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--ff-border);
   border-radius: 999px;
-  color: #374151;
-  font: inherit;
-  font-size: 0.86rem;
-  font-weight: 700;
+  background: #ffffff;
+  color: var(--ff-muted);
+  font-size: 0.82rem;
+  font-weight: 850;
   cursor: pointer;
 }
 
-.ghost-button {
-  padding: 7px 10px;
+.mode-option input:checked + span {
+  border-color: var(--ff-primary);
+  background: var(--ff-primary-soft);
+  color: var(--ff-primary-strong);
 }
 
-.ghost-button:hover,
-.details-toggle:hover {
-  border-color: #0f766e;
-  color: #0f766e;
+.compile-button {
+  flex: 0 0 auto;
 }
 
-.controls {
+.verdict-inner {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: end;
-  justify-content: space-between;
-  margin-top: 14px;
-}
-
-label {
-  display: grid;
-  gap: 5px;
-  color: #374151;
-  font-size: 0.86rem;
-  font-weight: 800;
-}
-
-select {
-  min-height: 38px;
-  padding: 0 10px;
-  border: 1px solid #cfd7e3;
-  border-radius: 8px;
-  font: inherit;
-}
-
-.primary-button {
-  min-height: 40px;
-  padding: 0 16px;
-  border: 1px solid #0f766e;
-  border-radius: 10px;
-  background: #0f766e;
-  color: #ffffff;
-  font: inherit;
-  font-weight: 900;
-  cursor: pointer;
-}
-
-.primary-button:disabled {
-  cursor: wait;
-  opacity: 0.7;
-}
-
-.verdict-card {
-  display: flex;
+  min-height: 100%;
   flex-direction: column;
   justify-content: space-between;
+  gap: 28px;
 }
 
-.verdict-pill {
-  display: inline-flex;
-  width: fit-content;
-  margin-top: 12px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: #fef3c7;
-  color: #92400e;
-  font-size: 0.86rem;
-  font-weight: 900;
+.verdict-title {
+  margin: 0;
+  font-size: clamp(1.7rem, 4vw, 2.7rem);
+  line-height: 1.02;
 }
 
-.error {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  border: 1px solid #fecaca;
-  border-radius: 10px;
-  color: #991b1b;
-}
-
-.result-focus {
+.verdict-metrics {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.boundary-card {
-  padding: 16px;
-}
-
-.boundary-card ul {
-  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
-  padding-left: 18px;
 }
 
-.safe {
-  border-color: #bbf7d0;
-}
-
-.review {
-  border-color: #fde68a;
-}
-
-.blocked {
-  border-color: #fecaca;
-}
-
-.safe .mini-label {
-  color: #047857;
-}
-
-.review .mini-label {
-  color: #b45309;
-}
-
-.blocked .mini-label {
-  color: #b91c1c;
-}
-
-.recommendation {
-  margin-top: 12px;
-}
-
-.details {
-  margin-top: 12px;
-}
-
-.details-toggle {
-  padding: 8px 12px;
-}
-
-.details-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.timeline,
-.trace,
-.gate-list {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.timeline li,
-.trace li,
-.gate-list section {
+.verdict-metrics div {
   display: grid;
   gap: 4px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12);
 }
 
-.timeline span,
-.trace span,
-.gate-list p {
-  color: #4b5563;
-  line-height: 1.5;
-}
-
-.metrics {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-}
-
-.metrics div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.metrics dt {
-  color: #4b5563;
-  font-weight: 700;
-}
-
-.metrics dd {
-  margin: 0;
+.verdict-metrics dt {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.74rem;
   font-weight: 900;
+  text-transform: uppercase;
 }
 
-@media (max-width: 840px) {
-  .page {
-    padding: 12px;
+.verdict-metrics dd {
+  margin: 0;
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 950;
+  text-transform: capitalize;
+}
+
+.error-tile {
+  grid-column: span 12;
+}
+
+.outcome-tile {
+  grid-column: span 4;
+  min-height: 210px;
+}
+
+.outcome-tile .ff-status {
+  margin-bottom: 18px;
+}
+
+.recommendation-tile {
+  grid-column: span 12;
+}
+
+.recommendation-inner {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: end;
+}
+
+.details-control {
+  grid-column: span 12;
+}
+
+.detail-tile {
+  grid-column: span 6;
+}
+
+@media (max-width: 940px) {
+  .input-tile,
+  .verdict-tile,
+  .outcome-tile,
+  .detail-tile {
+    grid-column: span 12;
   }
 
-  .topbar {
-    margin-bottom: 18px;
-  }
-
-  .workspace,
-  .result-focus,
-  .details-grid {
+  .recommendation-inner {
     grid-template-columns: 1fr;
   }
+}
 
-  h1 {
-    font-size: clamp(2rem, 12vw, 3rem);
-  }
-
-  .controls {
+@media (max-width: 760px) {
+  .input-actions {
     align-items: stretch;
+    flex-direction: column;
   }
 
-  .primary-button,
-  select {
+  .compile-button {
     width: 100%;
+  }
+
+  .verdict-metrics {
+    grid-template-columns: 1fr;
   }
 }
 </style>
