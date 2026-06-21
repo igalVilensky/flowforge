@@ -13,6 +13,7 @@ import type {
   SafeAutomationBlueprint,
   SignalSummary,
 } from "../../shared/types/workflow";
+import { safeValidateCompileJob } from "../services/schemaValidator";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
 
@@ -467,7 +468,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     skipped_ai_calls: llmCallLimits[mode],
   };
 
-  return {
+  const compileJob: CompileJob = {
     id: jobId,
     status: "done",
     mode,
@@ -506,4 +507,18 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     ],
     token_usage: tokenUsage,
   };
+
+  const validation = safeValidateCompileJob(compileJob);
+
+  if (!validation.success) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Mock compile job failed schema validation.",
+      data: {
+        issues: validation.issues,
+      },
+    });
+  }
+
+  return validation.data;
 });

@@ -7,11 +7,13 @@
     "typecheck": "nuxt typecheck",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
+    "validate:fixtures": "node --import jiti/register server/services/schemaValidator.ts",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
     "nuxt": "^4.4.8",
-    "vue": "^3.5.35"
+    "vue": "^3.5.35",
+    "zod": "^4.4.3"
   }
 }
