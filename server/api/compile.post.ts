@@ -4,14 +4,9 @@ import type {
   PipelineStep,
   TokenUsage,
 } from "../../shared/types/compileJob";
-import type {
-  AutomationReadinessScore,
-  RiskCategory,
-  RiskItem,
-  RiskLevel,
-  RiskSummary,
-  SafeAutomationBlueprint,
-} from "../../shared/types/workflow";
+import type { RiskItem, SafeAutomationBlueprint } from "../../shared/types/workflow";
+import { scoreReadiness } from "../services/readinessScorer";
+import { scanRisks } from "../services/riskScanner";
 import { safeValidateCompileJob } from "../services/schemaValidator";
 import { scanSignals } from "../services/signalScanner";
 
@@ -31,77 +26,6 @@ type CompileBody = {
 
 function isCompileMode(value: unknown): value is CompileMode {
   return typeof value === "string" && compileModes.includes(value as CompileMode);
-}
-
-function getRiskLevel(categories: RiskCategory[]): RiskLevel {
-  const highRiskCategories: RiskCategory[] = [
-    "legal",
-    "medical",
-    "visa_or_immigration",
-    "employment",
-    "delete_or_destructive_action",
-    "account_access",
-    "high_stakes_decision",
-    "real_world_execution",
-  ];
-
-  if (categories.some((category) => highRiskCategories.includes(category))) {
-    return "high";
-  }
-
-  return categories.length > 0 ? "medium" : "low";
-}
-
-function requiresHumanReview(categories: RiskCategory[]): boolean {
-  const reviewRequiredCategories: RiskCategory[] = [
-    "external_communication",
-    "financial",
-    "legal",
-    "medical",
-    "visa_or_immigration",
-    "employment",
-    "refund_or_payment",
-    "delete_or_destructive_action",
-    "account_access",
-    "high_stakes_decision",
-    "real_world_execution",
-  ];
-
-  return categories.some((category) => reviewRequiredCategories.includes(category));
-}
-
-function describeRiskReasons(categories: RiskCategory[]): string[] {
-  const reasons: string[] = [];
-
-  if (categories.length === 0) {
-    return ["The rule-based scanner did not detect obvious safety risk flags."];
-  }
-
-  if (categories.includes("external_communication")) {
-    reasons.push("External communication must be reviewed before sending.");
-  }
-
-  if (categories.includes("refund_or_payment") || categories.includes("financial")) {
-    reasons.push("Refund, payment, billing, and financial outcomes need accountable review.");
-  }
-
-  if (categories.includes("high_stakes_decision")) {
-    reasons.push("Sensitive or high-stakes decisions must remain human-approved.");
-  }
-
-  if (categories.includes("personal_data") || categories.includes("account_access")) {
-    reasons.push("Personal data and account access require clear permissions.");
-  }
-
-  if (categories.includes("delete_or_destructive_action")) {
-    reasons.push("Destructive actions need explicit approval and rollback planning.");
-  }
-
-  if (categories.includes("real_world_execution")) {
-    reasons.push("The MVP must not execute real-world actions automatically.");
-  }
-
-  return reasons;
 }
 
 export default defineEventHandler(async (event): Promise<CompileJob> => {
@@ -125,8 +49,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
 
   const mode = isCompileMode(body.mode) ? body.mode : "demo";
   const signals = scanSignals(trimmedInput);
-  const riskCategories = signals.risk_flags;
-  const riskLevel = getRiskLevel(riskCategories);
+  const risks = scanRisks(signals);
+  const readiness = scoreReadiness(signals, risks);
+  const riskCategories = risks.categories;
   const detectedPrimitiveSummary =
     signals.workflow_primitives.length > 0
       ? `Detected ${signals.workflow_primitives.join(", ")} primitives.`
@@ -138,9 +63,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     {
       id: "initialize_compile_job",
       label: "Initialize Compile Job",
-      description: "Create a local placeholder job from the submitted process.",
+      description: "Create a local compile job from the submitted process.",
       status: "done",
-      tool_name: "mockCompiler",
+      tool_name: "previewCompiler",
       output_summary: "Compile state created without provider calls.",
     },
     {
@@ -152,41 +77,24 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       output_summary: detectedPrimitiveSummary,
     },
     {
-      id: "mock_risk_review",
-      label: "Mock Risk Review",
-      description: "Apply fixed MVP safety boundaries.",
+      id: "rule_based_risk_review",
+      label: "Rule-Based Risk Review",
+      description: "Summarize risk level and review requirements with deterministic rules.",
       status: "done",
-      tool_name: "mockRiskReview",
-      output_summary: "External communication, high-stakes decisions, and real execution stay human-gated.",
+      tool_name: "riskScanner",
+      output_summary: `Risk level is ${risks.risk_level}; human review ${
+        risks.requires_human_review ? "is required" : "is not required"
+      }.`,
     },
     {
-      id: "mock_blueprint",
-      label: "Mock Blueprint",
+      id: "static_blueprint_preview",
+      label: "Static Blueprint Preview",
       description: "Return a static safe automation blueprint preview.",
       status: "done",
-      tool_name: "mockBlueprintBuilder",
-      output_summary: "Placeholder blueprint is ready for UI preview.",
+      tool_name: "staticBlueprintBuilder",
+      output_summary: "Static blueprint preview is ready for UI preview.",
     },
   ];
-
-  const risks: RiskSummary = {
-    categories: riskCategories,
-    risk_level: riskLevel,
-    reasons: describeRiskReasons(riskCategories),
-    requires_human_review: requiresHumanReview(riskCategories),
-  };
-
-  const readiness: AutomationReadinessScore = {
-    score: riskLevel === "high" ? 44 : riskLevel === "medium" ? 58 : 72,
-    strengths: [
-      "The input can be scanned deterministically for workflow signals.",
-      "Draft generation can be automated as long as the output remains non-executing.",
-    ],
-    weaknesses:
-      signals.missing_critical_info.length > 0
-        ? signals.missing_critical_info
-        : ["No critical signal gaps were detected by the rule-based scanner."],
-  };
 
   const riskItems: RiskItem[] = [
     {
@@ -212,7 +120,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       label: "Real-world execution",
       category: "real_world_execution",
       risk_level: "high",
-      reason: "Milestone 0 and the MVP should not trigger production systems automatically.",
+      reason: "The preview compiler and MVP should not trigger production systems automatically.",
       recommendation: "Block execution and export only a reviewed implementation plan.",
       step_ids: ["block_real_world_execution"],
     },
@@ -220,8 +128,8 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
 
   const result: SafeAutomationBlueprint = {
     id: `blueprint_${jobId}`,
-    workflow_name: "Milestone 0 Safe Automation Blueprint Preview",
-    summary: "A placeholder blueprint showing the intended safe automation boundary.",
+    workflow_name: "Rule-Based Blueprint Preview",
+    summary: "A static blueprint preview showing the intended safe automation boundary.",
     automation_boundary: "human_approval_required",
     trigger: {
       type: "manual_input",
@@ -316,7 +224,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       {
         id: "block_real_world_execution",
         label: "Block real-world execution in MVP",
-        description: "Prevent the placeholder compiler from sending, deleting, charging, updating, or triggering external systems.",
+        description: "Prevent the preview compiler from sending, deleting, charging, updating, or triggering external systems.",
         primitive: "validation",
         actor: "system",
         input: "Compiled blueprint",
@@ -380,7 +288,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         label: "Confirm no automatic execution",
         required: true,
         applies_to_step_ids: ["block_real_world_execution"],
-        reason: "Milestone 0 is a preview only and must not perform external actions.",
+        reason: "The preview compiler must not perform external actions.",
         review_checklist: [
           "Keep outputs as previews or exports.",
           "Do not connect production credentials.",
@@ -415,9 +323,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       },
     ],
     assumptions: [
-      "This is a Milestone 0 placeholder response.",
+      "This is a rule-based preview response. AI generation is not connected yet.",
       "No AI provider, database, authentication, n8n export, or external execution is connected.",
-      "Future milestones will replace mock scanners with deterministic tools and validated schemas.",
+      "Future milestones will replace the static blueprint preview with generated blueprint synthesis.",
     ],
     open_questions: [
       "Which deterministic scanner rules should be implemented first?",
@@ -455,9 +363,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         id: "trace_initialize",
         timestamp: now,
         actor: "compiler_agent",
-        action: "Created placeholder compile job",
+        action: "Created rule-based compile job",
         status: "completed",
-        output_summary: "Milestone 0 mock result returned.",
+        output_summary: "Rule-based preview result returned.",
         metadata: {
           provider_calls: 0,
           external_execution: false,
@@ -469,7 +377,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         actor: "llm",
         action: "Skipped AI provider calls",
         status: "skipped",
-        reason: "Milestone 0 does not call Groq, Gemini, OpenAI, or any external service.",
+        reason: "The rule-based compiler does not call Groq, Gemini, OpenAI, or any external service.",
       },
     ],
     token_usage: tokenUsage,
@@ -480,7 +388,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   if (!validation.success) {
     throw createError({
       statusCode: 500,
-      statusMessage: "Mock compile job failed schema validation.",
+      statusMessage: "Compile job failed schema validation.",
       data: {
         issues: validation.issues,
       },
