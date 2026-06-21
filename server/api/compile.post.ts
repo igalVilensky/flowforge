@@ -11,9 +11,9 @@ import type {
   RiskLevel,
   RiskSummary,
   SafeAutomationBlueprint,
-  SignalSummary,
 } from "../../shared/types/workflow";
 import { safeValidateCompileJob } from "../services/schemaValidator";
+import { scanSignals } from "../services/signalScanner";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
 
@@ -33,58 +33,6 @@ function isCompileMode(value: unknown): value is CompileMode {
   return typeof value === "string" && compileModes.includes(value as CompileMode);
 }
 
-function includesAny(input: string, terms: string[]): boolean {
-  return terms.some((term) => input.includes(term));
-}
-
-function detectPlaceholderRiskCategories(input: string): RiskCategory[] {
-  const categories = new Set<RiskCategory>();
-
-  if (includesAny(input, ["email", "reply", "send", "slack", "message", "customer"])) {
-    categories.add("external_communication");
-  }
-
-  if (includesAny(input, ["refund", "payment", "invoice", "charge", "billing"])) {
-    categories.add("refund_or_payment");
-    categories.add("financial");
-  }
-
-  if (includesAny(input, ["legal", "lawyer", "contract", "lawsuit"])) {
-    categories.add("legal");
-    categories.add("high_stakes_decision");
-  }
-
-  if (includesAny(input, ["medical", "health", "diagnosis", "patient"])) {
-    categories.add("medical");
-    categories.add("high_stakes_decision");
-  }
-
-  if (includesAny(input, ["visa", "immigration", "passport"])) {
-    categories.add("visa_or_immigration");
-    categories.add("high_stakes_decision");
-  }
-
-  if (includesAny(input, ["hire", "fire", "promotion", "employee", "employment"])) {
-    categories.add("employment");
-    categories.add("high_stakes_decision");
-  }
-
-  if (includesAny(input, ["delete", "remove", "cancel account", "close account"])) {
-    categories.add("delete_or_destructive_action");
-  }
-
-  if (includesAny(input, ["password", "account", "login", "personal data", "phone", "address"])) {
-    categories.add("account_access");
-    categories.add("personal_data");
-  }
-
-  if (includesAny(input, ["angry", "complaint", "escalate", "threat"])) {
-    categories.add("complaint_or_angry_user");
-  }
-
-  return [...categories];
-}
-
 function getRiskLevel(categories: RiskCategory[]): RiskLevel {
   const highRiskCategories: RiskCategory[] = [
     "legal",
@@ -94,6 +42,7 @@ function getRiskLevel(categories: RiskCategory[]): RiskLevel {
     "delete_or_destructive_action",
     "account_access",
     "high_stakes_decision",
+    "real_world_execution",
   ];
 
   if (categories.some((category) => highRiskCategories.includes(category))) {
@@ -101,6 +50,58 @@ function getRiskLevel(categories: RiskCategory[]): RiskLevel {
   }
 
   return categories.length > 0 ? "medium" : "low";
+}
+
+function requiresHumanReview(categories: RiskCategory[]): boolean {
+  const reviewRequiredCategories: RiskCategory[] = [
+    "external_communication",
+    "financial",
+    "legal",
+    "medical",
+    "visa_or_immigration",
+    "employment",
+    "refund_or_payment",
+    "delete_or_destructive_action",
+    "account_access",
+    "high_stakes_decision",
+    "real_world_execution",
+  ];
+
+  return categories.some((category) => reviewRequiredCategories.includes(category));
+}
+
+function describeRiskReasons(categories: RiskCategory[]): string[] {
+  const reasons: string[] = [];
+
+  if (categories.length === 0) {
+    return ["The rule-based scanner did not detect obvious safety risk flags."];
+  }
+
+  if (categories.includes("external_communication")) {
+    reasons.push("External communication must be reviewed before sending.");
+  }
+
+  if (categories.includes("refund_or_payment") || categories.includes("financial")) {
+    reasons.push("Refund, payment, billing, and financial outcomes need accountable review.");
+  }
+
+  if (categories.includes("high_stakes_decision")) {
+    reasons.push("Sensitive or high-stakes decisions must remain human-approved.");
+  }
+
+  if (categories.includes("personal_data") || categories.includes("account_access")) {
+    reasons.push("Personal data and account access require clear permissions.");
+  }
+
+  if (categories.includes("delete_or_destructive_action")) {
+    reasons.push("Destructive actions need explicit approval and rollback planning.");
+  }
+
+  if (categories.includes("real_world_execution")) {
+    reasons.push("The MVP must not execute real-world actions automatically.");
+  }
+
+  return reasons;
 }
 
 export default defineEventHandler(async (event): Promise<CompileJob> => {
@@ -123,15 +124,13 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   }
 
   const mode = isCompileMode(body.mode) ? body.mode : "demo";
-  const normalizedInput = trimmedInput.toLowerCase();
-  const detectedRiskCategories = detectPlaceholderRiskCategories(normalizedInput);
-  const requiredSafetyCategories: RiskCategory[] = [
-    "external_communication",
-    "high_stakes_decision",
-    "real_world_execution",
-  ];
-  const riskCategories = [...new Set<RiskCategory>([...detectedRiskCategories, ...requiredSafetyCategories])];
+  const signals = scanSignals(trimmedInput);
+  const riskCategories = signals.risk_flags;
   const riskLevel = getRiskLevel(riskCategories);
+  const detectedPrimitiveSummary =
+    signals.workflow_primitives.length > 0
+      ? `Detected ${signals.workflow_primitives.join(", ")} primitives.`
+      : "No clear workflow primitives detected yet.";
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
 
@@ -145,12 +144,12 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       output_summary: "Compile state created without provider calls.",
     },
     {
-      id: "mock_signal_scan",
-      label: "Mock Signal Scan",
-      description: "Summarize visible process structure for Milestone 0.",
+      id: "rule_based_signal_scan",
+      label: "Rule-Based Signal Scan",
+      description: "Summarize visible process structure with deterministic rules.",
       status: "done",
-      tool_name: "mockSignalScanner",
-      output_summary: "Detected intake, classification, risk detection, drafting, and approval primitives.",
+      tool_name: "signalScanner",
+      output_summary: detectedPrimitiveSummary,
     },
     {
       id: "mock_risk_review",
@@ -170,55 +169,23 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     },
   ];
 
-  const signals: SignalSummary = {
-    has_trigger: includesAny(normalizedInput, ["when", "whenever", "if", "after", "before"]),
-    has_repeated_process: includesAny(normalizedInput, ["every", "whenever", "each", "repeat", "when"]),
-    has_external_action: detectedRiskCategories.includes("external_communication"),
-    has_sensitive_data: detectedRiskCategories.some((category) =>
-      ["personal_data", "account_access", "medical", "visa_or_immigration", "employment"].includes(category),
-    ),
-    has_clear_output: includesAny(normalizedInput, ["draft", "reply", "create", "classify", "route", "send"]),
-    has_decision_points: includesAny(normalizedInput, ["if", "classify", "route", "decide", "detect", "approve"]),
-    has_human_actor: includesAny(normalizedInput, ["human", "manager", "review", "approve", "agent"]),
-    has_system_actor: true,
-    risk_flags: riskCategories,
-    missing_critical_info: [
-      "Exact source systems and permissions are not defined yet.",
-      "The final execution target is intentionally out of scope for Milestone 0.",
-    ],
-    rough_actions: [
-      "Intake the process description",
-      "Classify the request",
-      "Detect risk flags",
-      "Draft a proposed response or task",
-      "Require human review before external action",
-    ],
-    possible_tools: ["signal scanner", "risk scanner", "schema validator", "approval gate generator"],
-    workflow_primitives: ["intake", "classification", "risk_detection", "drafting", "approval", "validation"],
-  };
-
   const risks: RiskSummary = {
     categories: riskCategories,
     risk_level: riskLevel,
-    reasons: [
-      "Milestone 0 uses a fixed placeholder safety policy.",
-      "External communication must be reviewed before sending.",
-      "Sensitive or high-stakes decisions must remain human-approved.",
-      "The MVP must not execute real-world actions automatically.",
-    ],
-    requires_human_review: true,
+    reasons: describeRiskReasons(riskCategories),
+    requires_human_review: requiresHumanReview(riskCategories),
   };
 
   const readiness: AutomationReadinessScore = {
-    score: 52,
+    score: riskLevel === "high" ? 44 : riskLevel === "medium" ? 58 : 72,
     strengths: [
-      "The input can be shaped into intake, classification, risk detection, and drafting steps.",
+      "The input can be scanned deterministically for workflow signals.",
       "Draft generation can be automated as long as the output remains non-executing.",
     ],
-    weaknesses: [
-      "Real signal scanning and schema validation are not implemented in Milestone 0.",
-      "External communication and high-stakes decisions still need explicit human review.",
-    ],
+    weaknesses:
+      signals.missing_critical_info.length > 0
+        ? signals.missing_critical_info
+        : ["No critical signal gaps were detected by the rule-based scanner."],
   };
 
   const riskItems: RiskItem[] = [
