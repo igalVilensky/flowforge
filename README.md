@@ -15,12 +15,13 @@ not recommended, and what must not execute automatically.
 
 ## Current Status
 
-This repository has completed Milestone 5: Dynamic Blueprint Builder.
+This repository has completed Milestone 7: Router Agent.
 
 Implemented so far:
 
 - Nuxt 4, Vue 3, and TypeScript scaffold
 - Tile-based UI prototype at `/compiler`
+- Progressive disclosure UI for complex blueprints
 - Shared TypeScript types for workflow blueprints, compile jobs, and agent trace events
 - Zod schema validation for blueprints, compile jobs, scanner output, and readiness scores
 - Fixture validation through `npm run validate:fixtures`
@@ -28,12 +29,12 @@ Implemented so far:
 - Risk scanning for sensitive automation categories
 - Readiness scoring with explainable strengths and weaknesses
 - Deterministic dynamic blueprint building from input, signals, risks, and readiness
+- Router Agent for evaluating safety and deciding compilation routes via Groq with Gemini fallback
 - Product, architecture, milestone, demo, and Codex workflow documentation
 
 This milestone intentionally does not include:
 
-- Real LLM calls
-- Groq, Gemini, OpenAI, or other provider integration
+- Generating full blueprints with AI (only routing so far)
 - Persistent storage
 - Authentication
 - n8n import or export
@@ -125,6 +126,9 @@ flowforge/
       riskScanner.ts
       readinessScorer.ts
       schemaValidator.ts
+      routerAgent.ts
+      groqProvider.ts
+      geminiProvider.ts
     fixtures/
       validBlueprint.ts
       validCompileJob.ts
@@ -150,9 +154,7 @@ automation product in one pass.
 Recommended next milestone:
 
 ```text
-Milestone 6 - Router Agent
+Milestone 8 - Blueprint Repair Loop
 ```
 
-That milestone should add the first constrained LLM decision point only if the
-milestone explicitly authorizes provider work. Persistence, authentication, n8n
-export, and real workflow execution remain future work.
+Persistence, authentication, n8n export, and real workflow execution remain future work.

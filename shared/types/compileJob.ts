@@ -41,6 +41,17 @@ export type CompileInput = {
   trimmed: string;
 };
 
+export type RouterDecision = {
+  route: "compile_blueprint" | "needs_clarification" | "suggest_safer_workflow" | "assistant_only" | "reject";
+  confidence: "low" | "medium" | "high";
+  reason: string;
+  safety_note: string;
+  suggested_next_step: string;
+  provider: "groq" | "gemini" | "deterministic";
+  used_ai: boolean;
+  fallback_used: boolean;
+};
+
 export type CompileJob = {
   id: string;
   status: CompileJobStatus;
@@ -52,6 +63,7 @@ export type CompileJob = {
   signals: SignalSummary;
   risks: RiskSummary;
   readiness: AutomationReadinessScore;
+  router_decision?: RouterDecision;
   result: SafeAutomationBlueprint;
   agent_trace: AgentTraceEvent[];
   token_usage: TokenUsage;

@@ -50,6 +50,16 @@ export const validCompileJob: CompileJob = {
   signals: validBlueprintSignals,
   risks: validBlueprintRisks,
   readiness: validBlueprintReadiness,
+  router_decision: {
+    route: "compile_blueprint",
+    confidence: "high",
+    reason: "Fixture data implies a safe compilation.",
+    safety_note: "No execution permitted in fixture mode.",
+    suggested_next_step: "Review the blueprint output.",
+    provider: "deterministic",
+    used_ai: false,
+    fallback_used: true,
+  },
   result: validBlueprint,
   agent_trace: [
     {

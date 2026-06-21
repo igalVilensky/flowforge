@@ -25,6 +25,20 @@ export const triggerPhrases = [
   "as soon as",
 ] as const;
 
+export const schedulePhrases = [
+  "every morning",
+  "every day",
+  "daily",
+  "each morning",
+  "every weekday",
+  "every week",
+  "every monday",
+  "every tuesday",
+  "every wednesday",
+  "every thursday",
+  "every friday",
+] as const;
+
 export const repeatedProcessPhrases = [
   "every",
   "whenever",

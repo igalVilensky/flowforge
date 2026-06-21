@@ -19,6 +19,7 @@ import {
   safeAutomationBlueprintSchema,
   signalSummarySchema,
 } from "./workflow.schema";
+import { routerDecisionSchema } from "./router.schema";
 
 const requiredString = z.string().min(1, "Required string cannot be empty.");
 
@@ -116,6 +117,7 @@ export const compileJobSchema = z
     signals: signalSummarySchema,
     risks: riskSummarySchema,
     readiness: automationReadinessScoreSchema,
+    router_decision: routerDecisionSchema.optional(),
     result: safeAutomationBlueprintSchema,
     agent_trace: z.array(agentTraceEventSchema),
     token_usage: tokenUsageSchema,

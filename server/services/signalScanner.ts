@@ -6,6 +6,7 @@ import {
   primitiveRules,
   repeatedProcessPhrases,
   riskRules,
+  schedulePhrases,
   sensitiveRiskCategories,
   systemActorPhrases,
   triggerPhrases,
@@ -194,7 +195,8 @@ export function scanSignals(input: string): SignalSummary {
   const riskFlags = detectRiskFlags(normalizedInput);
   const workflowPrimitives = detectWorkflowPrimitives(normalizedInput, riskFlags);
 
-  const hasTrigger = matchesAny(normalizedInput, triggerPhrases);
+  const hasScheduledTrigger = matchesAny(normalizedInput, schedulePhrases);
+  const hasTrigger = hasScheduledTrigger || matchesAny(normalizedInput, triggerPhrases);
   const hasRepeatedProcess = matchesAny(normalizedInput, repeatedProcessPhrases);
   const hasExternalAction = riskFlags.includes("external_communication");
   const hasSensitiveData = riskFlags.some((category) => sensitiveRiskCategories.includes(category));
@@ -217,6 +219,7 @@ export function scanSignals(input: string): SignalSummary {
 
   return {
     has_trigger: hasTrigger,
+    has_scheduled_trigger: hasScheduledTrigger,
     has_repeated_process: hasRepeatedProcess,
     has_external_action: hasExternalAction,
     has_sensitive_data: hasSensitiveData,

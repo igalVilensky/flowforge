@@ -124,6 +124,7 @@ export type SafeAutomationBlueprint = {
 
 export type SignalSummary = {
   has_trigger: boolean;
+  has_scheduled_trigger: boolean;
   has_repeated_process: boolean;
   has_external_action: boolean;
   has_sensitive_data: boolean;

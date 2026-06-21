@@ -170,6 +170,7 @@ export const safeAutomationBlueprintSchema = z
 export const signalSummarySchema = z
   .object({
     has_trigger: z.boolean(),
+    has_scheduled_trigger: z.boolean(),
     has_repeated_process: z.boolean(),
     has_external_action: z.boolean(),
     has_sensitive_data: z.boolean(),

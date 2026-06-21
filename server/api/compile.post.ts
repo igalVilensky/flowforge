@@ -9,6 +9,7 @@ import { scoreReadiness } from "../services/readinessScorer";
 import { scanRisks } from "../services/riskScanner";
 import { safeValidateCompileJob } from "../services/schemaValidator";
 import { scanSignals } from "../services/signalScanner";
+import { routeCompileRequest } from "../services/routerAgent";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
 
@@ -51,6 +52,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   const signals = scanSignals(trimmedInput);
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
+  const routerResult = await routeCompileRequest(trimmedInput, signals, risks, readiness, mode);
   const detectedPrimitiveSummary =
     signals.workflow_primitives.length > 0
       ? `Detected ${signals.workflow_primitives.join(", ")} primitives.`
@@ -104,11 +106,11 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
 
   const tokenUsage: TokenUsage = {
     mode,
-    llm_calls_used: 0,
+    llm_calls_used: routerResult.llm_calls_made,
     llm_calls_limit: llmCallLimits[mode],
     estimated_input_tokens: Math.max(1, Math.ceil(trimmedInput.length / 4)),
     rule_based_checks: 5,
-    skipped_ai_calls: llmCallLimits[mode],
+    skipped_ai_calls: mode === "demo" || mode === "rule_only" ? llmCallLimits[mode] : 0,
   };
 
   const compileJob: CompileJob = {
@@ -126,6 +128,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     risks,
     readiness,
     result,
+    router_decision: routerResult.decision,
     agent_trace: [
       {
         id: "trace_initialize",
@@ -137,6 +140,30 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         metadata: {
           provider_calls: 0,
           external_execution: false,
+        },
+      },
+      ...routerResult.attempts.map((attempt, index) => ({
+        id: `trace_router_${attempt.provider}_${index}`,
+        timestamp: new Date().toISOString(),
+        actor: attempt.provider === "deterministic" ? "system" as const : "llm" as const,
+        action: `Router attempt: ${attempt.provider}`,
+        status: attempt.success ? "completed" as const : (attempt.attempted ? "failed" as const : "skipped" as const),
+        reason: attempt.skipped_reason || attempt.error_summary,
+        metadata: {
+          validation_failed: attempt.validation_failed,
+        },
+      })),
+      {
+        id: "trace_router_decision",
+        timestamp: new Date().toISOString(),
+        actor: "compiler_agent",
+        action: "Router decision selected",
+        status: "completed",
+        output_summary: `Route: ${routerResult.decision.route} (${routerResult.decision.provider})`,
+        metadata: {
+          used_ai: routerResult.decision.used_ai,
+          fallback_used: routerResult.decision.fallback_used,
+          confidence: routerResult.decision.confidence,
         },
       },
       {
@@ -151,14 +178,6 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
           readiness_score: readiness.score,
           risk_count: risks.categories.length,
         },
-      },
-      {
-        id: "trace_skip_providers",
-        timestamp: now,
-        actor: "llm",
-        action: "Skipped AI provider calls",
-        status: "skipped",
-        reason: "The rule-based compiler does not call Groq, Gemini, OpenAI, or any external service.",
       },
     ],
     token_usage: tokenUsage,

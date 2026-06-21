@@ -2,10 +2,7 @@
 
 ## Current Milestone Note
 
-M6 is complete. FlowForge now shows the dynamic blueprint output visibly in the
-compiler UI, including trigger details, ordered steps, safety policies, risks,
-approval gates, dry-run cases, assumptions, and open questions. The generated
-preview remains deterministic, non-executing, and human-gated.
+M7 is complete. FlowForge now uses a Router Agent as its first AI decision point to evaluate the safety and clarity of the input. Groq is the primary provider, Gemini is the fallback, and deterministic rules act as the final fallback. No AI is used in demo or rule-only modes. No real execution is added.
 
 ## M0 - Project Setup And Documentation - Complete
 
@@ -169,22 +166,29 @@ Acceptance criteria:
 - different inputs visibly change the rendered blueprint
 - no API fields, schemas, providers, persistence, n8n export, or real execution are added
 
-## M7 - Workflow Architect
+## M7 - Router Agent And Fallbacks
 
-Goal: generate a structured safe automation blueprint.
+Status: complete.
+
+Goal: Add the first constrained AI decision point to FlowForge to decide what route the compiler should take, without generating the full blueprint with AI yet.
 
 Deliverables:
 
-- architect prompt
-- blueprint generation service
-- schema validation after generation
-- error handling
+- Router decision schema
+- Router agent service
+- Groq provider wrapper (primary)
+- Gemini provider wrapper (fallback)
+- Deterministic fallback logic
+- UI integration to display router decision
 
 Acceptance criteria:
 
-- clear input can produce a valid blueprint
-- vague input does not force a full blueprint
-- output includes boundary, steps, risks, gates, assumptions, and open questions
+- `demo` and `rule_only` modes make zero AI calls
+- `balanced` and `full` modes try Groq first, then Gemini, then deterministic fallback
+- Invalid provider output falls back safely
+- Compile endpoint still returns valid `CompileJob`
+- Router decision appears in UI compactly
+- No real execution or blueprint generation with AI added yet
 
 ## M8 - Blueprint Repair Loop
 

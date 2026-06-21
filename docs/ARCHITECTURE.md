@@ -24,14 +24,13 @@ Browser
   -> scanSignals(input)
   -> scanRisks(signals)
   -> scoreReadiness(signals, risks)
+  -> routeCompileRequest(input, signals, risks, readiness, mode)
   -> buildBlueprint(...)
   -> validate compile job with Zod
   -> safe non-executing preview
 ```
 
-The current compile endpoint is deterministic and rule-based. It does not call
-an AI provider, database, queue, n8n instance, email system, payment system, or
-external API.
+The current compile endpoint introduces the first constrained AI decision point via the Router Agent, but the blueprint building itself is still deterministic and rule-based. It does not execute workflows.
 
 ## Source Layout
 
@@ -49,8 +48,11 @@ server/
     blueprintBuilder.ts
     readinessScorer.ts
     riskScanner.ts
+    routerAgent.ts
     schemaValidator.ts
     signalScanner.ts
+    groqProvider.ts
+    geminiProvider.ts
   schemas/
     compileJob.schema.ts
     workflow.schema.ts
@@ -107,10 +109,10 @@ POST /api/compile
   -> scanSignals(input)
   -> scanRisks(signals)
   -> scoreReadiness(signals, risks)
+  -> routeCompileRequest(input, signals, risks, readiness, mode)
   -> buildBlueprint({ jobId, processInput, signals, risks, readiness })
   -> validate compile job with Zod
   -> return safe non-executing preview
-  -> report zero provider calls
 ```
 
 The blueprint builder is deterministic and rule-based for now. It uses detected
@@ -185,7 +187,8 @@ should never call LLM providers directly.
 
 ## Provider Strategy
 
-No provider is used through Milestone 5.
+Through Milestone 7, only a Router Agent is introduced to decide the route constraint.
+Groq is the primary provider for the Router Agent. Gemini is the fallback provider. If both fail or are missing, a deterministic fallback ensures the compilation completes.
 
 Future provider strategy:
 

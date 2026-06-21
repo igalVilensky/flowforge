@@ -149,13 +149,13 @@ const plainEnglishResult = computed(() => {
   }
 
   const hasGates = compiledBlueprint.value.human_approval_gates.length > 0;
-  const hasBlockedItems = compiledBlueprint.value.not_safe_to_automate.length > 0;
+  const isLowRisk = riskLevel.value === "low";
 
-  if (hasGates || hasBlockedItems) {
-    return `FlowForge can ${capabilityText.value}. It keeps risky actions behind human approval and does not execute anything.`;
+  if (isLowRisk && !hasGates) {
+    return `FlowForge can ${capabilityText.value}. It does not connect to email or task systems yet.`;
   }
 
-  return `FlowForge can ${capabilityText.value}. This remains a preview and does not execute external actions.`;
+  return `FlowForge can ${capabilityText.value}. It keeps risky actions behind human approval and does not execute anything.`;
 });
 
 const primaryDecision = computed(() => {
@@ -169,6 +169,14 @@ const primaryDecision = computed(() => {
 
   if (compiledBlueprint.value.automation_boundary === "human_approval_required") {
     return "Human approval required";
+  }
+
+  const isLowRisk = riskLevel.value === "low";
+  const hasGates = compiledBlueprint.value.human_approval_gates.length > 0;
+  const routerDecision = job.value?.router_decision?.route;
+
+  if (routerDecision === "compile_blueprint" && isLowRisk && !hasGates) {
+    return "Internal preview";
   }
 
   if (compiledBlueprint.value.automation_boundary === "assistant_only") {
@@ -320,8 +328,6 @@ onMounted(() => {
           <span class="ff-brand-mark">F</span>
           <span>FlowForge</span>
         </NuxtLink>
-
-```
     <nav class="ff-nav" aria-label="Primary navigation">
       <span class="ff-status ff-status-neutral">Compiler preview</span>
       <NuxtLink to="/" class="ff-toplink">Home</NuxtLink>
@@ -455,6 +461,21 @@ onMounted(() => {
             <span class="policy-badge policy-approval">Main approval</span>
             <strong>{{ primaryGate.label }}</strong>
             <span>{{ primaryGate.reason }}</span>
+          </div>
+        </div>
+      </article>
+
+      <article v-if="job?.router_decision" class="ff-tile router-tile">
+        <div class="ff-tile-inner router-inner">
+          <div class="router-main">
+            <p class="ff-kicker">Router decision</p>
+            <h2 class="ff-section-title">{{ job.router_decision.route }}</h2>
+            <p class="ff-copy">{{ job.router_decision.reason }}</p>
+            <p class="ff-copy"><small><strong>Next step:</strong> {{ job.router_decision.suggested_next_step }}</small></p>
+          </div>
+          <div class="router-metrics">
+            <span class="policy-badge">{{ job.router_decision.provider }} provider</span>
+            <span class="policy-badge">{{ job.router_decision.confidence }} confidence</span>
           </div>
         </div>
       </article>
@@ -816,8 +837,6 @@ onMounted(() => {
     </template>
   </section>
 </section>
-```
-
   </main>
 </template>
 
@@ -914,6 +933,7 @@ onMounted(() => {
 .error-tile,
 .result-state-tile,
 .decision-tile,
+.router-tile,
 .blueprint-section {
   grid-column: span 12;
 }
@@ -989,6 +1009,25 @@ onMounted(() => {
   grid-template-columns: minmax(0, 1fr) minmax(220px, 360px);
   gap: 18px;
   align-items: stretch;
+}
+
+.router-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+}
+
+.router-main {
+  display: grid;
+  gap: 8px;
+}
+
+.router-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
 }
 
 .primary-gate {
