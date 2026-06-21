@@ -1,6 +1,14 @@
 # FlowForge Milestones
 
-## M0 - Project Setup And Documentation
+## Current Milestone Note
+
+M5 is complete. FlowForge now builds the blueprint result dynamically from the
+submitted process input, rule-based signal scan, risk scan, and readiness score.
+The generated preview remains deterministic, non-executing, and human-gated.
+
+## M0 - Project Setup And Documentation - Complete
+
+Status: complete.
 
 Goal: prepare the repository for safe, incremental implementation.
 
@@ -23,6 +31,8 @@ Acceptance criteria:
 - no real provider calls, database, auth, n8n export, or execution
 
 ## M1 - Static Prototype
+
+Status: complete.
 
 Goal: build the compiler UI with fake data.
 
@@ -50,6 +60,8 @@ Acceptance criteria:
 
 ## M2 - Shared Schemas And Fixtures
 
+Status: complete.
+
 Goal: add runtime validation to the shared contracts.
 
 Deliverables:
@@ -67,6 +79,8 @@ Acceptance criteria:
 - schemas can be used by frontend and backend
 
 ## M3 - Rule-Based Signal Scanner
+
+Status: complete.
 
 Goal: implement deterministic signal scanning.
 
@@ -86,6 +100,8 @@ Acceptance criteria:
 
 ## M4 - Risk Scanner And Readiness Score
 
+Status: complete.
+
 Goal: detect sensitive automation risk and calculate an explainable readiness
 score.
 
@@ -104,24 +120,28 @@ Acceptance criteria:
 - returns score and reasons
 - does not call any LLM
 
-## M5 - Compile API Rule-Only Preview
+## M5 - Dynamic Blueprint Builder
 
-Goal: connect frontend and backend to real deterministic tools.
+Status: complete.
+
+Goal: replace the static blueprint preview with a deterministic builder that
+uses scanner output.
 
 Deliverables:
 
-- central compile job state
-- signal scanner integration
-- risk scanner integration
-- readiness score output
-- rule-only blueprint sketch
+- reusable `blueprintBuilder` service
+- dynamic workflow name and summary
+- dynamic workflow steps based on detected primitives
+- dynamic safety buckets, risk items, approval gates, and dry-run test cases
+- compile API integration with Zod validation
 
 Acceptance criteria:
 
-- user input produces a real rule-only backend result
-- vague input produces useful missing questions
-- risky input produces visible gates
-- no LLM is required
+- `/api/compile` calls `scanSignals`, `scanRisks`, `scoreReadiness`, and `buildBlueprint`
+- blueprint output changes based on detected primitives and risk categories
+- fixture validation passes
+- typecheck passes
+- no AI provider, database, auth, n8n export, or real execution is added
 
 ## M6 - Router Agent
 

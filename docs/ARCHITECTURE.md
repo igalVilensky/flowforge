@@ -2,7 +2,8 @@
 
 ## Current Architecture
 
-FlowForge starts as a Nuxt-only application.
+FlowForge is currently a Nuxt-only application with deterministic server-side
+compiler services.
 
 Nuxt provides:
 
@@ -11,7 +12,7 @@ Nuxt provides:
 - server routes for local API endpoints
 - a shared folder for reusable TypeScript contracts
 
-There is no separate backend service in Milestone 0.
+There is no separate backend service yet.
 
 ## Current Runtime
 
@@ -20,11 +21,17 @@ Browser
   -> Nuxt page at /
   -> Nuxt page at /compiler
   -> POST /api/compile
-  -> typed mock compile job
+  -> scanSignals(input)
+  -> scanRisks(signals)
+  -> scoreReadiness(signals, risks)
+  -> buildBlueprint(...)
+  -> validate compile job with Zod
+  -> safe non-executing preview
 ```
 
-The current compile endpoint is a placeholder. It does not call an AI provider,
-database, queue, n8n instance, email system, payment system, or external API.
+The current compile endpoint is deterministic and rule-based. It does not call
+an AI provider, database, queue, n8n instance, email system, payment system, or
+external API.
 
 ## Source Layout
 
@@ -38,6 +45,22 @@ app/
 server/
   api/
     compile.post.ts
+  services/
+    blueprintBuilder.ts
+    readinessScorer.ts
+    riskScanner.ts
+    schemaValidator.ts
+    signalScanner.ts
+  schemas/
+    compileJob.schema.ts
+    workflow.schema.ts
+  rules/
+    primitiveRules.ts
+    readinessRules.ts
+  fixtures/
+    validBlueprint.ts
+    validCompileJob.ts
+    invalidBlueprint.ts
 
 shared/
   types/
@@ -69,25 +92,42 @@ The shared types define the boundary between frontend and backend:
 - `TokenUsage`
 - `AgentTraceEvent`
 
-These types are intentionally TypeScript-only in Milestone 0. Runtime schemas
-can be added in a later milestone.
+Runtime Zod schemas validate the shared contracts for compile jobs, blueprints,
+signal summaries, risk summaries, and readiness scores. Fixtures are validated
+with `npm run validate:fixtures`.
 
-## Placeholder Compile Flow
+## Current Compile Flow
 
-Milestone 0 uses a synchronous mock endpoint:
+The compile endpoint is synchronous and rule-only:
 
 ```text
 POST /api/compile
-  -> validate input exists
-  -> validate mode if provided
-  -> detect simple placeholder risk hints
-  -> return a typed compile job
+  -> read process input
+  -> validate request mode
+  -> scanSignals(input)
+  -> scanRisks(signals)
+  -> scoreReadiness(signals, risks)
+  -> buildBlueprint({ jobId, processInput, signals, risks, readiness })
+  -> validate compile job with Zod
+  -> return safe non-executing preview
   -> report zero provider calls
 ```
 
-The response demonstrates the intended safety posture:
+The blueprint builder is deterministic and rule-based for now. It uses detected
+workflow primitives, risk categories, missing critical information, and readiness
+score to generate:
 
-- classification is safe to automate
+- workflow name and summary
+- workflow steps
+- safe, approval, not-recommended, and blocked safety buckets
+- risk items
+- human approval gates
+- dry-run test cases
+- assumptions and open questions
+
+The response demonstrates the current safety posture:
+
+- classification, extraction, risk detection, and internal routing can be automated when appropriate
 - drafting is safe as draft-only output
 - external communication needs human approval
 - sensitive or high-stakes decisions need human approval
@@ -95,7 +135,7 @@ The response demonstrates the intended safety posture:
 
 ## Future Compiler Architecture
 
-Future milestones can evolve the mock endpoint into a real compiler flow:
+Future milestones can evolve the rule-only endpoint into a richer compiler flow:
 
 ```text
 User input
@@ -124,7 +164,7 @@ server/
     compilerAgent.ts
     signalScanner.ts
     riskScanner.ts
-    readinessScore.ts
+    readinessScorer.ts
     routerAgent.ts
     workflowArchitect.ts
     schemaValidator.ts
@@ -145,7 +185,7 @@ should never call LLM providers directly.
 
 ## Provider Strategy
 
-No provider is used in Milestone 0.
+No provider is used through Milestone 5.
 
 Future provider strategy:
 

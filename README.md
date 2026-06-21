@@ -13,20 +13,24 @@ FlowForge does not blindly automate every request. It finds the safest useful
 automation boundary: what can be automated, what needs human approval, what is
 not recommended, and what must not execute automatically.
 
-## Current Milestone
+## Current Status
 
-This repository is at Milestone 0: project setup and documentation.
+This repository has completed Milestone 5: Dynamic Blueprint Builder.
 
-Milestone 0 includes:
+Implemented so far:
 
 - Nuxt 4, Vue 3, and TypeScript scaffold
-- Landing page at `/`
-- Compiler preview page at `/compiler`
-- Placeholder `POST /api/compile` endpoint
+- Tile-based UI prototype at `/compiler`
 - Shared TypeScript types for workflow blueprints, compile jobs, and agent trace events
+- Zod schema validation for blueprints, compile jobs, scanner output, and readiness scores
+- Fixture validation through `npm run validate:fixtures`
+- Rule-based signal scanning with workflow primitive detection
+- Risk scanning for sensitive automation categories
+- Readiness scoring with explainable strengths and weaknesses
+- Deterministic dynamic blueprint building from input, signals, risks, and readiness
 - Product, architecture, milestone, demo, and Codex workflow documentation
 
-Milestone 0 intentionally does not include:
+This milestone intentionally does not include:
 
 - Real LLM calls
 - Groq, Gemini, OpenAI, or other provider integration
@@ -39,7 +43,7 @@ Milestone 0 intentionally does not include:
 
 ## Safety Boundary
 
-The placeholder blueprint demonstrates the core FlowForge rule:
+The dynamic blueprint preview demonstrates the core FlowForge rule:
 
 - Classification can be automated.
 - Drafting can be automated as draft-only output.
@@ -57,10 +61,8 @@ external communication that affects real people.
 - Vue 3
 - TypeScript
 - Nuxt server routes
+- Zod
 - npm
-
-Future milestones may add schema validation, deterministic scanner tools, and
-isolated AI provider services. Those are not implemented in Milestone 0.
 
 ## Local Development
 
@@ -83,7 +85,13 @@ http://localhost:3000
 http://localhost:3000/compiler
 ```
 
-Call the placeholder compile API:
+Run fixture validation:
+
+```bash
+npm run validate:fixtures
+```
+
+Call the deterministic compile API:
 
 ```bash
 curl -X POST http://localhost:3000/api/compile \
@@ -111,6 +119,22 @@ flowforge/
   server/
     api/
       compile.post.ts
+    services/
+      blueprintBuilder.ts
+      signalScanner.ts
+      riskScanner.ts
+      readinessScorer.ts
+      schemaValidator.ts
+    fixtures/
+      validBlueprint.ts
+      validCompileJob.ts
+      invalidBlueprint.ts
+    schemas/
+      workflow.schema.ts
+      compileJob.schema.ts
+    rules/
+      primitiveRules.ts
+      readinessRules.ts
   shared/
     types/
       workflow.ts
@@ -126,8 +150,9 @@ automation product in one pass.
 Recommended next milestone:
 
 ```text
-Milestone 1 - Static Prototype
+Milestone 6 - Router Agent
 ```
 
-That milestone should build the UI with fake data only. Real scanners,
-providers, persistence, n8n export, and execution remain future work.
+That milestone should add the first constrained LLM decision point only if the
+milestone explicitly authorizes provider work. Persistence, authentication, n8n
+export, and real workflow execution remain future work.

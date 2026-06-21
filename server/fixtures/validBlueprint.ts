@@ -1,188 +1,20 @@
 import type { SafeAutomationBlueprint } from "../../shared/types/workflow";
+import { buildBlueprint } from "../services/blueprintBuilder";
+import { scoreReadiness } from "../services/readinessScorer";
+import { scanRisks } from "../services/riskScanner";
+import { scanSignals } from "../services/signalScanner";
 
-export const validBlueprint: SafeAutomationBlueprint = {
-  id: "blueprint_fixture_support_triage",
-  workflow_name: "Support Refund Triage",
-  summary: "Classify refund requests, draft internal notes, and require approval before any external action.",
-  automation_boundary: "human_approval_required",
-  trigger: {
-    type: "incoming_message",
-    source: "support_inbox",
-    description: "A customer sends a refund request to the support inbox.",
-  },
-  steps: [
-    {
-      id: "intake_message",
-      label: "Intake message",
-      description: "Capture the incoming request and normalize it for review.",
-      primitive: "intake",
-      actor: "system",
-      input: "Incoming customer message",
-      output: "Normalized support request",
-      automation_policy: "automate",
-      approval_required: false,
-      risk_level: "low",
-      risk_categories: [],
-      real_world_execution: "none",
-    },
-    {
-      id: "classify_refund_reason",
-      label: "Classify refund reason",
-      description: "Identify the refund category and whether the message contains complaint language.",
-      primitive: "classification",
-      actor: "rules_and_ai",
-      input: "Normalized support request",
-      output: "Refund category and complaint flag",
-      automation_policy: "automate",
-      approval_required: false,
-      risk_level: "medium",
-      risk_categories: ["refund_or_payment", "complaint_or_angry_user"],
-      real_world_execution: "none",
-    },
-    {
-      id: "draft_support_reply",
-      label: "Draft support reply",
-      description: "Prepare a response for a support agent without sending it.",
-      primitive: "drafting",
-      actor: "ai",
-      input: "Refund category and request details",
-      output: "Draft-only customer reply",
-      automation_policy: "draft_only",
-      approval_required: false,
-      risk_level: "medium",
-      risk_categories: ["external_communication", "refund_or_payment"],
-      real_world_execution: "draft_only",
-    },
-    {
-      id: "approve_customer_message",
-      label: "Approve customer message",
-      description: "A support agent reviews and decides whether to send the draft.",
-      primitive: "approval",
-      actor: "human",
-      input: "Draft-only customer reply",
-      output: "Human approval decision",
-      automation_policy: "human_approval",
-      approval_required: true,
-      risk_level: "medium",
-      risk_categories: ["external_communication", "refund_or_payment"],
-      real_world_execution: "requires_human_trigger",
-    },
-    {
-      id: "block_payment_action",
-      label: "Block payment action",
-      description: "Prevent automatic refunds, charges, account updates, or destructive actions.",
-      primitive: "validation",
-      actor: "system",
-      input: "Approved response plan",
-      output: "Non-executing blueprint result",
-      automation_policy: "blocked_in_mvp",
-      approval_required: true,
-      risk_level: "high",
-      risk_categories: ["financial", "refund_or_payment", "real_world_execution"],
-      real_world_execution: "blocked_in_mvp",
-    },
-  ],
-  safe_to_automate: [
-    "Message intake",
-    "Internal classification",
-    "Risk flag detection",
-    "Draft-only support replies",
-  ],
-  needs_human_approval: [
-    "Any customer-facing message before it is sent",
-    "Any refund, payment, or account decision",
-    "Any step that would update a real system",
-  ],
-  not_recommended: [
-    "Treating the draft reply as an approved response",
-    "Letting AI decide refund eligibility without a human owner",
-  ],
-  not_safe_to_automate: [
-    "Automatically sending the customer reply",
-    "Automatically issuing or denying a refund",
-    "Changing account or payment records from the MVP blueprint",
-  ],
-  risks: [
-    {
-      id: "risk_external_message",
-      label: "Customer-facing message",
-      category: "external_communication",
-      risk_level: "medium",
-      reason: "A message sent to a customer can create commitments or misunderstandings.",
-      recommendation: "Keep the reply draft-only until a support agent approves it.",
-      step_ids: ["draft_support_reply", "approve_customer_message"],
-    },
-    {
-      id: "risk_refund_payment",
-      label: "Refund or payment decision",
-      category: "refund_or_payment",
-      risk_level: "medium",
-      reason: "Refund decisions affect customer funds and company policy.",
-      recommendation: "Require a human decision before any refund outcome is communicated or executed.",
-      step_ids: ["classify_refund_reason", "approve_customer_message", "block_payment_action"],
-    },
-    {
-      id: "risk_real_execution",
-      label: "Real-world execution",
-      category: "real_world_execution",
-      risk_level: "high",
-      reason: "The MVP must not trigger external systems automatically.",
-      recommendation: "Block execution and export only a reviewed blueprint.",
-      step_ids: ["block_payment_action"],
-    },
-  ],
-  human_approval_gates: [
-    {
-      id: "gate_customer_reply",
-      label: "Review customer reply",
-      required: true,
-      applies_to_step_ids: ["draft_support_reply", "approve_customer_message"],
-      reason: "External communication must be checked by an accountable human.",
-      review_checklist: [
-        "Confirm the recipient and request context.",
-        "Check refund policy and tone.",
-        "Remove unnecessary personal data.",
-        "Send only after the support agent chooses to proceed.",
-      ],
-    },
-    {
-      id: "gate_no_payment_execution",
-      label: "Confirm no payment execution",
-      required: true,
-      applies_to_step_ids: ["block_payment_action"],
-      reason: "Payment actions are outside the MVP execution boundary.",
-      review_checklist: [
-        "Do not connect payment credentials.",
-        "Do not issue, deny, or reverse a refund automatically.",
-        "Record execution as blocked in the blueprint.",
-      ],
-    },
-  ],
-  test_cases: [
-    {
-      id: "dry_run_simple_refund",
-      name: "Simple refund request",
-      input_event: "A customer asks if they can receive a refund for a duplicate charge.",
-      expected_route: "draft_reply_for_human_review",
-      expected_human_gate: true,
-      reason: "The system may draft a response, but the final decision and sending require review.",
-    },
-    {
-      id: "dry_run_internal_label",
-      name: "Internal classification only",
-      input_event: "A manager asks to label refund requests by category for a weekly report.",
-      expected_route: "classification_only",
-      expected_human_gate: false,
-      reason: "Internal labeling does not send messages or execute payment actions.",
-    },
-  ],
-  assumptions: [
-    "The inbox message is available as text.",
-    "The support agent remains responsible for customer communication.",
-    "No external payment or account system is connected in this milestone.",
-  ],
-  open_questions: [
-    "Which refund policy source should reviewers consult?",
-    "Which support roles may approve customer-facing replies?",
-  ],
-};
+export const validBlueprintInput =
+  "When a customer asks for a refund, classify the reason, draft a reply, and route payment decisions to a human.";
+
+export const validBlueprintSignals = scanSignals(validBlueprintInput);
+export const validBlueprintRisks = scanRisks(validBlueprintSignals);
+export const validBlueprintReadiness = scoreReadiness(validBlueprintSignals, validBlueprintRisks);
+
+export const validBlueprint: SafeAutomationBlueprint = buildBlueprint({
+  jobId: "compile_fixture_support_triage",
+  processInput: validBlueprintInput,
+  signals: validBlueprintSignals,
+  risks: validBlueprintRisks,
+  readiness: validBlueprintReadiness,
+});

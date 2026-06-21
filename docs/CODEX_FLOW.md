@@ -52,13 +52,19 @@ Codex should:
 - prefer deterministic logic before LLM calls
 - keep provider integrations isolated on the server
 - keep shared contracts clear and typed
+- keep API output shape stable
+- preserve existing snake_case API fields
+- run schema validation for compile responses
+- run fixture validation with `npm run validate:fixtures`
+- run typecheck with `npm run typecheck`
+- update docs when a milestone changes architecture or current state
 - add tests when behavior becomes real
 - run available checks before finishing
 - explain what changed and what remains deferred
 
 Codex should not:
 
-- add real provider calls in Milestone 0 or Milestone 1
+- add AI providers unless the milestone explicitly says so
 - add a database before persistence is explicitly requested
 - add authentication before user accounts are in scope
 - add n8n import or export before the export milestone
