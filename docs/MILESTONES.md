@@ -2,9 +2,10 @@
 
 ## Current Milestone Note
 
-M5 is complete. FlowForge now builds the blueprint result dynamically from the
-submitted process input, rule-based signal scan, risk scan, and readiness score.
-The generated preview remains deterministic, non-executing, and human-gated.
+M6 is complete. FlowForge now shows the dynamic blueprint output visibly in the
+compiler UI, including trigger details, ordered steps, safety policies, risks,
+approval gates, dry-run cases, assumptions, and open questions. The generated
+preview remains deterministic, non-executing, and human-gated.
 
 ## M0 - Project Setup And Documentation - Complete
 
@@ -143,24 +144,30 @@ Acceptance criteria:
 - typecheck passes
 - no AI provider, database, auth, n8n export, or real execution is added
 
-## M6 - Router Agent
+## M6 - Visible Blueprint Output
 
-Goal: add the first constrained LLM decision point.
+Status: complete.
+
+Goal: make the generated blueprint visible and understandable in `/compiler`.
 
 Deliverables:
 
-- router prompt
-- router schema
-- router service
-- fallback route
-- frontend router display
+- visible compiled workflow section
+- trigger and automation boundary display
+- ordered workflow step plan with safety policy labels
+- user-facing risk cards
+- visible approval gates with review checklists
+- visible dry-run test cases
+- assumptions and open questions section
+- technical details kept secondary
 
 Acceptance criteria:
 
-- returns strict route JSON
-- can choose compile, clarify, safer workflow, assistant mode, or reject
-- fallback works when provider calls fail
-- token budget records the call
+- workflow name, summary, trigger, and boundary are visible after compile
+- generated steps show primitive, actor, automation policy, risk, approval, and execution policy
+- risks, gates, dry runs, assumptions, and open questions are visible outside technical details
+- different inputs visibly change the rendered blueprint
+- no API fields, schemas, providers, persistence, n8n export, or real execution are added
 
 ## M7 - Workflow Architect
 
