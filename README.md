@@ -15,7 +15,7 @@ not recommended, and what must not execute automatically.
 
 ## Current Status
 
-This repository has completed Milestone 7: Router Agent.
+This repository has completed Milestone 8: Visible Agent Run / Compile Progress UX.
 
 Implemented so far:
 
@@ -30,17 +30,24 @@ Implemented so far:
 - Readiness scoring with explainable strengths and weaknesses
 - Deterministic dynamic blueprint building from input, signals, risks, and readiness
 - Router Agent for evaluating safety and deciding compilation routes via Groq with Gemini fallback
+- Manual compile start in `/compiler`; the page does not auto-run on load
+- Visible compile progress with a readable staged frontend agent-run replay
+- Visible AI router explanation covering router role, inputs, output, provider path, and deterministic boundary
+- Deterministic fallback routing when provider keys are missing or provider calls fail
+- Expandable full text for long process, trigger, dry-run, router, and trace text
 - Product, architecture, milestone, demo, and Codex workflow documentation
 
 This milestone intentionally does not include:
 
-- Generating full blueprints with AI (only routing so far)
+- Generating full blueprints with AI; AI is currently used only for router decisions in `balanced` and `full` modes
 - Persistent storage
 - Authentication
 - n8n import or export
 - Real workflow execution
 - Background jobs
 - Deployment configuration
+
+Blueprint generation remains deterministic. Groq is the primary router provider, Gemini is the fallback router provider, and deterministic fallback always exists. The visible compile replay is frontend-only; the backend still returns one compile response and does not stream progress.
 
 ## Safety Boundary
 
@@ -92,6 +99,12 @@ Run fixture validation:
 npm run validate:fixtures
 ```
 
+Run typecheck:
+
+```bash
+npm run typecheck
+```
+
 Call the deterministic compile API:
 
 ```bash
@@ -99,6 +112,18 @@ curl -X POST http://localhost:3000/api/compile \
   -H "Content-Type: application/json" \
   -d '{"input":"When a customer asks for a refund, classify the request and draft a reply for human review.","mode":"demo"}'
 ```
+
+## Router And Compile UX Testing
+
+Test the compiler UI and `/api/compile` across these routing paths:
+
+- demo mode: AI router skipped, deterministic routing, deterministic blueprint builder, `0 / 0` LLM calls
+- balanced/full with Groq available: Groq handles the router decision, blueprint generation remains deterministic
+- balanced/full with Groq failing and Gemini available: Gemini handles fallback routing, blueprint generation remains deterministic
+- balanced/full with missing provider keys: Groq and Gemini are skipped, deterministic fallback keeps compile successful
+- balanced/full with failed configured providers: failed HTTP attempts count as LLM calls, deterministic fallback keeps compile successful
+
+The `/compiler` page should open in an idle ready state with no automatic API request. After clicking `Compile preview`, it should show a staged compile replay even when the API responds quickly. The previous result remains visible and marked as updating until the staged replay finishes. Long process, trigger, dry-run, router, and trace text should expose a `Show full` option when collapsed.
 
 ## Project Structure
 
@@ -154,7 +179,7 @@ automation product in one pass.
 Recommended next milestone:
 
 ```text
-Milestone 8 - Blueprint Repair Loop
+Milestone 9 - Blueprint Repair Loop
 ```
 
 Persistence, authentication, n8n export, and real workflow execution remain future work.

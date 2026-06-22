@@ -2,8 +2,8 @@
 
 ## Current Architecture
 
-FlowForge is currently a Nuxt-only application with deterministic server-side
-compiler services.
+FlowForge is currently a Nuxt-only application with deterministic compiler
+services plus a constrained Router Agent for the first AI decision point.
 
 Nuxt provides:
 
@@ -100,7 +100,7 @@ with `npm run validate:fixtures`.
 
 ## Current Compile Flow
 
-The compile endpoint is synchronous and rule-only:
+The compile endpoint is synchronous. It may use an AI provider only for the Router Agent in `balanced` and `full` modes; scanner output, readiness scoring, blueprint building, and schema validation remain deterministic:
 
 ```text
 POST /api/compile
@@ -110,7 +110,7 @@ POST /api/compile
   -> scanRisks(signals)
   -> scoreReadiness(signals, risks)
   -> routeCompileRequest(input, signals, risks, readiness, mode)
-  -> buildBlueprint({ jobId, processInput, signals, risks, readiness })
+  -> buildBlueprint({ jobId, processInput, signals, risks, readiness, mode })
   -> validate compile job with Zod
   -> return safe non-executing preview
 ```
@@ -134,6 +134,56 @@ The response demonstrates the current safety posture:
 - external communication needs human approval
 - sensitive or high-stakes decisions need human approval
 - real-world execution is blocked in the MVP
+
+## Compile UX Flow
+
+The `/compiler` page adds a visible agent-run experience around the synchronous compile endpoint.
+
+```text
+Page opens
+  -> frontend shows an idle ready state
+  -> no compile request is sent
+  -> no result is generated
+
+User clicks Compile preview
+  -> frontend starts a staged compile replay
+  -> frontend sends one POST /api/compile request
+  -> backend returns one CompileJob response
+  -> frontend waits for both the response and staged replay
+  -> frontend reveals the completed result
+```
+
+The staged progress replay is frontend-only UX. It is intentionally slower than a fast local API response so users can read each stage, but it does not slow the backend:
+
+- prepare the local compile job
+- scan process signals with deterministic rules
+- review safety boundaries with deterministic rules
+- route the request server-side
+- choose Groq, Gemini fallback, or deterministic routing
+- build the deterministic non-executing blueprint preview
+- validate the compile job schema
+
+There is no SSE, WebSocket, backend streaming, background job runner, or real-world execution in this milestone. The staged UI is a visual explanation of the compile pipeline, not proof that each backend step is streaming live.
+
+When a previous result exists, the frontend keeps it visible, marks it as updating, and applies the new result only after the replay finishes. Technical trace remains collapsed by default.
+
+The server response provides the real post-run summary:
+
+- `router_decision` shows route, confidence, provider, AI usage, and fallback usage
+- `token_usage` shows LLM calls used and the mode-specific limit
+- `agent_trace` shows provider attempts, skipped calls, failures, and fallback behavior
+- `steps` summarizes deterministic pipeline steps
+
+The visible AI router explanation uses that response to show:
+
+- AI is used only for the server-side router decision in `balanced` and `full` modes
+- Groq is the primary router provider
+- Gemini is the fallback router provider
+- deterministic fallback always exists
+- missing provider keys are skipped, not counted as LLM calls
+- actual configured provider calls are counted whether they succeed, fail, return invalid JSON, or fail schema validation
+- the blueprint builder remains deterministic after the router decision
+- the staged UI progress is not real execution
 
 ## Future Compiler Architecture
 
@@ -187,8 +237,16 @@ should never call LLM providers directly.
 
 ## Provider Strategy
 
-Through Milestone 7, only a Router Agent is introduced to decide the route constraint.
-Groq is the primary provider for the Router Agent. Gemini is the fallback provider. If both fail or are missing, a deterministic fallback ensures the compilation completes.
+Only the Router Agent can use AI today. Groq is the primary provider for the Router Agent. Gemini is the fallback provider. If both fail, return invalid output, or are missing, a deterministic fallback ensures the compilation completes.
+
+Provider accounting:
+
+- missing `GROQ_API_KEY` or `GEMINI_API_KEY` is recorded as a skipped provider attempt
+- missing keys do not increment `llm_calls_made`
+- actual provider HTTP calls increment `llm_calls_made` immediately before the request
+- failed provider HTTP calls still count as LLM call attempts
+- invalid JSON or schema validation failures from a configured provider still count as LLM call attempts
+- deterministic fallback keeps `/api/compile` successful when provider routing cannot be used
 
 Future provider strategy:
 

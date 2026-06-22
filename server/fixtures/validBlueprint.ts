@@ -17,4 +17,5 @@ export const validBlueprint: SafeAutomationBlueprint = buildBlueprint({
   signals: validBlueprintSignals,
   risks: validBlueprintRisks,
   readiness: validBlueprintReadiness,
+  mode: "demo",
 });

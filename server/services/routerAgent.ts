@@ -1,3 +1,4 @@
+import process from "node:process";
 import type { CompileMode, RouterDecision } from "../../shared/types/compileJob";
 import type { AutomationReadinessScore, RiskSummary, SignalSummary } from "../../shared/types/workflow";
 import { buildRouterUserPrompt, routerSystemPrompt } from "../prompts/routerPrompt";
@@ -112,40 +113,59 @@ export async function routeCompileRequest(
 
   const prompt = buildRouterUserPrompt(input, signals, risks, readiness);
 
-  // 1. Try Groq
-  let groqFailed = false;
-  try {
-    llm_calls_made++;
-    const groqResponse = await callGroq(prompt, routerSystemPrompt);
-    const parsed = safeParseJSON(groqResponse);
-    const valid = routerDecisionSchema.parse({
-      ...parsed as any,
-      provider: "groq",
-      used_ai: true,
-      fallback_used: false,
-    });
-    
+  const groqApiKey = process.env.GROQ_API_KEY;
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+
+  // 1. Try Groq when configured.
+  if (!groqApiKey) {
     attempts.push({
       provider: "groq",
-      attempted: true,
-      success: true,
+      attempted: false,
+      success: false,
+      skipped_reason: "GROQ_API_KEY is not set.",
       validation_failed: false,
     });
-    
-    return { decision: valid, attempts, llm_calls_made };
-  } catch (error) {
-    groqFailed = true;
-    attempts.push({
-      provider: "groq",
-      attempted: true,
-      success: false,
-      error_summary: error instanceof Error ? error.message : "Unknown error",
-      validation_failed: error instanceof Error && error.name === "ZodError",
-    });
+  } else {
+    try {
+      llm_calls_made++;
+      const groqResponse = await callGroq(prompt, routerSystemPrompt);
+      const parsed = safeParseJSON(groqResponse);
+      const valid = routerDecisionSchema.parse({
+        ...parsed as any,
+        provider: "groq",
+        used_ai: true,
+        fallback_used: false,
+      });
+
+      attempts.push({
+        provider: "groq",
+        attempted: true,
+        success: true,
+        validation_failed: false,
+      });
+
+      return { decision: valid, attempts, llm_calls_made };
+    } catch (error) {
+      attempts.push({
+        provider: "groq",
+        attempted: true,
+        success: false,
+        error_summary: error instanceof Error ? error.message : "Unknown error",
+        validation_failed: error instanceof Error && error.name === "ZodError",
+      });
+    }
   }
 
-  // 2. Try Gemini
-  if (groqFailed) {
+  // 2. Try Gemini when configured.
+  if (!geminiApiKey) {
+    attempts.push({
+      provider: "gemini",
+      attempted: false,
+      success: false,
+      skipped_reason: "GEMINI_API_KEY is not set.",
+      validation_failed: false,
+    });
+  } else {
     try {
       llm_calls_made++;
       const geminiResponse = await callGemini(prompt, routerSystemPrompt);

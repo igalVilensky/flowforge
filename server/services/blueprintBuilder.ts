@@ -235,14 +235,8 @@ function buildStep(definition: StepDefinition): WorkflowStep {
   };
 }
 
-function truncateForPreview(input: string): string {
-  const normalized = input.replace(/\s+/g, " ").trim();
-
-  if (normalized.length <= 180) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, 177)}...`;
+function normalizeForPreview(input: string): string {
+  return input.replace(/\s+/g, " ").trim();
 }
 
 function joinList(items: readonly string[]): string {
@@ -450,7 +444,7 @@ function buildSummary(signals: SignalSummary, risks: RiskSummary, readiness: Aut
 
 function inferTrigger(processInput: string, signals: SignalSummary): WorkflowTrigger {
   const normalizedInput = processInput.toLowerCase();
-  const preview = truncateForPreview(processInput);
+  const preview = normalizeForPreview(processInput);
 
   if (normalizedInput.includes("webhook") || normalizedInput.includes("api")) {
     return {
@@ -1110,7 +1104,7 @@ function buildDryRunTestCases(processInput: string, risks: RiskSummary): DryRunT
     testCases.push({
       id: "dry_run_non_executing_preview",
       name: "Non-executing preview",
-      input_event: truncateForPreview(processInput),
+      input_event: normalizeForPreview(processInput),
       expected_route: "compile_light_blueprint",
       expected_human_gate: false,
       reason: "The rule-based scanner did not detect obvious risk flags, and the MVP still returns a preview only.",
@@ -1161,7 +1155,7 @@ function buildDryRunTestCases(processInput: string, risks: RiskSummary): DryRunT
   testCases.push({
     id: "dry_run_sensitive_review",
     name: "Sensitive risk request",
-    input_event: truncateForPreview(processInput),
+    input_event: normalizeForPreview(processInput),
     expected_route: "suggest_safer_workflow",
     expected_human_gate: true,
     reason: "Detected risk categories require human review before any real-world action.",

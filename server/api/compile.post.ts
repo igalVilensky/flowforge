@@ -123,7 +123,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     llm_calls_limit: llmCallLimits[mode],
     estimated_input_tokens: Math.max(1, Math.ceil(trimmedInput.length / 4)),
     rule_based_checks: 5,
-    skipped_ai_calls: mode === "demo" || mode === "rule_only" ? llmCallLimits[mode] : 0,
+    skipped_ai_calls: routerResult.attempts.filter((attempt) => {
+      return attempt.provider !== "deterministic" && !attempt.attempted;
+    }).length,
   };
 
   const compileJob: CompileJob = {

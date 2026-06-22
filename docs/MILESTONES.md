@@ -2,7 +2,7 @@
 
 ## Current Milestone Note
 
-M7 is complete. FlowForge now uses a Router Agent as its first AI decision point to evaluate the safety and clarity of the input. Groq is the primary provider, Gemini is the fallback, and deterministic rules act as the final fallback. No AI is used in demo or rule-only modes. No real execution is added.
+M8 is complete. FlowForge now starts `/compiler` in an idle ready state, waits for the user to click `Compile preview`, then shows a readable frontend-only compile replay with a first-class AI router explanation. The backend still returns one compile response; no streaming, real-world execution, database, auth, or n8n export has been added.
 
 ## M0 - Project Setup And Documentation - Complete
 
@@ -190,7 +190,42 @@ Acceptance criteria:
 - Router decision appears in UI compactly
 - No real execution or blueprint generation with AI added yet
 
-## M8 - Blueprint Repair Loop
+## M8 - Visible Agent Run / Compile Progress UX
+
+Status: complete.
+
+Goal: make the compile process feel like a visible agent run while keeping the backend synchronous and safe.
+
+Deliverables:
+
+- no automatic compile on page load
+- compile starts only after the user clicks `Compile preview`
+- compile run panel near the top of `/compiler`
+- frontend-only staged replay for prepare, signal scan, safety review, routing, provider decision, blueprint build, and schema validation
+- readable stage timing for fast responses, around 7 to 10 seconds total
+- previous result remains visible and marked as updating while a new compile replay runs
+- visible AI router explanation without opening Technical trace
+- provider path explanation for Groq, Gemini fallback, skipped AI, and deterministic fallback
+- readable router labels for route, provider, and confidence
+- expandable full-text behavior for long process, trigger, dry-run, router, and trace text
+- deterministic blueprint generation clearly labeled
+- no backend streaming added
+- no real execution added
+
+Acceptance criteria:
+
+- [x] Page does not auto-compile on load
+- [x] Compile run appears immediately after click
+- [x] Stages remain visible long enough to read
+- [x] Previous result is marked as updating
+- [x] AI/router explanation is visible without Technical trace
+- [x] Groq/Gemini/deterministic provider path is understandable
+- [x] Truncated long text has Show full behavior
+- [x] Blueprint generation is labeled deterministic
+- [x] Typecheck passes
+- [x] Fixture validation passes
+
+## M9 - Blueprint Repair Loop
 
 Goal: repair invalid structured outputs once before failing clearly.
 
@@ -207,7 +242,7 @@ Acceptance criteria:
 - repair attempts appear in the agent trace
 - unrepaired failures are visible and understandable
 
-## M9 - Safety Critic And Approval Gates
+## M10 - Safety Critic And Approval Gates
 
 Goal: review unsafe automation boundaries and generate explicit gates.
 
@@ -225,7 +260,7 @@ Acceptance criteria:
 - unsafe automation boundaries are clearly explained
 - gates include review checklists
 
-## M10 - Dry Runs And Exports
+## M11 - Dry Runs And Exports
 
 Goal: create test cases and exportable implementation plans.
 
@@ -243,7 +278,7 @@ Acceptance criteria:
 - exports are clearly marked as non-executing plans
 - no direct n8n import is required yet
 
-## M11 - Agent Trace And Token Budget UI
+## M12 - Agent Trace And Token Budget UI
 
 Goal: make the compiler process observable.
 

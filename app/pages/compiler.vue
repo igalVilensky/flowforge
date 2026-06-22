@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CompileJob, CompileMode } from "../../shared/types/compileJob";
+import type { CompileJob, CompileMode, RouterDecision } from "../../shared/types/compileJob";
 import type {
   HumanApprovalGate,
   RiskItem,
@@ -43,11 +43,92 @@ const modes: Array<{ label: string; value: CompileMode }> = [
   { label: "Full", value: "full" },
 ];
 
-const processInput = ref(examples[0]?.value ?? "");
+type CompileStage = {
+  id: string;
+  label: string;
+  description: string;
+  durationMs: number;
+  demoDescription?: string;
+  aiDescription?: string;
+};
+
+type CompileRunState = "idle" | "running" | "finishing" | "complete" | "failed";
+
+type TextDisplayItem = {
+  label: string;
+  value: string;
+};
+
+type ProviderAttemptDisplay = {
+  provider: string;
+  status: string;
+  detail: string;
+};
+
+const FINAL_STAGE_HOLD_MS = 600;
+const PREVIEW_TEXT_LIMIT = 180;
+const routerRoleCopy = "AI is used only to choose the routing decision. It does not generate or execute the blueprint.";
+const deterministicBoundaryCopy = "Blueprint generation remained deterministic after the router decision.";
+
+const compileStages: CompileStage[] = [
+  {
+    id: "prepare",
+    label: "Prepare job",
+    durationMs: 900,
+    description: "Reading the process description and creating a local compile job.",
+  },
+  {
+    id: "signals",
+    label: "Scan signals",
+    durationMs: 1100,
+    description: "Detecting trigger, repeated process shape, outputs, and workflow primitives.",
+  },
+  {
+    id: "risks",
+    label: "Review safety",
+    durationMs: 1200,
+    description: "Checking external actions, sensitive data, high-stakes decisions, and execution risk.",
+  },
+  {
+    id: "router",
+    label: "Route request",
+    durationMs: 1300,
+    description: "Choosing whether this should compile, ask for clarification, or suggest a safer workflow.",
+  },
+  {
+    id: "provider",
+    label: "Provider decision",
+    durationMs: 1600,
+    description: "Selecting router provider strategy.",
+    demoDescription: "AI router is skipped in this mode. Deterministic routing will be used.",
+    aiDescription: "Trying Groq first. Gemini can be used as fallback.",
+  },
+  {
+    id: "blueprint",
+    label: "Build blueprint",
+    durationMs: 1200,
+    description: "Building the deterministic non-executing blueprint preview.",
+  },
+  {
+    id: "validate",
+    label: "Validate output",
+    durationMs: 900,
+    description: "Validating the compile job schema before showing results.",
+  },
+];
+
+const processInput = ref("");
 const mode = ref<CompileMode>("demo");
 const job = ref<CompileJob | null>(null);
+const pendingJob = ref<CompileJob | null>(null);
 const isCompiling = ref(false);
+const activeCompileStageIndex = ref(0);
+const compileRunState = ref<CompileRunState>("idle");
+const compileReplayFinished = ref(false);
 const errorMessage = ref("");
+
+let compileRunToken = 0;
+const compileReplayTimers = new Set<number>();
 
 const expandedSteps = ref<Record<string, boolean>>({});
 const expandedRisks = ref<Record<string, boolean>>({});
@@ -68,6 +149,270 @@ const activeExample = computed(() => {
 const compiledBlueprint = computed(() => job.value?.result ?? null);
 const gateCount = computed(() => compiledBlueprint.value?.human_approval_gates.length ?? 0);
 const riskLevel = computed<RiskLevel>(() => job.value?.risks?.risk_level ?? "medium");
+const routerDecision = computed(() => job.value?.router_decision ?? null);
+
+const activeCompileMode = computed<CompileMode>(() => {
+  if (isCompiling.value) {
+    return mode.value;
+  }
+
+  return job.value?.mode ?? mode.value;
+});
+const compileRunVisible = computed(() => compileRunState.value !== "idle" || Boolean(job.value));
+const compileRunComplete = computed(() => compileRunState.value === "complete" && Boolean(job.value));
+const currentCompileStage = computed<CompileStage>(() => {
+  return compileStages[activeCompileStageIndex.value] ?? (compileStages[0] as CompileStage);
+});
+const currentCompileStageDescription = computed(() => {
+  return getStageDescription(currentCompileStage.value, activeCompileMode.value);
+});
+const compileProgressPercent = computed(() => {
+  if (compileRunComplete.value) {
+    return "100%";
+  }
+
+  const finalIndex = compileStages.length - 1;
+  return `${Math.round((activeCompileStageIndex.value / finalIndex) * 100)}%`;
+});
+const llmCallsLabel = computed(() => {
+  const usage = job.value?.token_usage;
+
+  if (!usage) {
+    return "0 / 0";
+  }
+
+  return `${usage.llm_calls_used} / ${usage.llm_calls_limit}`;
+});
+const llmCallsUsed = computed(() => job.value?.token_usage.llm_calls_used ?? 0);
+const technicalPipelineSteps = computed(() => job.value?.steps ?? []);
+const technicalTokenUsage = computed(() => job.value?.token_usage ?? null);
+const technicalAgentTrace = computed(() => job.value?.agent_trace ?? []);
+const compileRunStateLabel = computed(() => {
+  if (compileRunState.value === "running" && compileReplayFinished.value && !pendingJob.value) {
+    return "Waiting";
+  }
+
+  return sentenceLabel(compileRunState.value);
+});
+const compileRunTitle = computed(() => {
+  if (compileRunState.value === "running") {
+    return "FlowForge is compiling";
+  }
+
+  if (compileRunState.value === "finishing") {
+    return "Finalizing compile run";
+  }
+
+  if (compileRunState.value === "failed") {
+    return "Compile run failed";
+  }
+
+  if (compileRunState.value === "complete") {
+    return "Compile run complete";
+  }
+
+  return "Compile run";
+});
+const compileRunStateClass = computed(() => {
+  if (compileRunState.value === "complete") {
+    return "ff-status-safe";
+  }
+
+  if (compileRunState.value === "failed") {
+    return "ff-status-blocked";
+  }
+
+  return "ff-status-approval";
+});
+const routerRunStatus = computed(() => {
+  const currentJob = job.value;
+  const decision = routerDecision.value;
+
+  if (!currentJob || !decision) {
+    return "Pending";
+  }
+
+  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
+    return "Skipped";
+  }
+
+  if (decision.provider === "deterministic") {
+    return "Fallback";
+  }
+
+  if (decision.fallback_used) {
+    return "Fallback";
+  }
+
+  return "Completed";
+});
+const currentCompileStatus = computed(() => {
+  if (compileRunState.value === "running") {
+    if (compileReplayFinished.value && !pendingJob.value) {
+      return "Waiting for compile response...";
+    }
+
+    return currentCompileStageDescription.value;
+  }
+
+  if (compileRunState.value === "finishing") {
+    return "Final schema check passed. Preparing the updated preview.";
+  }
+
+  if (compileRunState.value === "failed") {
+    return "Compile failed before FlowForge could show a valid preview.";
+  }
+
+  if (job.value && routerDecision.value) {
+    return compileCompleteSummary(job.value, routerDecision.value);
+  }
+
+  if (job.value) {
+    return "Compile finished. Blueprint generation: deterministic.";
+  }
+
+  return "Ready to compile.";
+});
+const compileSummaryItems = computed(() => {
+  if (!job.value || compileRunState.value !== "complete") {
+    return [];
+  }
+
+  return [
+    {
+      label: "Signal scan",
+      value: pipelineStepStatus("rule_based_signal_scan"),
+    },
+    {
+      label: "Risk review",
+      value: pipelineStepStatus("rule_based_risk_review"),
+    },
+    {
+      label: "Router",
+      value: routerRunStatus.value,
+    },
+    {
+      label: "Blueprint",
+      value: pipelineStepStatus("dynamic_blueprint_preview"),
+    },
+    {
+      label: "LLM calls",
+      value: llmCallsLabel.value,
+    },
+    {
+      label: "Provider",
+      value: providerLabel(routerDecision.value?.provider),
+    },
+  ];
+});
+const aiUsageVisible = computed(() => {
+  if (isCompiling.value) {
+    return true;
+  }
+
+  return compileRunState.value !== "failed" && Boolean(job.value?.router_decision);
+});
+const providerPathCopy = computed(() => {
+  if (isCompiling.value) {
+    if (activeCompileMode.value === "demo" || activeCompileMode.value === "rule_only") {
+      return "AI router skipped because this mode is deterministic.";
+    }
+
+    return "Groq is the primary router provider. Gemini is available as the fallback router provider.";
+  }
+
+  const currentJob = job.value;
+  const decision = routerDecision.value;
+
+  if (!currentJob || !decision) {
+    return "Router usage will appear after the compile run finishes.";
+  }
+
+  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
+    return "AI router skipped because this mode is deterministic.";
+  }
+
+  if (decision.provider === "groq" && decision.used_ai) {
+    return "Groq handled the router decision because it is the primary configured provider.";
+  }
+
+  if (decision.provider === "gemini" && decision.used_ai) {
+    return "Groq failed or was unavailable, so Gemini handled the router decision.";
+  }
+
+  return "No valid AI router decision was available, so deterministic fallback handled routing.";
+});
+const routerInputItems = computed<TextDisplayItem[]>(() => {
+  if (isCompiling.value) {
+    return [
+      { label: "Process text", value: "Submitted input" },
+      { label: "Signal scan", value: "Pending" },
+      { label: "Risk summary", value: "Pending" },
+      { label: "Readiness score", value: "Pending" },
+      { label: "Mode", value: activeCompileMode.value },
+    ];
+  }
+
+  if (!job.value) {
+    return [];
+  }
+
+  return [
+    { label: "Process text", value: "Submitted input" },
+    { label: "Signal scan", value: `${job.value.signals.workflow_primitives.length} primitives` },
+    { label: "Risk summary", value: `${sentenceLabel(job.value.risks.risk_level)} risk` },
+    { label: "Readiness score", value: `${job.value.readiness.score}/100` },
+    { label: "Mode", value: job.value.mode },
+  ];
+});
+const routerOutputItems = computed<TextDisplayItem[]>(() => {
+  const decision = routerDecision.value;
+
+  if (isCompiling.value || !decision) {
+    return [
+      { label: "Route", value: "Pending" },
+      { label: "Confidence", value: "Pending" },
+      { label: "Reason", value: "Pending" },
+      { label: "Safety note", value: "Pending" },
+      { label: "Suggested next step", value: "Pending" },
+      {
+        label: "Provider",
+        value: activeCompileMode.value === "demo" || activeCompileMode.value === "rule_only" ? "Deterministic fallback" : "Pending",
+      },
+      { label: "Fallback used", value: "Pending" },
+      { label: "LLM calls", value: usesAiRouter(activeCompileMode.value) ? "Pending" : "0 / 0" },
+    ];
+  }
+
+  return [
+    { label: "Route", value: routeLabel(decision.route) },
+    { label: "Confidence", value: confidenceLabel(decision.confidence) },
+    { label: "Reason", value: decision.reason },
+    { label: "Safety note", value: decision.safety_note },
+    { label: "Suggested next step", value: decision.suggested_next_step },
+    { label: "Provider", value: providerLabel(decision.provider) },
+    { label: "Fallback used", value: yesNo(decision.fallback_used) },
+    { label: "LLM calls", value: llmCallsLabel.value },
+  ];
+});
+const providerAttemptItems = computed<ProviderAttemptDisplay[]>(() => {
+  const currentJob = job.value;
+  const decision = routerDecision.value;
+
+  if (isCompiling.value || !currentJob || !decision) {
+    return [
+      { provider: "Groq", status: usesAiRouter(activeCompileMode.value) ? "Pending" : "Skipped", detail: usesAiRouter(activeCompileMode.value) ? "Primary router provider." : "AI skipped for deterministic mode." },
+      { provider: "Gemini", status: usesAiRouter(activeCompileMode.value) ? "Pending" : "Skipped", detail: usesAiRouter(activeCompileMode.value) ? "Fallback router provider." : "AI skipped for deterministic mode." },
+      { provider: "Deterministic", status: usesAiRouter(activeCompileMode.value) ? "Pending" : "Used", detail: usesAiRouter(activeCompileMode.value) ? "Used only if no valid AI router decision is available." : "Routing handled by deterministic rules." },
+    ];
+  }
+
+  return [
+    providerAttemptStatus(currentJob, "groq"),
+    providerAttemptStatus(currentJob, "gemini"),
+    deterministicAttemptStatus(currentJob, decision),
+  ];
+});
 
 const isLowRiskInternalPreview = computed(() => {
   return riskLevel.value === "low" && gateCount.value === 0;
@@ -227,6 +572,63 @@ function formatEnum(value: string): string {
     .join(" ");
 }
 
+function sentenceLabel(value: string): string {
+  const label = formatEnum(value);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function providerLabel(provider?: RouterDecision["provider"]): string {
+  if (provider === "groq") {
+    return "Groq";
+  }
+
+  if (provider === "gemini") {
+    return "Gemini";
+  }
+
+  if (provider === "deterministic") {
+    return "Deterministic fallback";
+  }
+
+  return "Pending";
+}
+
+function compileCompleteSummary(currentJob: CompileJob, decision: RouterDecision): string {
+  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
+    return "Compile complete. FlowForge used deterministic routing and deterministic blueprint generation. No AI provider was called.";
+  }
+
+  if (decision.provider === "groq" && decision.used_ai) {
+    return "Compile complete. FlowForge scanned the process with deterministic rules, used Groq only for the router decision, then built a deterministic non-executing blueprint.";
+  }
+
+  if (decision.provider === "gemini" && decision.used_ai) {
+    return "Compile complete. Groq failed or was unavailable, Gemini handled the router decision, and the blueprint was built deterministically.";
+  }
+
+  return "Compile complete. AI routing was skipped or unavailable, so deterministic fallback handled the router decision. The blueprint was built deterministically.";
+}
+
+function routeLabel(route?: RouterDecision["route"]): string {
+  return route ? sentenceLabel(route) : "Pending";
+}
+
+function confidenceLabel(confidence?: RouterDecision["confidence"]): string {
+  return confidence ? sentenceLabel(confidence) : "Pending";
+}
+
+function statusLabel(status?: string): string {
+  if (status === "done" || status === "completed") {
+    return "Completed";
+  }
+
+  return status ? sentenceLabel(status) : "Pending";
+}
+
+function pipelineStepStatus(stepId: string): string {
+  return statusLabel(job.value?.steps.find((step) => step.id === stepId)?.status);
+}
+
 function policyLabel(policy: StepAutomationPolicy): string {
   return policyLabels[policy]?.label ?? formatEnum(policy);
 }
@@ -241,6 +643,163 @@ function riskClass(level: RiskLevel): string {
 
 function yesNo(value: boolean): string {
   return value ? "Yes" : "No";
+}
+
+function textValue(value?: string | null): string {
+  return value?.trim() ?? "";
+}
+
+function previewText(value?: string | null, limit = PREVIEW_TEXT_LIMIT): string {
+  const text = textValue(value);
+
+  if (text.length <= limit) {
+    return text;
+  }
+
+  return `${text.slice(0, limit - 3)}...`;
+}
+
+function hasFullText(value?: string | null, limit = PREVIEW_TEXT_LIMIT): boolean {
+  return textValue(value).length > limit;
+}
+
+function usesAiRouter(selectedMode: CompileMode): boolean {
+  return selectedMode === "balanced" || selectedMode === "full";
+}
+
+function getStageDescription(stage: CompileStage, selectedMode: CompileMode): string {
+  if (stage.id === "provider") {
+    return usesAiRouter(selectedMode)
+      ? stage.aiDescription ?? stage.description
+      : stage.demoDescription ?? stage.description;
+  }
+
+  return stage.description;
+}
+
+function providerAttemptStatus(currentJob: CompileJob, provider: "groq" | "gemini"): ProviderAttemptDisplay {
+  const traceEvent = currentJob.agent_trace.find((event) => event.action === `Router attempt: ${provider}`);
+  const providerName = providerLabel(provider);
+
+  if (!traceEvent) {
+    return {
+      provider: providerName,
+      status: "Not used",
+      detail: provider === "groq" ? "Primary router provider was not reached." : "Fallback router provider was not reached.",
+    };
+  }
+
+  if (traceEvent.status === "completed") {
+    return {
+      provider: providerName,
+      status: "Completed",
+      detail: provider === "groq"
+        ? "Returned a validated constrained JSON router decision."
+        : "Returned a validated constrained JSON router decision after Groq was unavailable or failed.",
+    };
+  }
+
+  if (traceEvent.status === "skipped") {
+    return {
+      provider: providerName,
+      status: "Skipped",
+      detail: traceEvent.reason ?? "Provider was skipped before any HTTP call.",
+    };
+  }
+
+  return {
+    provider: providerName,
+    status: "Failed",
+    detail: traceEvent.reason ?? "Provider call failed or returned an invalid router decision.",
+  };
+}
+
+function deterministicAttemptStatus(currentJob: CompileJob, decision: RouterDecision): ProviderAttemptDisplay {
+  const traceEvent = currentJob.agent_trace.find((event) => event.action === "Router attempt: deterministic");
+
+  if (traceEvent?.status === "completed" || decision.provider === "deterministic") {
+    return {
+      provider: "Deterministic",
+      status: "Used",
+      detail: currentJob.mode === "demo" || currentJob.mode === "rule_only"
+        ? "Routing was deterministic because this mode does not call AI providers."
+        : "Fallback routing handled the request after no valid AI router decision was available.",
+    };
+  }
+
+  return {
+    provider: "Deterministic",
+    status: "Not used",
+    detail: "A validated AI router decision was available, so fallback routing was not needed.",
+  };
+}
+
+function compileStageState(index: number): "complete" | "active" | "pending" {
+  if (compileRunComplete.value) {
+    return "complete";
+  }
+
+  if (compileRunState.value === "failed") {
+    if (index < activeCompileStageIndex.value) {
+      return "complete";
+    }
+
+    if (index === activeCompileStageIndex.value) {
+      return "active";
+    }
+
+    return "pending";
+  }
+
+  if (!compileRunVisible.value) {
+    return "pending";
+  }
+
+  if (index < activeCompileStageIndex.value) {
+    return "complete";
+  }
+
+  if (index === activeCompileStageIndex.value) {
+    return "active";
+  }
+
+  return "pending";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      compileReplayTimers.delete(timer);
+      resolve();
+    }, ms);
+
+    compileReplayTimers.add(timer);
+  });
+}
+
+function clearCompileReplayTimers() {
+  for (const timer of compileReplayTimers) {
+    window.clearTimeout(timer);
+  }
+
+  compileReplayTimers.clear();
+}
+
+async function runCompileReplay(runToken: number) {
+  compileReplayFinished.value = false;
+
+  for (let index = 0; index < compileStages.length; index += 1) {
+    if (runToken !== compileRunToken || compileRunState.value === "failed") {
+      return;
+    }
+
+    activeCompileStageIndex.value = index;
+    await sleep(compileStages[index]?.durationMs ?? 900);
+  }
+
+  if (runToken === compileRunToken && compileRunState.value !== "failed") {
+    compileReplayFinished.value = true;
+  }
 }
 
 function chooseExample(value: string) {
@@ -302,28 +861,75 @@ function isGateExpanded(gate: HumanApprovalGate): boolean {
 }
 
 async function compilePreview() {
+  if (isCompiling.value) {
+    return;
+  }
+
   errorMessage.value = "";
+  pendingJob.value = null;
   isCompiling.value = true;
+  compileRunState.value = "running";
+  activeCompileStageIndex.value = 0;
+  compileReplayFinished.value = false;
+  const runToken = compileRunToken + 1;
+  compileRunToken = runToken;
   resetExpandedState();
 
+  const requestPromise = $fetch<CompileJob>("/api/compile", {
+    method: "POST",
+    body: {
+      input: processInput.value,
+      mode: mode.value,
+    },
+  }).then((result) => {
+    if (runToken === compileRunToken) {
+      pendingJob.value = result;
+    }
+
+    return result;
+  });
+
   try {
-    job.value = await $fetch<CompileJob>("/api/compile", {
-      method: "POST",
-      body: {
-        input: processInput.value,
-        mode: mode.value,
-      },
-    });
+    const [result] = await Promise.all([
+      requestPromise,
+      runCompileReplay(runToken),
+    ]);
+
+    if (runToken !== compileRunToken) {
+      return;
+    }
+
+    pendingJob.value = result;
+    compileRunState.value = "finishing";
+    activeCompileStageIndex.value = compileStages.length - 1;
+
+    await sleep(FINAL_STAGE_HOLD_MS);
+
+    if (runToken !== compileRunToken) {
+      return;
+    }
+
+    job.value = result;
+    pendingJob.value = null;
+    compileRunState.value = "complete";
   } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Compile preview failed.";
+    if (runToken === compileRunToken) {
+      clearCompileReplayTimers();
+      pendingJob.value = null;
+      compileRunState.value = "failed";
+      errorMessage.value =
+        error instanceof Error ? error.message : "Compile preview failed.";
+    }
   } finally {
-    isCompiling.value = false;
+    if (runToken === compileRunToken) {
+      isCompiling.value = false;
+    }
   }
 }
 
-onMounted(() => {
-  void compilePreview();
+onBeforeUnmount(() => {
+  compileRunToken += 1;
+  clearCompileReplayTimers();
 });
 </script>
 
@@ -406,24 +1012,151 @@ onMounted(() => {
           </div>
         </article>
 
-        <article v-if="isCompiling && !job" class="ff-tile result-state-tile">
-          <div class="ff-tile-inner result-state-inner">
-            <p class="ff-kicker">Working</p>
-            <h2 class="ff-page-title">Building safe blueprint preview...</h2>
+        <article
+          v-if="compileRunVisible"
+          :class="[
+            'ff-tile',
+            'compile-run-tile',
+            {
+              'is-running': compileRunState === 'running' || compileRunState === 'finishing',
+              'is-complete': compileRunComplete,
+              'is-failed': compileRunState === 'failed',
+            },
+          ]"
+          :aria-busy="isCompiling"
+          aria-live="polite"
+        >
+          <div class="ff-tile-inner compile-run-inner">
+            <div class="compile-run-head">
+              <div>
+                <p class="ff-kicker">Compile run</p>
+                <h2 class="ff-section-title">{{ compileRunTitle }}</h2>
+                <p class="ff-copy compile-run-status">{{ currentCompileStatus }}</p>
+              </div>
+
+              <span :class="['ff-status', compileRunStateClass]">
+                {{ compileRunStateLabel }}
+              </span>
+            </div>
+
+            <div
+              class="compile-progress-track"
+              :style="{ '--compile-progress': compileProgressPercent }"
+              aria-hidden="true"
+            >
+              <span
+                v-for="(stage, index) in compileStages"
+                :key="`${stage.id}-segment`"
+                :class="['compile-progress-segment', `is-${compileStageState(index)}`]"
+              />
+            </div>
+
+            <ol v-if="isCompiling" class="compile-stage-list">
+              <li
+                v-for="(stage, index) in compileStages"
+                :key="stage.id"
+                :class="['compile-stage-item', `is-${compileStageState(index)}`]"
+                :aria-current="compileStageState(index) === 'active' ? 'step' : undefined"
+              >
+                <span class="compile-stage-marker" aria-hidden="true">
+                  <span v-if="compileStageState(index) !== 'complete'">{{ index + 1 }}</span>
+                </span>
+                <span class="compile-stage-copy">
+                  <strong>{{ stage.label }}</strong>
+                  <small>{{ getStageDescription(stage, activeCompileMode) }}</small>
+                </span>
+              </li>
+            </ol>
+
+            <dl
+              v-else-if="job && compileRunState === 'complete'"
+              class="compile-summary-grid"
+              aria-label="Compile run summary"
+            >
+              <div v-for="item in compileSummaryItems" :key="item.label">
+                <dt>{{ item.label }}</dt>
+                <dd>{{ item.value }}</dd>
+              </div>
+            </dl>
           </div>
         </article>
 
-        <article v-else-if="!job" class="ff-tile result-state-tile">
+        <article v-if="aiUsageVisible" class="ff-tile ai-usage-tile">
+          <div class="ff-tile-inner ai-router-inner">
+            <div class="ai-router-head">
+              <div>
+                <p class="ff-kicker">AI router explanation</p>
+                <h2 class="ff-section-title">AI router explanation</h2>
+              </div>
+              <span class="ff-status ff-status-neutral">Router only</span>
+            </div>
+
+            <div class="ai-explanation-grid">
+              <section class="ai-explanation-card">
+                <h3>Router role</h3>
+                <p>{{ routerRoleCopy }}</p>
+                <p>AI providers return only a constrained JSON router decision, and FlowForge validates that decision before using it.</p>
+              </section>
+
+              <section class="ai-explanation-card">
+                <h3>Provider path</h3>
+                <p>{{ providerPathCopy }}</p>
+                <ul class="provider-attempt-list" aria-label="Provider attempts">
+                  <li v-for="item in providerAttemptItems" :key="item.provider">
+                    <span class="provider-attempt-name">{{ item.provider }}</span>
+                    <span class="provider-attempt-status">{{ item.status }}</span>
+                    <small>{{ item.detail }}</small>
+                  </li>
+                </ul>
+              </section>
+
+              <section class="ai-explanation-card">
+                <h3>Router inputs</h3>
+                <ul class="router-input-list" aria-label="Router inputs">
+                  <li v-for="item in routerInputItems" :key="item.label">
+                    <strong>{{ item.label }}</strong>
+                    <span>{{ item.value }}</span>
+                  </li>
+                </ul>
+              </section>
+
+              <section class="ai-explanation-card router-output-card">
+                <h3>Router output</h3>
+                <dl class="router-output-grid">
+                  <div v-for="item in routerOutputItems" :key="item.label">
+                    <dt>{{ item.label }}</dt>
+                    <dd>
+                      <span>{{ previewText(item.value) }}</span>
+                      <details v-if="hasFullText(item.value)" class="expandable-text">
+                        <summary>Show full</summary>
+                        <p>{{ textValue(item.value) }}</p>
+                      </details>
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+            </div>
+
+            <p class="ff-copy ai-boundary-copy">
+              {{ deterministicBoundaryCopy }} The blueprint builder then created a deterministic non-executing preview.
+            </p>
+          </div>
+        </article>
+
+        <article v-if="compileRunState !== 'failed' && !isCompiling && !job" class="ff-tile result-state-tile">
           <div class="ff-tile-inner result-state-inner">
             <p class="ff-kicker">Ready</p>
             <h2 class="ff-page-title">
-              Describe a process and FlowForge will generate a safe automation blueprint preview.
+              Paste a process or choose an example, then run a safe compile preview.
             </h2>
           </div>
         </article>
 
         <template v-else-if="compiledBlueprint">
-          <article class="ff-tile result-hero-tile">
+          <article
+            :class="['ff-tile', 'result-hero-tile', { 'is-updating': isCompiling }]"
+            :aria-busy="isCompiling"
+          >
             <div class="ff-tile-inner result-hero-inner">
               <div class="result-hero-main">
                 <p class="ff-kicker">Result</p>
@@ -448,10 +1181,11 @@ onMounted(() => {
                 </div>
                 <div>
                   <dt>LLM</dt>
-                  <dd>{{ job.token_usage.llm_calls_used }}</dd>
+                  <dd>{{ llmCallsUsed }}</dd>
                 </div>
               </dl>
             </div>
+            <span v-if="isCompiling" class="result-update-badge">Updating preview...</span>
           </article>
 
           <article class="ff-tile decision-tile">
@@ -474,13 +1208,35 @@ onMounted(() => {
             <div class="ff-tile-inner router-inner">
               <div class="router-main">
                 <p class="ff-kicker">Router decision</p>
-                <h2 class="ff-section-title">{{ job.router_decision.route }}</h2>
-                <p class="ff-copy">{{ job.router_decision.reason }}</p>
-                <p class="ff-copy"><small><strong>Next step:</strong> {{ job.router_decision.suggested_next_step }}</small></p>
+                <h2 class="ff-section-title">Route: {{ routeLabel(job.router_decision.route) }}</h2>
+                <div class="expandable-copy">
+                  <strong>Reason</strong>
+                  <p>{{ previewText(job.router_decision.reason) }}</p>
+                  <details v-if="hasFullText(job.router_decision.reason)" class="expandable-text">
+                    <summary>Show full</summary>
+                    <p>{{ textValue(job.router_decision.reason) }}</p>
+                  </details>
+                </div>
+                <div class="expandable-copy">
+                  <strong>Safety note</strong>
+                  <p>{{ previewText(job.router_decision.safety_note) }}</p>
+                  <details v-if="hasFullText(job.router_decision.safety_note)" class="expandable-text">
+                    <summary>Show full</summary>
+                    <p>{{ textValue(job.router_decision.safety_note) }}</p>
+                  </details>
+                </div>
+                <div class="expandable-copy">
+                  <strong>Next step</strong>
+                  <p>{{ previewText(job.router_decision.suggested_next_step) }}</p>
+                  <details v-if="hasFullText(job.router_decision.suggested_next_step)" class="expandable-text">
+                    <summary>Show full</summary>
+                    <p>{{ textValue(job.router_decision.suggested_next_step) }}</p>
+                  </details>
+                </div>
               </div>
               <div class="router-metrics">
-                <span class="policy-badge">{{ job.router_decision.provider }} provider</span>
-                <span class="policy-badge">{{ job.router_decision.confidence }} confidence</span>
+                <span class="policy-badge">Provider: {{ providerLabel(job.router_decision.provider) }}</span>
+                <span class="policy-badge">Confidence: {{ confidenceLabel(job.router_decision.confidence) }}</span>
               </div>
             </div>
           </article>
@@ -687,7 +1443,23 @@ onMounted(() => {
 
             <div v-if="expandedSections.trigger" class="ff-tile nested-tile">
               <div class="ff-tile-inner">
-                <p class="ff-copy">{{ compiledBlueprint.summary }}</p>
+                <div class="expandable-copy">
+                  <strong>Summary</strong>
+                  <p>{{ previewText(compiledBlueprint.summary) }}</p>
+                  <details v-if="hasFullText(compiledBlueprint.summary)" class="expandable-text">
+                    <summary>Show full</summary>
+                    <p>{{ textValue(compiledBlueprint.summary) }}</p>
+                  </details>
+                </div>
+
+                <div v-if="job?.input.trimmed" class="expandable-copy">
+                  <strong>Submitted process</strong>
+                  <p>{{ previewText(job.input.trimmed) }}</p>
+                  <details v-if="hasFullText(job.input.trimmed)" class="expandable-text">
+                    <summary>Show full</summary>
+                    <p>{{ textValue(job.input.trimmed) }}</p>
+                  </details>
+                </div>
 
                 <dl class="meta-grid trigger-grid" aria-label="Trigger details">
                   <div>
@@ -704,7 +1476,13 @@ onMounted(() => {
                   </div>
                   <div>
                     <dt>Description</dt>
-                    <dd>{{ compiledBlueprint.trigger.description }}</dd>
+                    <dd>
+                      <span>{{ previewText(compiledBlueprint.trigger.description) }}</span>
+                      <details v-if="hasFullText(compiledBlueprint.trigger.description)" class="expandable-text">
+                        <summary>Show full</summary>
+                        <p>{{ textValue(compiledBlueprint.trigger.description) }}</p>
+                      </details>
+                    </dd>
                   </div>
                 </dl>
               </div>
@@ -741,7 +1519,14 @@ onMounted(() => {
                   </span>
                 </div>
 
-                <p>{{ testCase.input_event }}</p>
+                <div class="expandable-copy">
+                  <strong>Input event</strong>
+                  <p>{{ previewText(testCase.input_event) }}</p>
+                  <details v-if="hasFullText(testCase.input_event)" class="expandable-text">
+                    <summary>Show full</summary>
+                    <p>{{ textValue(testCase.input_event) }}</p>
+                  </details>
+                </div>
 
                 <dl class="meta-grid mini-grid">
                   <div>
@@ -750,7 +1535,13 @@ onMounted(() => {
                   </div>
                   <div>
                     <dt>Reason</dt>
-                    <dd>{{ testCase.reason }}</dd>
+                    <dd>
+                      <span>{{ previewText(testCase.reason) }}</span>
+                      <details v-if="hasFullText(testCase.reason)" class="expandable-text">
+                        <summary>Show full</summary>
+                        <p>{{ textValue(testCase.reason) }}</p>
+                      </details>
+                    </dd>
                   </div>
                 </dl>
               </article>
@@ -803,27 +1594,31 @@ onMounted(() => {
               <article class="output-card">
                 <h3>Pipeline</h3>
                 <ol class="detail-list">
-                  <li v-for="step in job.steps" :key="step.id">
+                  <li v-for="step in technicalPipelineSteps" :key="step.id">
                     <strong>{{ step.label }}</strong>
-                    <span>{{ step.output_summary }}</span>
+                    <span>{{ previewText(step.output_summary) }}</span>
+                    <details v-if="hasFullText(step.output_summary)" class="expandable-text">
+                      <summary>Show full</summary>
+                      <p>{{ textValue(step.output_summary) }}</p>
+                    </details>
                   </li>
                 </ol>
               </article>
 
-              <article class="output-card">
+              <article v-if="technicalTokenUsage" class="output-card">
                 <h3>Token usage</h3>
                 <dl class="meta-grid mini-grid">
                   <div>
                     <dt>Mode</dt>
-                    <dd>{{ job.token_usage.mode }}</dd>
+                    <dd>{{ technicalTokenUsage.mode }}</dd>
                   </div>
                   <div>
                     <dt>LLM calls</dt>
-                    <dd>{{ job.token_usage.llm_calls_used }} / {{ job.token_usage.llm_calls_limit }}</dd>
+                    <dd>{{ technicalTokenUsage.llm_calls_used }} / {{ technicalTokenUsage.llm_calls_limit }}</dd>
                   </div>
                   <div>
                     <dt>Rule checks</dt>
-                    <dd>{{ job.token_usage.rule_based_checks }}</dd>
+                    <dd>{{ technicalTokenUsage.rule_based_checks }}</dd>
                   </div>
                 </dl>
               </article>
@@ -831,9 +1626,25 @@ onMounted(() => {
               <article class="output-card">
                 <h3>Agent trace</h3>
                 <ul class="detail-list">
-                  <li v-for="event in job.agent_trace" :key="event.id">
+                  <li v-for="event in technicalAgentTrace" :key="event.id">
                     <strong>{{ event.action }}</strong>
                     <span>{{ event.status }}</span>
+                    <template v-if="event.reason">
+                      <small>Reason</small>
+                      <span>{{ previewText(event.reason) }}</span>
+                      <details v-if="hasFullText(event.reason)" class="expandable-text">
+                        <summary>Show full</summary>
+                        <p>{{ textValue(event.reason) }}</p>
+                      </details>
+                    </template>
+                    <template v-if="event.output_summary">
+                      <small>Output</small>
+                      <span>{{ previewText(event.output_summary) }}</span>
+                      <details v-if="hasFullText(event.output_summary)" class="expandable-text">
+                        <summary>Show full</summary>
+                        <p>{{ textValue(event.output_summary) }}</p>
+                      </details>
+                    </template>
                   </li>
                 </ul>
               </article>
@@ -936,17 +1747,242 @@ onMounted(() => {
 }
 
 .error-tile,
+.compile-run-tile,
 .result-state-tile,
 .decision-tile,
+.ai-usage-tile,
 .router-tile,
 .blueprint-section {
   grid-column: span 12;
+}
+
+.compile-run-tile.is-running {
+  border-color: var(--ff-primary);
+  box-shadow: 0 0 0 3px var(--ff-primary-soft), var(--ff-shadow);
+}
+
+.compile-run-tile.is-failed {
+  border-color: #f2b8b5;
+  box-shadow: 0 0 0 3px var(--ff-blocked-soft), var(--ff-shadow);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .compile-run-tile.is-running {
+    animation: compile-run-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes compile-run-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px var(--ff-primary-soft), var(--ff-shadow);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(0, 124, 120, 0.16), var(--ff-shadow);
+  }
+}
+
+.compile-run-inner {
+  display: grid;
+  gap: 14px;
+}
+
+.compile-run-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.compile-run-status {
+  margin-top: 6px;
+}
+
+.compile-progress-track {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.compile-progress-track::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--compile-progress);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ff-primary) 15%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.compile-progress-segment {
+  position: relative;
+  z-index: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ff-neutral-soft);
+}
+
+.compile-progress-segment.is-complete {
+  background: var(--ff-safe);
+}
+
+.compile-progress-segment.is-active {
+  background: var(--ff-primary);
+}
+
+.compile-stage-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compile-stage-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--ff-border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.compile-stage-item.is-active {
+  border-color: var(--ff-primary);
+  background: var(--ff-primary-soft);
+}
+
+.compile-stage-item.is-complete {
+  border-color: #b7ebcb;
+  background: #f7fff9;
+}
+
+.compile-stage-item.is-pending {
+  opacity: 0.62;
+}
+
+.compile-stage-marker {
+  position: relative;
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--ff-border);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ff-muted);
+  font-size: 0.76rem;
+  font-weight: 950;
+}
+
+.compile-stage-item.is-active .compile-stage-marker {
+  border-color: var(--ff-primary);
+  background: var(--ff-primary);
+  color: #ffffff;
+}
+
+.compile-stage-item.is-complete .compile-stage-marker {
+  border-color: var(--ff-safe);
+  background: var(--ff-safe);
+}
+
+.compile-stage-item.is-complete .compile-stage-marker::after {
+  width: 6px;
+  height: 10px;
+  border-right: 2px solid #ffffff;
+  border-bottom: 2px solid #ffffff;
+  content: "";
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.compile-stage-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.compile-stage-copy strong {
+  color: var(--ff-ink);
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+.compile-stage-copy small {
+  color: var(--ff-muted);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.compile-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.compile-summary-grid div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--ff-border);
+  border-radius: 10px;
+  background: var(--ff-surface-muted);
+}
+
+.compile-summary-grid dt {
+  color: var(--ff-muted);
+  font-size: 0.7rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.compile-summary-grid dd {
+  margin: 3px 0 0;
+  color: var(--ff-ink);
+  font-size: 0.86rem;
+  font-weight: 900;
+  overflow-wrap: anywhere;
 }
 
 .result-state-inner {
   display: grid;
   min-height: 170px;
   align-content: center;
+}
+
+.result-hero-tile {
+  position: relative;
+}
+
+.result-hero-tile.is-updating {
+  border-color: var(--ff-primary);
+}
+
+.result-hero-tile.is-updating .result-hero-inner {
+  opacity: 0.68;
+}
+
+.result-update-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid var(--ff-primary);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ff-primary-strong);
+  font-size: 0.74rem;
+  font-weight: 950;
+  box-shadow: var(--ff-shadow);
 }
 
 .result-hero-inner {
@@ -1014,6 +2050,170 @@ onMounted(() => {
   grid-template-columns: minmax(0, 1fr) minmax(220px, 360px);
   gap: 18px;
   align-items: stretch;
+}
+
+.ai-router-inner {
+  display: grid;
+  gap: 16px;
+}
+
+.ai-router-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.ai-explanation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ai-explanation-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--ff-border);
+  border-radius: 10px;
+  background: var(--ff-surface-muted);
+}
+
+.ai-explanation-card h3 {
+  margin: 0 0 8px;
+  color: var(--ff-ink);
+  font-size: 0.98rem;
+}
+
+.ai-explanation-card p,
+.ai-boundary-copy {
+  margin: 0;
+}
+
+.ai-explanation-card p + p {
+  margin-top: 8px;
+}
+
+.router-output-card {
+  grid-column: 1 / -1;
+}
+
+.provider-attempt-list,
+.router-input-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.provider-attempt-list li,
+.router-input-list li {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--ff-border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.provider-attempt-name,
+.router-input-list strong {
+  color: var(--ff-ink);
+  font-size: 0.86rem;
+  font-weight: 950;
+}
+
+.provider-attempt-status,
+.router-input-list span {
+  color: var(--ff-primary-strong);
+  font-size: 0.78rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.provider-attempt-list small {
+  color: var(--ff-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.router-output-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.router-output-grid div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--ff-border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.router-output-grid dt {
+  color: var(--ff-muted);
+  font-size: 0.7rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.router-output-grid dd {
+  margin: 4px 0 0;
+  color: var(--ff-ink);
+  font-size: 0.88rem;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.expandable-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.expandable-copy > strong {
+  color: var(--ff-ink);
+  font-size: 0.84rem;
+  font-weight: 950;
+}
+
+.expandable-copy p,
+.expandable-text p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.expandable-copy p {
+  color: var(--ff-muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.expandable-text {
+  margin-top: 4px;
+}
+
+.expandable-text summary {
+  width: fit-content;
+  color: var(--ff-primary-strong);
+  font-size: 0.78rem;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.expandable-text p {
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--ff-border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ff-ink);
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .router-inner {
@@ -1420,6 +2620,7 @@ onMounted(() => {
   .input-tile,
   .result-hero-tile,
   .decision-tile,
+  .ai-usage-tile,
   .router-tile,
   .blueprint-section {
     grid-column: span 12;
@@ -1427,6 +2628,11 @@ onMounted(() => {
 
   .decision-inner,
   .router-inner {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-explanation-grid,
+  .router-output-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1446,7 +2652,8 @@ onMounted(() => {
 
   .safety-grid,
   .output-grid,
-  .meta-grid {
+  .meta-grid,
+  .compile-summary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1456,6 +2663,20 @@ onMounted(() => {
 }
 
 @media (max-width: 760px) {
+  .compile-run-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ai-router-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .compile-stage-list {
+    grid-template-columns: 1fr;
+  }
+
   .input-actions {
     align-items: stretch;
     flex-direction: column;
