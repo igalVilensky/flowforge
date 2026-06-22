@@ -69,6 +69,10 @@ const compiledBlueprint = computed(() => job.value?.result ?? null);
 const gateCount = computed(() => compiledBlueprint.value?.human_approval_gates.length ?? 0);
 const riskLevel = computed<RiskLevel>(() => job.value?.risks?.risk_level ?? "medium");
 
+const isLowRiskInternalPreview = computed(() => {
+  return riskLevel.value === "low" && gateCount.value === 0;
+});
+
 const primaryGate = computed(() => {
   return compiledBlueprint.value?.human_approval_gates[0] ?? null;
 });
@@ -99,7 +103,7 @@ const capabilityText = computed(() => {
     }
 
     if (step.primitive === "risk_detection") {
-      capabilities.add("detect safety risks");
+      capabilities.add("check the safety boundary");
     }
 
     if (step.primitive === "routing" || step.primitive === "escalation") {
@@ -115,7 +119,7 @@ const capabilityText = computed(() => {
     }
 
     if (step.primitive === "record_creation") {
-      capabilities.add("prepare internal record fields");
+      capabilities.add("prepare an internal review task preview");
     }
 
     if (step.primitive === "extraction") {
@@ -148,10 +152,7 @@ const plainEnglishResult = computed(() => {
     return "";
   }
 
-  const hasGates = compiledBlueprint.value.human_approval_gates.length > 0;
-  const isLowRisk = riskLevel.value === "low";
-
-  if (isLowRisk && !hasGates) {
+  if (isLowRiskInternalPreview.value) {
     return `FlowForge can ${capabilityText.value}. It does not connect to email or task systems yet.`;
   }
 
@@ -171,11 +172,9 @@ const primaryDecision = computed(() => {
     return "Human approval required";
   }
 
-  const isLowRisk = riskLevel.value === "low";
-  const hasGates = compiledBlueprint.value.human_approval_gates.length > 0;
   const routerDecision = job.value?.router_decision?.route;
 
-  if (routerDecision === "compile_blueprint" && isLowRisk && !hasGates) {
+  if (routerDecision === "compile_blueprint" && isLowRiskInternalPreview.value) {
     return "Internal preview";
   }
 
@@ -184,6 +183,14 @@ const primaryDecision = computed(() => {
   }
 
   return "Partially automatable";
+});
+
+const mainDecisionCopy = computed(() => {
+  if (isLowRiskInternalPreview.value) {
+    return "FlowForge produced a non-executing internal workflow preview. It can help prepare extraction and review-task steps, but it does not connect to email or task systems yet.";
+  }
+
+  return "FlowForge produced a non-executing workflow plan. Risky actions stay draft-only or human-approved.";
 });
 
 const policyLabels: Record<StepAutomationPolicy, { label: string; className: string }> = {
@@ -328,515 +335,513 @@ onMounted(() => {
           <span class="ff-brand-mark">F</span>
           <span>FlowForge</span>
         </NuxtLink>
-    <nav class="ff-nav" aria-label="Primary navigation">
-      <span class="ff-status ff-status-neutral">Compiler preview</span>
-      <NuxtLink to="/" class="ff-toplink">Home</NuxtLink>
-    </nav>
-  </header>
 
-  <section class="ff-grid compiler-grid" aria-label="Compiler workspace">
-    <form class="ff-tile input-tile" @submit.prevent="compilePreview">
-      <div class="ff-tile-inner input-inner">
-        <div class="input-head">
-          <div>
-            <p class="ff-kicker">Input</p>
-            <h1 class="ff-page-title">Describe the process.</h1>
-          </div>
-          <span class="ff-status ff-status-neutral">{{ mode }}</span>
-        </div>
+        <nav class="ff-nav" aria-label="Primary navigation">
+          <span class="ff-status ff-status-neutral">Compiler preview</span>
+          <NuxtLink to="/" class="ff-toplink">Home</NuxtLink>
+        </nav>
+      </header>
 
-        <label class="ff-field-label" for="process-input">
-          Process
-          <textarea
-            id="process-input"
-            v-model="processInput"
-            class="ff-textarea"
-            :disabled="isCompiling"
-            placeholder="When a customer asks for a refund, classify the request, draft a reply, and route risky cases to a human."
-          />
-        </label>
+      <section class="ff-grid compiler-grid" aria-label="Compiler workspace">
+        <form class="ff-tile input-tile" @submit.prevent="compilePreview">
+          <div class="ff-tile-inner input-inner">
+            <div class="input-head">
+              <div>
+                <p class="ff-kicker">Input</p>
+                <h1 class="ff-page-title">Describe the process.</h1>
+              </div>
+              <span class="ff-status ff-status-neutral">{{ mode }}</span>
+            </div>
 
-        <div class="compact-row" aria-label="Example processes">
-          <button
-            v-for="example in examples"
-            :key="example.label"
-            type="button"
-            :class="['ff-chip-button', { 'is-active': activeExample === example.label }]"
-            @click="chooseExample(example.value)"
-          >
-            {{ example.label }}
-          </button>
-        </div>
-
-        <div class="input-actions">
-          <fieldset class="mode-group">
-            <legend>Mode</legend>
-            <label v-for="item in modes" :key="item.value" class="mode-option">
-              <input
-                v-model="mode"
-                type="radio"
-                name="mode"
-                :value="item.value"
+            <label class="ff-field-label" for="process-input">
+              Process
+              <textarea
+                id="process-input"
+                v-model="processInput"
+                class="ff-textarea"
                 :disabled="isCompiling"
+                placeholder="When a customer asks for a refund, classify the request, draft a reply, and route risky cases to a human."
               />
-              <span>{{ item.label }}</span>
             </label>
-          </fieldset>
 
-          <button class="ff-button compile-button" type="submit" :disabled="isCompiling">
-            {{ isCompiling ? "Building..." : "Compile preview" }}
-          </button>
-        </div>
-      </div>
-    </form>
-
-    <article v-if="errorMessage" class="ff-tile error-tile">
-      <div class="ff-tile-inner">
-        <p class="ff-kicker">Error</p>
-        <h2 class="ff-page-title">Compile failed</h2>
-        <p class="ff-copy">{{ errorMessage }}</p>
-      </div>
-    </article>
-
-    <article v-if="isCompiling && !job" class="ff-tile result-state-tile">
-      <div class="ff-tile-inner result-state-inner">
-        <p class="ff-kicker">Working</p>
-        <h2 class="ff-page-title">Building safe blueprint preview...</h2>
-      </div>
-    </article>
-
-    <article v-else-if="!job" class="ff-tile result-state-tile">
-      <div class="ff-tile-inner result-state-inner">
-        <p class="ff-kicker">Ready</p>
-        <h2 class="ff-page-title">
-          Describe a process and FlowForge will generate a safe automation blueprint preview.
-        </h2>
-      </div>
-    </article>
-
-    <template v-else-if="compiledBlueprint">
-      <article class="ff-tile result-hero-tile">
-        <div class="ff-tile-inner result-hero-inner">
-          <div class="result-hero-main">
-            <p class="ff-kicker">Result</p>
-            <h2 class="result-title">{{ compiledBlueprint.workflow_name }}</h2>
-            <p class="result-summary">{{ plainEnglishResult }}</p>
-          </div>
-
-          <div class="hero-badges" aria-label="Compile status">
-            <span class="policy-badge policy-approval">{{ primaryDecision }}</span>
-            <span :class="['policy-badge', riskClass(riskLevel)]">{{ riskLevel }} risk</span>
-            <span class="policy-badge policy-safe">No execution</span>
-          </div>
-
-          <dl class="result-metrics" aria-label="Compile summary">
-            <div>
-              <dt>Steps</dt>
-              <dd>{{ compiledBlueprint.steps.length }}</dd>
+            <div class="compact-row" aria-label="Example processes">
+              <button
+                v-for="example in examples"
+                :key="example.label"
+                type="button"
+                :class="['ff-chip-button', { 'is-active': activeExample === example.label }]"
+                @click="chooseExample(example.value)"
+              >
+                {{ example.label }}
+              </button>
             </div>
-            <div>
-              <dt>Gates</dt>
-              <dd>{{ gateCount }}</dd>
+
+            <div class="input-actions">
+              <fieldset class="mode-group">
+                <legend>Mode</legend>
+                <label v-for="item in modes" :key="item.value" class="mode-option">
+                  <input
+                    v-model="mode"
+                    type="radio"
+                    name="mode"
+                    :value="item.value"
+                    :disabled="isCompiling"
+                  />
+                  <span>{{ item.label }}</span>
+                </label>
+              </fieldset>
+
+              <button class="ff-button compile-button" type="submit" :disabled="isCompiling">
+                {{ isCompiling ? "Building..." : "Compile preview" }}
+              </button>
             </div>
-            <div>
-              <dt>LLM</dt>
-              <dd>{{ job.token_usage.llm_calls_used }}</dd>
-            </div>
-          </dl>
-        </div>
-      </article>
-
-      <article class="ff-tile decision-tile">
-        <div class="ff-tile-inner decision-inner">
-          <div>
-            <p class="ff-kicker">Main decision</p>
-            <h2 class="ff-section-title">Plan first. Execute later.</h2>
-            <p class="ff-copy">
-              FlowForge produced a non-executing workflow plan. It can help with safe internal steps,
-              but risky actions stay draft-only or human-approved.
-            </p>
           </div>
+        </form>
 
-          <div v-if="primaryGate" class="primary-gate">
-            <span class="policy-badge policy-approval">Main approval</span>
-            <strong>{{ primaryGate.label }}</strong>
-            <span>{{ primaryGate.reason }}</span>
+        <article v-if="errorMessage" class="ff-tile error-tile">
+          <div class="ff-tile-inner">
+            <p class="ff-kicker">Error</p>
+            <h2 class="ff-page-title">Compile failed</h2>
+            <p class="ff-copy">{{ errorMessage }}</p>
           </div>
-        </div>
-      </article>
+        </article>
 
-      <article v-if="job?.router_decision" class="ff-tile router-tile">
-        <div class="ff-tile-inner router-inner">
-          <div class="router-main">
-            <p class="ff-kicker">Router decision</p>
-            <h2 class="ff-section-title">{{ job.router_decision.route }}</h2>
-            <p class="ff-copy">{{ job.router_decision.reason }}</p>
-            <p class="ff-copy"><small><strong>Next step:</strong> {{ job.router_decision.suggested_next_step }}</small></p>
+        <article v-if="isCompiling && !job" class="ff-tile result-state-tile">
+          <div class="ff-tile-inner result-state-inner">
+            <p class="ff-kicker">Working</p>
+            <h2 class="ff-page-title">Building safe blueprint preview...</h2>
           </div>
-          <div class="router-metrics">
-            <span class="policy-badge">{{ job.router_decision.provider }} provider</span>
-            <span class="policy-badge">{{ job.router_decision.confidence }} confidence</span>
+        </article>
+
+        <article v-else-if="!job" class="ff-tile result-state-tile">
+          <div class="ff-tile-inner result-state-inner">
+            <p class="ff-kicker">Ready</p>
+            <h2 class="ff-page-title">
+              Describe a process and FlowForge will generate a safe automation blueprint preview.
+            </h2>
           </div>
-        </div>
-      </article>
+        </article>
 
-      <section class="blueprint-section workflow-section" aria-labelledby="workflow-plan-title">
-        <div class="section-head">
-          <div>
-            <p class="ff-kicker">Workflow plan</p>
-            <h2 id="workflow-plan-title" class="ff-section-title">What happens next</h2>
-          </div>
-          <span class="ff-status ff-status-neutral">{{ visibleWorkflowSteps.length }} steps</span>
-        </div>
+        <template v-else-if="compiledBlueprint">
+          <article class="ff-tile result-hero-tile">
+            <div class="ff-tile-inner result-hero-inner">
+              <div class="result-hero-main">
+                <p class="ff-kicker">Result</p>
+                <h2 class="result-title">{{ compiledBlueprint.workflow_name }}</h2>
+                <p class="result-summary">{{ plainEnglishResult }}</p>
+              </div>
 
-        <ol class="workflow-list">
-          <li
-            v-for="(step, index) in visibleWorkflowSteps"
-            :key="step.id"
-            :class="['workflow-card', riskClass(step.risk_level)]"
-          >
-            <button class="workflow-summary" type="button" @click="toggleStep(step.id)">
-              <span class="step-number">{{ index + 1 }}</span>
+              <div class="hero-badges" aria-label="Compile status">
+                <span class="policy-badge policy-approval">{{ primaryDecision }}</span>
+                <span :class="['policy-badge', riskClass(riskLevel)]">{{ riskLevel }} risk</span>
+                <span class="policy-badge policy-safe">No execution</span>
+              </div>
 
-              <span class="workflow-title-block">
-                <strong>{{ step.label }}</strong>
-                <small>{{ step.description }}</small>
-              </span>
-
-              <span class="workflow-badges">
-                <span :class="['policy-badge', policyClass(step.automation_policy)]">
-                  {{ policyLabel(step.automation_policy) }}
-                </span>
-                <span
-                  v-if="step.risk_level !== 'low'"
-                  :class="['policy-badge', riskClass(step.risk_level)]"
-                >
-                  {{ step.risk_level }}
-                </span>
-                <span v-if="step.approval_required" class="policy-badge policy-approval">
-                  Approval
-                </span>
-              </span>
-
-              <span class="expand-label">
-                {{ isStepExpanded(step) ? "Hide" : "Details" }}
-              </span>
-            </button>
-
-            <div v-if="isStepExpanded(step)" class="workflow-details">
-              <dl class="meta-grid" aria-label="Step details">
+              <dl class="result-metrics" aria-label="Compile summary">
                 <div>
-                  <dt>Primitive</dt>
-                  <dd>{{ formatEnum(step.primitive) }}</dd>
+                  <dt>Steps</dt>
+                  <dd>{{ compiledBlueprint.steps.length }}</dd>
                 </div>
                 <div>
-                  <dt>Actor</dt>
-                  <dd>{{ formatEnum(step.actor) }}</dd>
+                  <dt>Gates</dt>
+                  <dd>{{ gateCount }}</dd>
                 </div>
                 <div>
-                  <dt>Policy</dt>
-                  <dd>{{ policyLabel(step.automation_policy) }}</dd>
-                </div>
-                <div>
-                  <dt>Risk</dt>
-                  <dd>{{ step.risk_level }}</dd>
-                </div>
-                <div>
-                  <dt>Approval</dt>
-                  <dd>{{ yesNo(step.approval_required) }}</dd>
-                </div>
-                <div>
-                  <dt>Execution</dt>
-                  <dd>{{ formatEnum(step.real_world_execution) }}</dd>
+                  <dt>LLM</dt>
+                  <dd>{{ job.token_usage.llm_calls_used }}</dd>
                 </div>
               </dl>
             </div>
-          </li>
-        </ol>
-      </section>
-
-      <section class="blueprint-section compact-section" aria-label="Key safety output">
-        <div class="section-head">
-          <div>
-            <p class="ff-kicker">Safety output</p>
-            <h2 class="ff-section-title">What is allowed, gated, or blocked</h2>
-          </div>
-        </div>
-
-        <div class="safety-grid">
-          <article class="safety-card">
-            <span class="policy-badge policy-safe">Safe</span>
-            <h3>Can automate</h3>
-            <ul>
-              <li v-for="item in compiledBlueprint.safe_to_automate.slice(0, 4)" :key="item">
-                {{ item }}
-              </li>
-            </ul>
           </article>
 
-          <article class="safety-card">
-            <span class="policy-badge policy-approval">Approval</span>
-            <h3>Needs human review</h3>
-            <ul>
-              <li v-for="item in compiledBlueprint.needs_human_approval.slice(0, 4)" :key="item">
-                {{ item }}
-              </li>
-            </ul>
-          </article>
+          <article class="ff-tile decision-tile">
+            <div class="ff-tile-inner decision-inner">
+              <div>
+                <p class="ff-kicker">Main decision</p>
+                <h2 class="ff-section-title">Plan first. Execute later.</h2>
+                <p class="ff-copy">{{ mainDecisionCopy }}</p>
+              </div>
 
-          <article class="safety-card">
-            <span class="policy-badge policy-blocked">Blocked</span>
-            <h3>Must not auto-run</h3>
-            <ul>
-              <li v-for="item in compiledBlueprint.not_safe_to_automate.slice(0, 4)" :key="item">
-                {{ item }}
-              </li>
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section class="blueprint-section">
-        <button class="section-toggle" type="button" @click="toggleSection('gates')">
-          <span>
-            <span class="ff-kicker">Human gates</span>
-            <strong>Approval requirements</strong>
-          </span>
-          <span class="section-toggle-right">
-            <span class="ff-status ff-status-approval">{{ visibleGates.length }} gates</span>
-            <span>{{ expandedSections.gates ? "Hide" : "Show" }}</span>
-          </span>
-        </button>
-
-        <div v-if="expandedSections.gates" class="output-grid">
-          <article v-if="visibleGates.length === 0" class="output-card">
-            <h3>No approval gates generated</h3>
-            <p>
-              The scanner did not detect a gate-worthy risk, but the preview still does not execute external actions.
-            </p>
-          </article>
-
-          <article v-for="gate in visibleGates" :key="gate.id" class="output-card">
-            <button class="card-toggle" type="button" @click="toggleGate(gate.id)">
-              <strong>{{ gate.label }}</strong>
-              <span>{{ isGateExpanded(gate) ? "Hide checklist" : "Show checklist" }}</span>
-            </button>
-
-            <p>{{ gate.reason }}</p>
-
-            <ul v-if="isGateExpanded(gate)" class="checklist">
-              <li v-for="item in gate.review_checklist" :key="item">{{ item }}</li>
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section class="blueprint-section">
-        <button class="section-toggle" type="button" @click="toggleSection('risks')">
-          <span>
-            <span class="ff-kicker">Risks</span>
-            <strong>Why this decision happened</strong>
-          </span>
-          <span class="section-toggle-right">
-            <span :class="['ff-status', riskClass(riskLevel)]">{{ riskLevel }}</span>
-            <span>{{ expandedSections.risks ? "Hide" : "Show" }}</span>
-          </span>
-        </button>
-
-        <div v-if="expandedSections.risks" class="output-grid">
-          <article v-if="visibleRisks.length === 0" class="output-card">
-            <h3>No obvious risk flags detected</h3>
-            <p>
-              FlowForge still keeps this as a non-executing preview until a human verifies the workflow boundary.
-            </p>
-          </article>
-
-          <article
-            v-for="risk in visibleRisks"
-            :key="risk.id"
-            :class="['output-card', riskClass(risk.risk_level)]"
-          >
-            <button class="card-toggle" type="button" @click="toggleRisk(risk.id)">
-              <strong>{{ risk.label }}</strong>
-              <span :class="['policy-badge', riskClass(risk.risk_level)]">
-                {{ risk.risk_level }}
-              </span>
-            </button>
-
-            <div v-if="isRiskExpanded(risk)" class="card-expanded">
-              <p><strong>Reason:</strong> {{ risk.reason }}</p>
-              <p><strong>Recommendation:</strong> {{ risk.recommendation }}</p>
+              <div v-if="primaryGate" class="primary-gate">
+                <span class="policy-badge policy-approval">Main approval</span>
+                <strong>{{ primaryGate.label }}</strong>
+                <span>{{ primaryGate.reason }}</span>
+              </div>
             </div>
           </article>
-        </div>
-      </section>
 
-      <section class="blueprint-section">
-        <button class="section-toggle" type="button" @click="toggleSection('trigger')">
-          <span>
-            <span class="ff-kicker">Trigger</span>
-            <strong>Input and inferred trigger</strong>
-          </span>
-          <span>{{ expandedSections.trigger ? "Hide" : "Show" }}</span>
-        </button>
-
-        <div v-if="expandedSections.trigger" class="ff-tile nested-tile">
-          <div class="ff-tile-inner">
-            <p class="ff-copy">{{ compiledBlueprint.summary }}</p>
-
-            <dl class="meta-grid trigger-grid" aria-label="Trigger details">
-              <div>
-                <dt>Trigger type</dt>
-                <dd>{{ formatEnum(compiledBlueprint.trigger.type) }}</dd>
+          <article v-if="job?.router_decision" class="ff-tile router-tile">
+            <div class="ff-tile-inner router-inner">
+              <div class="router-main">
+                <p class="ff-kicker">Router decision</p>
+                <h2 class="ff-section-title">{{ job.router_decision.route }}</h2>
+                <p class="ff-copy">{{ job.router_decision.reason }}</p>
+                <p class="ff-copy"><small><strong>Next step:</strong> {{ job.router_decision.suggested_next_step }}</small></p>
               </div>
-              <div>
-                <dt>Trigger source</dt>
-                <dd>{{ compiledBlueprint.trigger.source ?? "Not specified" }}</dd>
+              <div class="router-metrics">
+                <span class="policy-badge">{{ job.router_decision.provider }} provider</span>
+                <span class="policy-badge">{{ job.router_decision.confidence }} confidence</span>
               </div>
-              <div>
-                <dt>Boundary</dt>
-                <dd>{{ formatEnum(compiledBlueprint.automation_boundary) }}</dd>
-              </div>
-              <div>
-                <dt>Description</dt>
-                <dd>{{ compiledBlueprint.trigger.description }}</dd>
-              </div>
-            </dl>
-          </div>
-        </div>
-      </section>
+            </div>
+          </article>
 
-      <section class="blueprint-section">
-        <button class="section-toggle" type="button" @click="toggleSection('dryRuns')">
-          <span>
-            <span class="ff-kicker">Dry runs</span>
-            <strong>Generated test cases</strong>
-          </span>
-          <span class="section-toggle-right">
-            <span class="ff-status ff-status-neutral">{{ compiledBlueprint.test_cases.length }} cases</span>
-            <span>{{ expandedSections.dryRuns ? "Hide" : "Show" }}</span>
-          </span>
-        </button>
+          <section class="blueprint-section workflow-section" aria-labelledby="workflow-plan-title">
+            <div class="section-head">
+              <div>
+                <p class="ff-kicker">Workflow plan</p>
+                <h2 id="workflow-plan-title" class="ff-section-title">What happens next</h2>
+              </div>
+              <span class="ff-status ff-status-neutral">{{ visibleWorkflowSteps.length }} steps</span>
+            </div>
 
-        <div v-if="expandedSections.dryRuns" class="output-grid">
-          <article
-            v-for="testCase in compiledBlueprint.test_cases"
-            :key="testCase.id"
-            class="output-card"
-          >
-            <div class="output-card-head">
-              <h3>{{ testCase.name }}</h3>
-              <span
-                :class="[
-                  'policy-badge',
-                  testCase.expected_human_gate ? 'policy-approval' : 'policy-safe',
-                ]"
+            <ol class="workflow-list">
+              <li
+                v-for="(step, index) in visibleWorkflowSteps"
+                :key="step.id"
+                :class="['workflow-card', riskClass(step.risk_level)]"
               >
-                {{ testCase.expected_human_gate ? "Human gate" : "No gate" }}
-              </span>
-            </div>
+                <button class="workflow-summary" type="button" @click="toggleStep(step.id)">
+                  <span class="step-number">{{ index + 1 }}</span>
 
-            <p>{{ testCase.input_event }}</p>
+                  <span class="workflow-title-block">
+                    <strong>{{ step.label }}</strong>
+                    <small>{{ step.description }}</small>
+                  </span>
 
-            <dl class="meta-grid mini-grid">
-              <div>
-                <dt>Expected route</dt>
-                <dd>{{ formatEnum(testCase.expected_route) }}</dd>
-              </div>
-              <div>
-                <dt>Reason</dt>
-                <dd>{{ testCase.reason }}</dd>
-              </div>
-            </dl>
-          </article>
-        </div>
-      </section>
+                  <span class="workflow-badges">
+                    <span :class="['policy-badge', policyClass(step.automation_policy)]">
+                      {{ policyLabel(step.automation_policy) }}
+                    </span>
+                    <span
+                      v-if="step.risk_level !== 'low'"
+                      :class="['policy-badge', riskClass(step.risk_level)]"
+                    >
+                      {{ step.risk_level }}
+                    </span>
+                    <span v-if="step.approval_required" class="policy-badge policy-approval">
+                      Approval
+                    </span>
+                  </span>
 
-      <section class="blueprint-section">
-        <button class="section-toggle" type="button" @click="toggleSection('beforeImplementation')">
-          <span>
-            <span class="ff-kicker">Before implementation</span>
-            <strong>Assumptions and open questions</strong>
-          </span>
-          <span class="section-toggle-right">
-            <span class="ff-status ff-status-neutral">{{ compiledBlueprint.open_questions.length }} questions</span>
-            <span>{{ expandedSections.beforeImplementation ? "Hide" : "Show" }}</span>
-          </span>
-        </button>
+                  <span class="expand-label">
+                    {{ isStepExpanded(step) ? "Hide" : "Details" }}
+                  </span>
+                </button>
 
-        <div v-if="expandedSections.beforeImplementation" class="output-grid">
-          <article class="output-card">
-            <h3>Assumptions</h3>
-            <ul class="checklist">
-              <li v-for="assumption in compiledBlueprint.assumptions" :key="assumption">
-                {{ assumption }}
-              </li>
-            </ul>
-          </article>
-
-          <article class="output-card">
-            <h3>Clarify before building</h3>
-            <ul class="checklist">
-              <li v-for="question in compiledBlueprint.open_questions" :key="question">
-                {{ question }}
-              </li>
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section class="blueprint-section">
-        <button class="section-toggle" type="button" @click="toggleSection('technicalTrace')">
-          <span>
-            <span class="ff-kicker">Technical trace</span>
-            <strong>Developer details</strong>
-          </span>
-          <span>{{ expandedSections.technicalTrace ? "Hide" : "Show" }}</span>
-        </button>
-
-        <div v-if="expandedSections.technicalTrace" class="output-grid">
-          <article class="output-card">
-            <h3>Pipeline</h3>
-            <ol class="detail-list">
-              <li v-for="step in job.steps" :key="step.id">
-                <strong>{{ step.label }}</strong>
-                <span>{{ step.output_summary }}</span>
+                <div v-if="isStepExpanded(step)" class="workflow-details">
+                  <dl class="meta-grid" aria-label="Step details">
+                    <div>
+                      <dt>Primitive</dt>
+                      <dd>{{ formatEnum(step.primitive) }}</dd>
+                    </div>
+                    <div>
+                      <dt>Actor</dt>
+                      <dd>{{ formatEnum(step.actor) }}</dd>
+                    </div>
+                    <div>
+                      <dt>Policy</dt>
+                      <dd>{{ policyLabel(step.automation_policy) }}</dd>
+                    </div>
+                    <div>
+                      <dt>Risk</dt>
+                      <dd>{{ step.risk_level }}</dd>
+                    </div>
+                    <div>
+                      <dt>Approval</dt>
+                      <dd>{{ yesNo(step.approval_required) }}</dd>
+                    </div>
+                    <div>
+                      <dt>Execution</dt>
+                      <dd>{{ formatEnum(step.real_world_execution) }}</dd>
+                    </div>
+                  </dl>
+                </div>
               </li>
             </ol>
-          </article>
+          </section>
 
-          <article class="output-card">
-            <h3>Token usage</h3>
-            <dl class="meta-grid mini-grid">
+          <section class="blueprint-section compact-section" aria-label="Key safety output">
+            <div class="section-head">
               <div>
-                <dt>Mode</dt>
-                <dd>{{ job.token_usage.mode }}</dd>
+                <p class="ff-kicker">Safety output</p>
+                <h2 class="ff-section-title">What is allowed, gated, or blocked</h2>
               </div>
-              <div>
-                <dt>LLM calls</dt>
-                <dd>{{ job.token_usage.llm_calls_used }} / {{ job.token_usage.llm_calls_limit }}</dd>
-              </div>
-              <div>
-                <dt>Rule checks</dt>
-                <dd>{{ job.token_usage.rule_based_checks }}</dd>
-              </div>
-            </dl>
-          </article>
+            </div>
 
-          <article class="output-card">
-            <h3>Agent trace</h3>
-            <ul class="detail-list">
-              <li v-for="event in job.agent_trace" :key="event.id">
-                <strong>{{ event.action }}</strong>
-                <span>{{ event.status }}</span>
-              </li>
-            </ul>
-          </article>
-        </div>
+            <div class="safety-grid">
+              <article class="safety-card">
+                <span class="policy-badge policy-safe">Safe</span>
+                <h3>Can automate</h3>
+                <ul>
+                  <li v-for="item in compiledBlueprint.safe_to_automate.slice(0, 4)" :key="item">
+                    {{ item }}
+                  </li>
+                </ul>
+              </article>
+
+              <article class="safety-card">
+                <span class="policy-badge policy-approval">Approval</span>
+                <h3>Needs human review</h3>
+                <ul>
+                  <li v-for="item in compiledBlueprint.needs_human_approval.slice(0, 4)" :key="item">
+                    {{ item }}
+                  </li>
+                </ul>
+              </article>
+
+              <article class="safety-card">
+                <span class="policy-badge policy-blocked">Blocked</span>
+                <h3>Must not auto-run</h3>
+                <ul>
+                  <li v-for="item in compiledBlueprint.not_safe_to_automate.slice(0, 4)" :key="item">
+                    {{ item }}
+                  </li>
+                </ul>
+              </article>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('gates')">
+              <span>
+                <span class="ff-kicker">Human gates</span>
+                <strong>Approval requirements</strong>
+              </span>
+              <span class="section-toggle-right">
+                <span class="ff-status ff-status-approval">{{ visibleGates.length }} gates</span>
+                <span>{{ expandedSections.gates ? "Hide" : "Show" }}</span>
+              </span>
+            </button>
+
+            <div v-if="expandedSections.gates" class="output-grid">
+              <article v-if="visibleGates.length === 0" class="output-card">
+                <h3>No approval gates generated</h3>
+                <p>
+                  The scanner did not detect a gate-worthy risk, but the preview still does not execute external actions.
+                </p>
+              </article>
+
+              <article v-for="gate in visibleGates" :key="gate.id" class="output-card">
+                <button class="card-toggle" type="button" @click="toggleGate(gate.id)">
+                  <strong>{{ gate.label }}</strong>
+                  <span>{{ isGateExpanded(gate) ? "Hide checklist" : "Show checklist" }}</span>
+                </button>
+
+                <p>{{ gate.reason }}</p>
+
+                <ul v-if="isGateExpanded(gate)" class="checklist">
+                  <li v-for="item in gate.review_checklist" :key="item">{{ item }}</li>
+                </ul>
+              </article>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('risks')">
+              <span>
+                <span class="ff-kicker">Risks</span>
+                <strong>Why this decision happened</strong>
+              </span>
+              <span class="section-toggle-right">
+                <span :class="['ff-status', riskClass(riskLevel)]">{{ riskLevel }}</span>
+                <span>{{ expandedSections.risks ? "Hide" : "Show" }}</span>
+              </span>
+            </button>
+
+            <div v-if="expandedSections.risks" class="output-grid">
+              <article v-if="visibleRisks.length === 0" class="output-card">
+                <h3>No obvious risk flags detected</h3>
+                <p>
+                  FlowForge still keeps this as a non-executing preview until a human verifies the workflow boundary.
+                </p>
+              </article>
+
+              <article
+                v-for="risk in visibleRisks"
+                :key="risk.id"
+                :class="['output-card', riskClass(risk.risk_level)]"
+              >
+                <button class="card-toggle" type="button" @click="toggleRisk(risk.id)">
+                  <strong>{{ risk.label }}</strong>
+                  <span :class="['policy-badge', riskClass(risk.risk_level)]">
+                    {{ risk.risk_level }}
+                  </span>
+                </button>
+
+                <div v-if="isRiskExpanded(risk)" class="card-expanded">
+                  <p><strong>Reason:</strong> {{ risk.reason }}</p>
+                  <p><strong>Recommendation:</strong> {{ risk.recommendation }}</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('trigger')">
+              <span>
+                <span class="ff-kicker">Trigger</span>
+                <strong>Input and inferred trigger</strong>
+              </span>
+              <span>{{ expandedSections.trigger ? "Hide" : "Show" }}</span>
+            </button>
+
+            <div v-if="expandedSections.trigger" class="ff-tile nested-tile">
+              <div class="ff-tile-inner">
+                <p class="ff-copy">{{ compiledBlueprint.summary }}</p>
+
+                <dl class="meta-grid trigger-grid" aria-label="Trigger details">
+                  <div>
+                    <dt>Trigger type</dt>
+                    <dd>{{ formatEnum(compiledBlueprint.trigger.type) }}</dd>
+                  </div>
+                  <div>
+                    <dt>Trigger source</dt>
+                    <dd>{{ compiledBlueprint.trigger.source ?? "Not specified" }}</dd>
+                  </div>
+                  <div>
+                    <dt>Boundary</dt>
+                    <dd>{{ formatEnum(compiledBlueprint.automation_boundary) }}</dd>
+                  </div>
+                  <div>
+                    <dt>Description</dt>
+                    <dd>{{ compiledBlueprint.trigger.description }}</dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('dryRuns')">
+              <span>
+                <span class="ff-kicker">Dry runs</span>
+                <strong>Generated test cases</strong>
+              </span>
+              <span class="section-toggle-right">
+                <span class="ff-status ff-status-neutral">{{ compiledBlueprint.test_cases.length }} cases</span>
+                <span>{{ expandedSections.dryRuns ? "Hide" : "Show" }}</span>
+              </span>
+            </button>
+
+            <div v-if="expandedSections.dryRuns" class="output-grid">
+              <article
+                v-for="testCase in compiledBlueprint.test_cases"
+                :key="testCase.id"
+                class="output-card"
+              >
+                <div class="output-card-head">
+                  <h3>{{ testCase.name }}</h3>
+                  <span
+                    :class="[
+                      'policy-badge',
+                      testCase.expected_human_gate ? 'policy-approval' : 'policy-safe',
+                    ]"
+                  >
+                    {{ testCase.expected_human_gate ? "Human gate" : "No gate" }}
+                  </span>
+                </div>
+
+                <p>{{ testCase.input_event }}</p>
+
+                <dl class="meta-grid mini-grid">
+                  <div>
+                    <dt>Expected route</dt>
+                    <dd>{{ formatEnum(testCase.expected_route) }}</dd>
+                  </div>
+                  <div>
+                    <dt>Reason</dt>
+                    <dd>{{ testCase.reason }}</dd>
+                  </div>
+                </dl>
+              </article>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('beforeImplementation')">
+              <span>
+                <span class="ff-kicker">Before implementation</span>
+                <strong>Assumptions and open questions</strong>
+              </span>
+              <span class="section-toggle-right">
+                <span class="ff-status ff-status-neutral">{{ compiledBlueprint.open_questions.length }} questions</span>
+                <span>{{ expandedSections.beforeImplementation ? "Hide" : "Show" }}</span>
+              </span>
+            </button>
+
+            <div v-if="expandedSections.beforeImplementation" class="output-grid">
+              <article class="output-card">
+                <h3>Assumptions</h3>
+                <ul class="checklist">
+                  <li v-for="assumption in compiledBlueprint.assumptions" :key="assumption">
+                    {{ assumption }}
+                  </li>
+                </ul>
+              </article>
+
+              <article class="output-card">
+                <h3>Clarify before building</h3>
+                <ul class="checklist">
+                  <li v-for="question in compiledBlueprint.open_questions" :key="question">
+                    {{ question }}
+                  </li>
+                </ul>
+              </article>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('technicalTrace')">
+              <span>
+                <span class="ff-kicker">Technical trace</span>
+                <strong>Developer details</strong>
+              </span>
+              <span>{{ expandedSections.technicalTrace ? "Hide" : "Show" }}</span>
+            </button>
+
+            <div v-if="expandedSections.technicalTrace" class="output-grid">
+              <article class="output-card">
+                <h3>Pipeline</h3>
+                <ol class="detail-list">
+                  <li v-for="step in job.steps" :key="step.id">
+                    <strong>{{ step.label }}</strong>
+                    <span>{{ step.output_summary }}</span>
+                  </li>
+                </ol>
+              </article>
+
+              <article class="output-card">
+                <h3>Token usage</h3>
+                <dl class="meta-grid mini-grid">
+                  <div>
+                    <dt>Mode</dt>
+                    <dd>{{ job.token_usage.mode }}</dd>
+                  </div>
+                  <div>
+                    <dt>LLM calls</dt>
+                    <dd>{{ job.token_usage.llm_calls_used }} / {{ job.token_usage.llm_calls_limit }}</dd>
+                  </div>
+                  <div>
+                    <dt>Rule checks</dt>
+                    <dd>{{ job.token_usage.rule_based_checks }}</dd>
+                  </div>
+                </dl>
+              </article>
+
+              <article class="output-card">
+                <h3>Agent trace</h3>
+                <ul class="detail-list">
+                  <li v-for="event in job.agent_trace" :key="event.id">
+                    <strong>{{ event.action }}</strong>
+                    <span>{{ event.status }}</span>
+                  </li>
+                </ul>
+              </article>
+            </div>
+          </section>
+        </template>
       </section>
-    </template>
-  </section>
-</section>
+    </section>
   </main>
 </template>
 
@@ -1415,12 +1420,18 @@ onMounted(() => {
   .input-tile,
   .result-hero-tile,
   .decision-tile,
+  .router-tile,
   .blueprint-section {
     grid-column: span 12;
   }
 
-  .decision-inner {
+  .decision-inner,
+  .router-inner {
     grid-template-columns: 1fr;
+  }
+
+  .router-metrics {
+    align-items: flex-start;
   }
 
   .workflow-summary {

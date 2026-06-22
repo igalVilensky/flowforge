@@ -53,10 +53,23 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
   const routerResult = await routeCompileRequest(trimmedInput, signals, risks, readiness, mode);
+  const displayedPrimitives = signals.workflow_primitives.filter((primitive) => {
+    if (primitive === "approval" && !risks.requires_human_review) {
+      return false;
+    }
+
+    if (primitive === "risk_detection" && risks.categories.length === 0) {
+      return false;
+    }
+
+    return true;
+  });
+
   const detectedPrimitiveSummary =
-    signals.workflow_primitives.length > 0
-      ? `Detected ${signals.workflow_primitives.join(", ")} primitives.`
+    displayedPrimitives.length > 0
+      ? `Detected ${displayedPrimitives.join(", ")} primitives.`
       : "No clear workflow primitives detected yet.";
+
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
   const result = buildBlueprint({
@@ -65,6 +78,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     signals,
     risks,
     readiness,
+    mode,
   });
 
   const steps: PipelineStep[] = [
@@ -90,9 +104,8 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       description: "Summarize risk level and review requirements with deterministic rules.",
       status: "done",
       tool_name: "riskScanner",
-      output_summary: `Risk level is ${risks.risk_level}; human review ${
-        risks.requires_human_review ? "is required" : "is not required"
-      }.`,
+      output_summary: `Risk level is ${risks.risk_level}; human review ${risks.requires_human_review ? "is required" : "is not required"
+        }.`,
     },
     {
       id: "dynamic_blueprint_preview",

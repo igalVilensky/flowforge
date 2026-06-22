@@ -1,3 +1,4 @@
+import type { CompileMode } from "../../shared/types/compileJob";
 import type {
   AutomationBoundary,
   AutomationReadinessScore,
@@ -23,6 +24,7 @@ export type BuildBlueprintInput = {
   signals: SignalSummary;
   risks: RiskSummary;
   readiness: AutomationReadinessScore;
+  mode: CompileMode;
 };
 
 type RiskItemDefinition = {
@@ -164,7 +166,6 @@ const primitiveSafeItems: Partial<Record<WorkflowPrimitive, string>> = {
   risk_detection: "Detecting obvious risk categories with deterministic rules",
   routing: "Routing items internally to an owner or queue",
   drafting: "Preparing internal draft-only text",
-  approval: "Preparing an approval checkpoint",
   validation: "Checking required fields and schema shape",
   notification: "Preparing notification drafts without sending",
   record_creation: "Preparing internal record or task fields",
@@ -277,6 +278,10 @@ function getWorkflowFocus(signals: SignalSummary): string {
     return "Drafting Workflow";
   }
 
+  if (hasPrimitive(signals, "extraction") && hasPrimitive(signals, "record_creation")) {
+    return "Job Application Intake Workflow";
+  }
+
   if (hasPrimitive(signals, "extraction")) {
     return "Extraction Workflow";
   }
@@ -362,13 +367,60 @@ function buildWorkflowName(signals: SignalSummary, risks: RiskSummary): string {
   return getWorkflowFocus(signals);
 }
 
+function getSummaryPrimitiveNames(signals: SignalSummary, risks: RiskSummary): string {
+  const primitives = signals.workflow_primitives.filter((primitive) => {
+    if (primitive === "intake") {
+      return false;
+    }
+
+    if (primitive === "approval" && !risks.requires_human_review) {
+      return false;
+    }
+
+    if (primitive === "risk_detection" && risks.categories.length === 0) {
+      return false;
+    }
+
+    return true;
+  });
+
+  if (primitives.length === 0) {
+    return "preview";
+  }
+
+  const labels: Partial<Record<WorkflowPrimitive, string>> = {
+    classification: "classification",
+    extraction: "extraction",
+    routing: "routing",
+    drafting: "drafting",
+    approval: "approval",
+    validation: "validation",
+    notification: "notification",
+    record_creation: "internal task",
+    monitoring: "monitoring",
+    escalation: "escalation",
+    summarization: "summarization",
+    reporting: "reporting",
+    risk_detection: "risk review",
+    export: "export",
+  };
+
+  return joinList(primitives.map((primitive) => labels[primitive] ?? primitive));
+}
+
+function articleFor(text: string): "a" | "an" {
+  return /^[aeiou]/i.test(text) ? "an" : "a";
+}
+
 function buildSummary(signals: SignalSummary, risks: RiskSummary, readiness: AutomationReadinessScore): string {
-  const primitiveNames =
-    signals.workflow_primitives.length > 0
-      ? signals.workflow_primitives.filter((primitive) => primitive !== "intake").join(", ")
-      : "preview";
+  const primitiveNames = getSummaryPrimitiveNames(signals, risks);
+  const workflowPhrase =
+    primitiveNames === "preview"
+      ? "a preview"
+      : `${articleFor(primitiveNames)} ${primitiveNames} workflow`;
+
   const parts = [
-    `Rule-based preview for a ${primitiveNames || "process"} workflow with readiness ${readiness.score}/100.`,
+    `Rule-based preview for ${workflowPhrase} with readiness ${readiness.score}/100.`,
   ];
 
   if (risks.categories.length > 0) {
@@ -408,7 +460,12 @@ function inferTrigger(processInput: string, signals: SignalSummary): WorkflowTri
     };
   }
 
-  if (hasPrimitive(signals, "monitoring") || normalizedInput.includes("daily") || normalizedInput.includes("weekly")) {
+  if (
+    signals.has_scheduled_trigger ||
+    hasPrimitive(signals, "monitoring") ||
+    normalizedInput.includes("daily") ||
+    normalizedInput.includes("weekly")
+  ) {
     return {
       type: "scheduled",
       source: "scheduled_monitor",
@@ -462,6 +519,8 @@ function getAutomationBoundary(
 function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): WorkflowStep[] {
   const categories = risks.categories;
   const requiresApprovalStep = needsBlueprintHumanReview(categories, risks);
+  const hasDetectedRisks = categories.length > 0;
+
   const steps: WorkflowStep[] = [
     buildStep({
       id: "intake_process",
@@ -540,8 +599,10 @@ function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): Workflo
   steps.push(
     buildStep({
       id: "detect_risks",
-      label: "Detect safety risks",
-      description: "Flag external communication, sensitive data, high-stakes decisions, and execution risk.",
+      label: hasDetectedRisks ? "Detect safety risks" : "Check safety boundary",
+      description: hasDetectedRisks
+        ? "Flag external communication, sensitive data, high-stakes decisions, and execution risk."
+        : "Confirm whether the workflow includes external actions, sensitive data, high-stakes decisions, or execution risk.",
       primitive: "risk_detection",
       actor: "rules",
       input: "Workflow signals",
@@ -717,15 +778,23 @@ function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): Workflo
   return steps;
 }
 
-function buildSafeToAutomate(signals: SignalSummary): string[] {
+function buildSafeToAutomate(signals: SignalSummary, risks: RiskSummary): string[] {
   const items: string[] = [];
 
   for (const primitive of signals.workflow_primitives) {
+    if (primitive === "approval") {
+      continue;
+    }
+
     const safeItem = primitiveSafeItems[primitive];
 
     if (safeItem) {
       addUnique(items, safeItem);
     }
+  }
+
+  if (risks.requires_human_review) {
+    addUnique(items, "Preparing a human approval checkpoint");
   }
 
   addUnique(items, "Generating a non-executing blueprint preview");
@@ -1125,12 +1194,20 @@ function questionForMissingInfo(missingInfo: string): string {
   return `Clarify: ${missingInfo}`;
 }
 
-function buildAssumptions(): string[] {
-  return [
-    "This is a deterministic rule-based preview response. AI generation is not connected yet.",
-    "No AI provider, database, authentication, n8n export, or external execution is connected.",
+function buildAssumptions(mode: CompileMode): string[] {
+  const assumptions = [
+    mode === "demo" || mode === "rule_only"
+      ? "Demo/rule mode uses deterministic routing and deterministic blueprint generation."
+      : "AI may be used only for the router decision. Blueprint generation remains deterministic.",
+    "No database, authentication, n8n export, or external execution is connected.",
     "The blueprint describes a safe plan and does not send, update, charge, delete, or trigger production systems.",
   ];
+
+  if (mode === "balanced" || mode === "full") {
+    assumptions.push("Groq is the primary router provider and Gemini is the fallback when configured.");
+  }
+
+  return assumptions;
 }
 
 function buildOpenQuestions(signals: SignalSummary, risks: RiskSummary): string[] {
@@ -1165,6 +1242,7 @@ export function buildBlueprint({
   signals,
   risks,
   readiness,
+  mode,
 }: BuildBlueprintInput): SafeAutomationBlueprint {
   const steps = buildWorkflowSteps(signals, risks);
 
@@ -1175,14 +1253,14 @@ export function buildBlueprint({
     automation_boundary: getAutomationBoundary(signals, risks, readiness),
     trigger: inferTrigger(processInput, signals),
     steps,
-    safe_to_automate: buildSafeToAutomate(signals),
+    safe_to_automate: buildSafeToAutomate(signals, risks),
     needs_human_approval: buildNeedsHumanApproval(signals, risks),
     not_recommended: buildNotRecommended(signals, risks),
     not_safe_to_automate: buildNotSafeToAutomate(risks),
     risks: buildRiskItems(steps, risks),
     human_approval_gates: buildHumanApprovalGates(steps, risks),
     test_cases: buildDryRunTestCases(processInput, risks),
-    assumptions: buildAssumptions(),
+    assumptions: buildAssumptions(mode),
     open_questions: buildOpenQuestions(signals, risks),
   };
 }
