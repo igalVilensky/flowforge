@@ -87,6 +87,16 @@ type TextDisplayItem = {
   value: string;
 };
 
+type AiAgentCard = {
+  label: string;
+  provider: string;
+  usedAi: boolean;
+  status: string;
+  confidence: string;
+  summary: string;
+  metrics: TextDisplayItem[];
+};
+
 const examples: ExampleProcess[] = [
   {
     label: "Internal intake",
@@ -135,23 +145,23 @@ const compileStages: CompileStage[] = [
     id: "provider",
     label: "Provider",
     durationMs: 900,
-    description: "Selecting router provider strategy.",
-    demoDescription: "AI router skipped. Deterministic routing is used.",
-    aiDescription: "Trying Groq first. Gemini can be used as fallback.",
+    description: "Selecting AI agent provider strategy.",
+    demoDescription: "AI agents skipped. Deterministic fallbacks are used.",
+    aiDescription: "Trying Groq first. Gemini can be used as fallback for agent calls.",
   },
-  { id: "blueprint", label: "Blueprint", durationMs: 850, description: "Building the deterministic non-executing preview." },
-  { id: "critic", label: "Critic", durationMs: 700, description: "Checking safe, draft-only, gate, blocked, or unclear boundaries." },
+  { id: "blueprint", label: "Blueprint", durationMs: 850, description: "Running Blueprint Architect proposal and deterministic preview builder." },
+  { id: "critic", label: "Critic", durationMs: 700, description: "Running AI critique when available, then deterministic Safety Guard." },
   { id: "validate", label: "Validate", durationMs: 650, description: "Validating the compile job schema." },
 ];
 
 const FINAL_STAGE_HOLD_MS = 500;
 const PREVIEW_TEXT_LIMIT = 160;
-const routerRoleCopy = "AI is used only to choose the route. It does not write the blueprint and it does not execute anything.";
-const deterministicBoundaryCopy = "Blueprint generation, clarification planning, and Safety Critic review are deterministic.";
+const routerRoleCopy = "AI agents can route, clarify, propose a blueprint, and critique risks. They do not execute anything.";
+const deterministicBoundaryCopy = "Deterministic tools still validate the schema, build the safe preview, and make the final Safety Guard decision.";
 const routerPromptContextSummary =
   "The router receives the submitted process, deterministic signal scan, risk summary, readiness score, and selected mode.";
 const routerOutputBoundaryCopy =
-  "FlowForge validates router JSON before using it. The router can only choose a route.";
+  "FlowForge validates agent JSON before using it. Agents can propose and critique, but deterministic guardrails decide final safety.";
 
 const processInput = ref("");
 const mode = ref<CompileMode>("demo");
@@ -188,6 +198,68 @@ const technicalPipelineSteps = computed(() => job.value?.steps ?? []);
 const technicalTokenUsage = computed(() => job.value?.token_usage ?? null);
 const technicalAgentTrace = computed(() => job.value?.agent_trace ?? []);
 const llmCallsUsed = computed(() => job.value?.token_usage.llm_calls_used ?? 0);
+const clarificationAgent = computed(() => job.value?.clarification_agent ?? null);
+const blueprintArchitectAgent = computed(() => job.value?.blueprint_architect_agent ?? null);
+const safetyCriticAgent = computed(() => job.value?.safety_critic_agent ?? null);
+
+const aiAgentCards = computed<AiAgentCard[]>(() => {
+  if (!job.value) return [];
+
+  const clarification = clarificationAgent.value;
+  const blueprintArchitect = blueprintArchitectAgent.value;
+  const criticAgent = safetyCriticAgent.value;
+
+  return [
+    {
+      label: "Clarification Agent",
+      provider: clarification?.provider ?? "deterministic",
+      usedAi: clarification?.used_ai ?? false,
+      status: clarification?.status ?? "skipped",
+      confidence: clarification?.confidence ?? "low",
+      summary: clarification
+        ? clarification.used_ai
+          ? `Improved ${clarification.questions.length} clarification question(s).`
+          : clarification.reason
+        : "No clarification agent output yet.",
+      metrics: [
+        { label: "Questions", value: String(clarification?.questions.length ?? 0) },
+        { label: "Mode", value: job.value.mode },
+      ],
+    },
+    {
+      label: "Blueprint Architect Agent",
+      provider: blueprintArchitect?.provider ?? "deterministic",
+      usedAi: blueprintArchitect?.used_ai ?? false,
+      status: blueprintArchitect?.status ?? "skipped",
+      confidence: blueprintArchitect?.confidence ?? "low",
+      summary: blueprintArchitect
+        ? blueprintArchitect.used_ai
+          ? `Proposed ${blueprintArchitect.proposed_steps.length} step(s) and ${blueprintArchitect.proposed_human_approval_gates.length} gate(s).`
+          : blueprintArchitect.reason
+        : "No blueprint architect output yet.",
+      metrics: [
+        { label: "Proposed steps", value: String(blueprintArchitect?.proposed_steps.length ?? 0) },
+        { label: "Proposed gates", value: String(blueprintArchitect?.proposed_human_approval_gates.length ?? 0) },
+      ],
+    },
+    {
+      label: "Safety Critic Agent",
+      provider: criticAgent?.provider ?? "deterministic",
+      usedAi: criticAgent?.used_ai ?? false,
+      status: criticAgent?.status ?? "skipped",
+      confidence: criticAgent?.confidence ?? "low",
+      summary: criticAgent
+        ? criticAgent.used_ai
+          ? `Found ${criticAgent.concerns.length} critique concern(s).`
+          : criticAgent.reason
+        : "No safety critic agent output yet.",
+      metrics: [
+        { label: "Concerns", value: String(criticAgent?.concerns.length ?? 0) },
+        { label: "Final authority", value: "Safety Guard" },
+      ],
+    },
+  ];
+});
 
 const compileRunComplete = computed(() => compileRunState.value === "complete" && Boolean(job.value));
 const activeCompileMode = computed<CompileMode>(() => (isCompiling.value ? mode.value : job.value?.mode ?? mode.value));
@@ -942,6 +1014,50 @@ onBeforeUnmount(() => {
             <span :class="['status-pill', riskToneClass(riskLevel)]">{{ riskLevel }} risk</span>
             <span :class="['status-pill', gateCount > 0 ? 'tone-approval' : 'tone-safe']">{{ gateCount }} gates</span>
             <span class="status-pill tone-safe">No execution</span>
+          </div>
+        </article>
+
+        <article v-if="aiAgentCards.length > 0" class="panel ai-agent-layer-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">M12 multi-agent layer</p>
+              <h2>AI Agents</h2>
+              <p>Agents can clarify, propose, and critique. Deterministic guardrails still make the final safety decision.</p>
+            </div>
+            <span :class="['status-pill', llmCallsUsed > 0 ? 'tone-ai' : 'tone-neutral']">
+              {{ llmCallsUsed > 0 ? `${llmCallsUsed} AI call${llmCallsUsed === 1 ? '' : 's'}` : 'Fallback mode' }}
+            </span>
+          </div>
+
+          <div class="agent-card-grid">
+            <article v-for="agent in aiAgentCards" :key="agent.label" class="agent-card">
+              <div class="agent-card-top">
+                <div>
+                  <p class="eyebrow">{{ sentenceLabel(agent.provider) }}</p>
+                  <h3>{{ agent.label }}</h3>
+                </div>
+                <span :class="['status-pill', agent.usedAi ? 'tone-ai' : 'tone-neutral']">
+                  {{ agent.usedAi ? 'AI used' : 'Fallback' }}
+                </span>
+              </div>
+
+              <p>{{ agent.summary }}</p>
+
+              <dl class="agent-meta-grid">
+                <div>
+                  <dt>Status</dt>
+                  <dd>{{ sentenceLabel(agent.status) }}</dd>
+                </div>
+                <div>
+                  <dt>Confidence</dt>
+                  <dd>{{ sentenceLabel(agent.confidence) }}</dd>
+                </div>
+                <div v-for="metric in agent.metrics" :key="`${agent.label}-${metric.label}`">
+                  <dt>{{ metric.label }}</dt>
+                  <dd>{{ metric.value }}</dd>
+                </div>
+              </dl>
+            </article>
           </div>
         </article>
 
@@ -2224,6 +2340,76 @@ onBeforeUnmount(() => {
   color: var(--ff-blocked);
 }
 
+
+.ai-agent-layer-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.agent-card-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agent-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 22px;
+  background: rgba(15, 23, 42, 0.52);
+  padding: 16px;
+}
+
+.agent-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-card h3 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.agent-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.agent-meta-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.agent-meta-grid div {
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.7);
+  padding: 10px;
+}
+
+.agent-meta-grid dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-meta-grid dd {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.tone-ai {
+  background: rgba(129, 140, 248, 0.16);
+  color: #c7d2fe;
+}
+
 @media (max-width: 980px) {
   .input-screen,
   .stats-grid,
@@ -2238,7 +2424,8 @@ onBeforeUnmount(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .stage-grid {
+  .stage-grid,
+  .agent-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -2275,7 +2462,8 @@ onBeforeUnmount(() => {
 
   .usecase-list,
   .flow-list,
-  .detail-tab-grid {
+  .detail-tab-grid,
+  .agent-card-grid {
     grid-template-columns: 1fr;
   }
 

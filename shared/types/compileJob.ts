@@ -1,5 +1,10 @@
 import type { AgentTraceEvent } from "./agentTrace";
 import type {
+  BlueprintArchitectOutput,
+  ClarificationAgentOutput,
+  SafetyCriticAgentOutput,
+} from "./agentOutputs";
+import type {
   AutomationReadinessScore,
   RiskSummary,
   SafeAutomationBlueprint,
@@ -129,6 +134,9 @@ export type CompileJob = {
   readiness: AutomationReadinessScore;
   router_decision?: RouterDecision;
   clarification_plan?: ClarificationPlan;
+  clarification_agent?: ClarificationAgentOutput;
+  blueprint_architect_agent?: BlueprintArchitectOutput;
+  safety_critic_agent?: SafetyCriticAgentOutput;
   safety_critic?: SafetyCriticReview;
   result: SafeAutomationBlueprint;
   agent_trace: AgentTraceEvent[];

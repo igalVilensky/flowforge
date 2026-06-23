@@ -6,11 +6,14 @@ import type {
 } from "../../shared/types/compileJob";
 import { buildBlueprint } from "../services/blueprintBuilder";
 import { buildClarificationPlan } from "../services/clarificationPlanner";
+import { runBlueprintArchitectAgent } from "../services/blueprintArchitectAgent";
+import { runClarificationAgent } from "../services/clarificationAgent";
 import { scoreReadiness } from "../services/readinessScorer";
 import { scanRisks } from "../services/riskScanner";
 import { safeValidateCompileJob } from "../services/schemaValidator";
 import { scanSignals } from "../services/signalScanner";
 import { routeCompileRequest } from "../services/routerAgent";
+import { runSafetyCriticAgent } from "../services/safetyCriticAgent";
 import { buildSafetyCriticReview } from "../services/safetyCritic";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
@@ -63,6 +66,24 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     route: routerResult.decision.route,
   });
 
+  const clarificationAgentResult = await runClarificationAgent({
+    processInput: trimmedInput,
+    mode,
+    signals,
+    risks,
+    clarificationPlan,
+  });
+
+  const blueprintArchitectAgentResult = await runBlueprintArchitectAgent({
+    processInput: trimmedInput,
+    mode,
+    signals,
+    risks,
+    readiness,
+    routerDecision: routerResult.decision,
+    clarificationPlan,
+  });
+
   const displayedPrimitives = signals.workflow_primitives.filter((primitive) => {
     if (primitive === "approval" && !risks.requires_human_review) {
       return false;
@@ -84,6 +105,14 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     ? `Clarification needed: ${clarificationPlan.missing_fields.join(", ")}.`
     : "No clarification needed.";
 
+  const clarificationAgentSummary = clarificationAgentResult.output.used_ai
+    ? `Clarification Agent improved ${clarificationAgentResult.output.questions.length} question(s).`
+    : `Clarification Agent fallback: ${clarificationAgentResult.output.reason}`;
+
+  const blueprintArchitectSummary = blueprintArchitectAgentResult.output.used_ai
+    ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
+    : `Blueprint Architect fallback: ${blueprintArchitectAgentResult.output.reason}`;
+
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
   const result = buildBlueprint({
@@ -102,6 +131,22 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     clarificationPlan,
     blueprint: result,
   });
+
+  const safetyCriticAgentResult = await runSafetyCriticAgent({
+    processInput: trimmedInput,
+    mode,
+    signals,
+    risks,
+    readiness,
+    routerDecision: routerResult.decision,
+    clarificationPlan,
+    deterministicBlueprint: result,
+    blueprintArchitectOutput: blueprintArchitectAgentResult.output,
+  });
+
+  const safetyCriticAgentSummary = safetyCriticAgentResult.output.used_ai
+    ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
+    : `Safety Critic Agent fallback: ${safetyCriticAgentResult.output.reason}`;
 
   const steps: PipelineStep[] = [
     {
@@ -138,6 +183,24 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       output_summary: clarificationSummary,
     },
     {
+      id: "clarification_agent",
+      label: "Clarification Agent",
+      description: "Use an AI agent, when available, to improve missing-detail questions.",
+      status: "done",
+      tool_name: "clarificationAgent",
+      output_summary: clarificationAgentSummary,
+      token_cost: clarificationAgentResult.llm_calls_made,
+    },
+    {
+      id: "blueprint_architect_agent",
+      label: "Blueprint Architect Agent",
+      description: "Use an AI agent, when available, to propose a structured non-executing blueprint.",
+      status: "done",
+      tool_name: "blueprintArchitectAgent",
+      output_summary: blueprintArchitectSummary,
+      token_cost: blueprintArchitectAgentResult.llm_calls_made,
+    },
+    {
       id: "dynamic_blueprint_preview",
       label: "Dynamic Blueprint Preview",
       description: "Build a deterministic safe automation blueprint from scanner output.",
@@ -153,11 +216,26 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       tool_name: "safetyCritic",
       output_summary: safetyCriticReview.summary,
     },
+    {
+      id: "safety_critic_agent",
+      label: "Safety Critic Agent",
+      description: "Use an AI agent, when available, to critique the proposed automation blueprint.",
+      status: "done",
+      tool_name: "safetyCriticAgent",
+      output_summary: safetyCriticAgentSummary,
+      token_cost: safetyCriticAgentResult.llm_calls_made,
+    },
   ];
+
+  const totalAgentLlmCalls =
+    routerResult.llm_calls_made
+    + clarificationAgentResult.llm_calls_made
+    + blueprintArchitectAgentResult.llm_calls_made
+    + safetyCriticAgentResult.llm_calls_made;
 
   const tokenUsage: TokenUsage = {
     mode,
-    llm_calls_used: routerResult.llm_calls_made,
+    llm_calls_used: totalAgentLlmCalls,
     llm_calls_limit: llmCallLimits[mode],
     estimated_input_tokens: Math.max(1, Math.ceil(trimmedInput.length / 4)),
     rule_based_checks: 6,
@@ -183,6 +261,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     result,
     router_decision: routerResult.decision,
     clarification_plan: clarificationPlan,
+    clarification_agent: clarificationAgentResult.output,
+    blueprint_architect_agent: blueprintArchitectAgentResult.output,
+    safety_critic_agent: safetyCriticAgentResult.output,
     safety_critic: safetyCriticReview,
     agent_trace: [
       {
@@ -235,6 +316,36 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         },
       },
       {
+        id: "trace_clarification_agent",
+        timestamp: now,
+        actor: clarificationAgentResult.output.used_ai ? "llm" : "system",
+        action: "Ran Clarification Agent",
+        status: "completed",
+        tool_name: "clarificationAgent",
+        output_summary: clarificationAgentSummary,
+        metadata: {
+          used_ai: clarificationAgentResult.output.used_ai,
+          fallback_used: clarificationAgentResult.output.fallback_used,
+          provider: clarificationAgentResult.output.provider,
+          question_count: clarificationAgentResult.output.questions.length,
+        },
+      },
+      {
+        id: "trace_blueprint_architect_agent",
+        timestamp: now,
+        actor: blueprintArchitectAgentResult.output.used_ai ? "llm" : "system",
+        action: "Ran Blueprint Architect Agent",
+        status: "completed",
+        tool_name: "blueprintArchitectAgent",
+        output_summary: blueprintArchitectSummary,
+        metadata: {
+          used_ai: blueprintArchitectAgentResult.output.used_ai,
+          fallback_used: blueprintArchitectAgentResult.output.fallback_used,
+          provider: blueprintArchitectAgentResult.output.provider,
+          proposed_step_count: blueprintArchitectAgentResult.output.proposed_steps.length,
+        },
+      },
+      {
         id: "trace_build_blueprint",
         timestamp: now,
         actor: "tool",
@@ -258,6 +369,21 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         metadata: {
           finding_count: safetyCriticReview.findings.length,
           overall_status: safetyCriticReview.overall_status,
+        },
+      },
+      {
+        id: "trace_safety_critic_agent",
+        timestamp: now,
+        actor: safetyCriticAgentResult.output.used_ai ? "llm" : "system",
+        action: "Ran Safety Critic Agent",
+        status: "completed",
+        tool_name: "safetyCriticAgent",
+        output_summary: safetyCriticAgentSummary,
+        metadata: {
+          used_ai: safetyCriticAgentResult.output.used_ai,
+          fallback_used: safetyCriticAgentResult.output.fallback_used,
+          provider: safetyCriticAgentResult.output.provider,
+          concern_count: safetyCriticAgentResult.output.concerns.length,
         },
       },
     ],
