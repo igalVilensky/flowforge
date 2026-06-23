@@ -1,370 +1,558 @@
 # FlowForge Architecture
 
-## Current Architecture
+FlowForge is a Nuxt-only MVP that compiles a plain-language process into a **non-executing safe automation blueprint**.
 
-FlowForge is currently a Nuxt-only application with deterministic compiler
-services plus a constrained Router Agent for the first AI decision point.
+It does not run automations, send messages, update accounts, issue refunds, delete records, or connect to production tools. The product is a preview compiler: it shows what a safe workflow could look like, where risks exist, what must stay draft-only, and what requires human approval.
 
-Nuxt provides:
+## Core architecture decision
 
-- Vue pages for the browser experience
-- TypeScript support
-- server routes for local API endpoints
-- a shared folder for reusable TypeScript contracts
+FlowForge uses **Nuxt server routes** instead of a separate backend service.
 
-There is no separate backend service yet.
+This keeps the MVP small while still allowing:
 
-## Current Runtime
+- API endpoints
+- server-only provider keys
+- deterministic scanner services
+- LLM router calls
+- schema validation
+- safe blueprint generation
+- fixture validation
+- demo fallback behavior
 
-```text
-Browser
-  -> Nuxt page at /
-  -> Nuxt page at /compiler
-  -> POST /api/compile
-  -> scanSignals(input)
-  -> scanRisks(signals)
-  -> scoreReadiness(signals, risks)
-  -> routeCompileRequest(input, signals, risks, readiness, mode)
-  -> buildClarificationPlan(input, signals, risks, readiness, route)
-  -> buildBlueprint(...)
-  -> validate compile job with Zod
-  -> safe non-executing preview
-```
+A separate FastAPI or worker backend can be added later, but the MVP does not need it.
 
-The current compile endpoint introduces the first constrained AI decision point via the Router Agent, but the blueprint building itself is still deterministic and rule-based. It does not execute workflows.
+---
 
-## Source Layout
+## High-level layers
 
 ```text
-app/
-  app.vue
-  pages/
-    index.vue
-    compiler.vue
+Frontend UI
+  Nuxt app/pages/compiler.vue
+  Shows input, compile modes, main result, Safety Critic, and details on demand
 
-server/
-  api/
-    compile.post.ts
-  services/
-    blueprintBuilder.ts
-    clarificationPlanner.ts
-    readinessScorer.ts
-    riskScanner.ts
-    routerAgent.ts
-    schemaValidator.ts
-    signalScanner.ts
-    groqProvider.ts
-    geminiProvider.ts
-  schemas/
-    compileJob.schema.ts
-    workflow.schema.ts
-  rules/
-    primitiveRules.ts
-    readinessRules.ts
-  fixtures/
-    validBlueprint.ts
-    validCompileJob.ts
-    invalidBlueprint.ts
+Nuxt Server API
+  server/api/compile.post.ts
+  Orchestrates one compile request and returns a validated CompileJob
 
-shared/
-  types/
-    workflow.ts
-    compileJob.ts
-    agentTrace.ts
+Deterministic Services
+  signalScanner
+  riskScanner
+  readinessScorer
+  clarificationPlanner
+  blueprintBuilder
+  safetyCritic
+  schemaValidator
 
-docs/
-  PROJECT_BRIEF.md
-  REQUIREMENTS.md
-  ARCHITECTURE.md
-  CODEX_FLOW.md
-  MILESTONES.md
-  DEMO_SCRIPT.md
-  BOOTSTRAP_COMMANDS.md
+AI Router Layer
+  routerAgent
+  Uses Groq/Gemini/fallback only to choose a route
+
+Shared Contract
+  shared/types
+  server/schemas
+  Zod validation keeps API and UI aligned
 ```
 
-## Shared Contracts
+---
 
-The shared types define the boundary between frontend and backend:
+## Important safety boundary
 
-- `SafeAutomationBlueprint`
-- `WorkflowStep`
-- `RiskItem`
-- `HumanApprovalGate`
-- `DryRunTestCase`
-- `CompileJob`
-- `ClarificationPlan`
-- `ClarificationQuestion`
-- `PipelineStep`
-- `TokenUsage`
-- `AgentTraceEvent`
+AI is **not** allowed to generate the final blueprint.
 
-Runtime Zod schemas validate the shared contracts for compile jobs, clarification plans, blueprints, signal summaries, risk summaries, and readiness scores. Fixtures are validated with `npm run validate:fixtures`.
+AI may help route the request in Balanced or Full mode, but these parts stay deterministic:
 
-## Current Compile Flow
-
-The compile endpoint is synchronous. It may use an AI provider only for the Router Agent in `balanced` and `full` modes; scanner output, readiness scoring, clarification planning, blueprint building, and schema validation remain deterministic:
-
-```text
-POST /api/compile
-  -> read process input
-  -> validate request mode
-  -> scanSignals(input)
-  -> scanRisks(signals)
-  -> scoreReadiness(signals, risks)
-  -> routeCompileRequest(input, signals, risks, readiness, mode)
-  -> buildClarificationPlan({ processInput, signals, risks, readiness, route })
-  -> buildBlueprint({ jobId, processInput, signals, risks, readiness, mode })
-  -> validate compile job with Zod
-  -> return safe non-executing preview
-```
-
-The blueprint builder is deterministic and rule-based for now. It uses detected
-workflow primitives, risk categories, missing critical information, and readiness
-score to generate:
-
-- workflow name and summary
-- workflow steps
-- safe, approval, not-recommended, and blocked safety buckets
-- risk items
-- human approval gates
-- dry-run test cases
-- assumptions and open questions
-
-## Clarification Flow
-
-M10 adds a deterministic clarification planner between the Router Agent and the blueprint builder.
-
-The clarification planner does not call AI. It uses:
-
-- submitted process text
-- deterministic signal scan
-- deterministic risk scan
+- signal scan
+- risk scan
 - readiness score
-- router route
+- clarification plan
+- safe blueprint generation
+- Safety Critic review
+- schema validation
+- UI main safety state
 
-The planner returns `clarification_plan` on the compile job:
+This prevents a provider response from accidentally turning a risky workflow into an executable automation.
 
-- `needed`
-- `reason`
-- `missing_fields`
-- `questions`
-- `suggested_template`
-- `improved_prompt_starter`
+---
 
-Clarification is needed when the input is too vague, low-readiness, missing critical information, missing a trigger, missing an expected output, or unsafe without a clear human/external-action boundary.
-
-Examples:
-
-- `Automate my customer messages.` should become a clarification-first state.
-- `do stuff` should become a clarification-first state.
-- a complete internal intake workflow should remain a clean workflow preview.
-
-Clarification questions are different from implementation open questions:
-
-- `clarification_plan.questions` are questions to answer before recompiling a weak process description.
-- `result.open_questions` are questions to review before implementing a sufficiently clear blueprint.
-
-When clarification is needed, the `/compiler` UI prioritizes the clarification card above the workflow map. The workflow map remains visible but is labeled as a provisional safe outline. The user can apply the deterministic improved prompt starter to the input, edit it, and manually run `Compile preview` again.
-
-The clarification planner does not execute anything, does not add backend streaming, does not export to n8n, and does not let AI generate the full blueprint.
-
-The response demonstrates the current safety posture:
-
-- classification, extraction, risk detection, and internal routing can be automated when appropriate
-- drafting is safe as draft-only output
-- external communication needs human approval
-- sensitive or high-stakes decisions need human approval
-- real-world execution is blocked in the MVP
-
-## Compile UX Flow
-
-The `/compiler` page adds a visible agent-run experience around the synchronous compile endpoint.
+## Compile modes
 
 ```text
-Page opens
-  -> frontend shows an idle ready state
-  -> no compile request is sent
-  -> no result is generated
+Demo
+  No AI calls. Fully deterministic. Best for presentation and offline reliability.
 
-User clicks Compile preview
-  -> frontend blocks empty input before any API request
-  -> frontend starts a staged compile replay
-  -> frontend sends one POST /api/compile request
-  -> backend returns one CompileJob response
-  -> frontend waits for both the response and staged replay
-  -> frontend reveals the completed result
+Rule-only
+  No AI calls. Same safety shape as Demo, useful for proving deterministic behavior.
+
+Balanced
+  Uses AI router if available, then deterministic blueprint + Safety Critic.
+  Best normal development mode.
+
+Full
+  Allows the most router/provider usage, but still does not execute actions.
+  Blueprint and Safety Critic remain deterministic.
 ```
 
-The staged progress replay is frontend-only UX. It is intentionally slower than a fast local API response so users can read each stage, but it does not slow the backend:
+---
 
-- prepare the local compile job
-- scan process signals with deterministic rules
-- review safety boundaries with deterministic rules
-- route the request server-side
-- choose Groq, Gemini fallback, or deterministic routing
-- build the deterministic non-executing blueprint preview
-- validate the compile job schema
-
-There is no SSE, WebSocket, backend streaming, background job runner, n8n export, or real-world execution in this milestone. The staged UI is a visual explanation of the compile pipeline, not proof that each backend step is streaming live.
-
-When a previous result exists, the frontend keeps it visible, marks it as updating, and applies the new result only after the replay finishes. While the replay is running, the staged compile run is readable. After completion, it compresses to a secondary status line such as `Compile complete · Groq router · Deterministic blueprint · No execution`.
-
-The completed compiler UI is workflow-first:
-
-- the outcome hero communicates the route, risk level, gate count, and no-execution boundary
-- Lucide icons from `lucide-vue-next` provide visual scanning for workflow, risk, approval, routing, drafting, messages, records, validation, and locked execution states
-- the visual workflow map is the primary output and renders deterministic blueprint steps with connectors, policy badges, risk badges, and obvious human-gate or blocked states
-- the recommended next step is promoted near the workflow map so the user knows whether to review, clarify, keep actions draft-only, use assistant-only guidance, or avoid automation
-- if `clarification_plan.needed` is true, a clarification-first card shows missing fields, questions, why-it-matters copy, suggested rewrite template, improved prompt starter, and a `Use starter` action
-- when clarification is needed, the workflow map is labeled as a provisional safe outline rather than a final confident blueprint
-- the compact safety summary shows risk level, gates, and locked execution before deeper details
-- detailed workflow metadata, risks and gates, trigger details, dry runs, before-implementation notes, router explanation, and technical trace are collapsed by default
-
-The workflow map is a presentation layer over `compiledBlueprint.steps`; it does not add execution semantics and does not imply that the backend streams live step progress.
-
-The server response provides the real post-run summary:
-
-- `router_decision` shows route, confidence, provider, AI usage, and fallback usage
-- `clarification_plan` shows missing fields, clarification questions, suggested rewrite template, and improved starter when the process input is weak
-- `token_usage` shows LLM calls used and the mode-specific limit
-- `agent_trace` shows provider attempts, skipped calls, failures, fallback behavior, clarification planning, and blueprint construction
-- `steps` summarizes deterministic pipeline steps
-
-## Router Transparency
-
-The AI router explanation uses the compile response to show what the Router Agent considered and what FlowForge did with the decision. In M9 it is collapsed by default under "How FlowForge decided" so the workflow result remains the main user output. AI routing is trust and debug context, not the primary blueprint display.
-
-Visible router inputs:
-
-- submitted process text, with `Show full` when long
-- detected workflow primitives by name
-- risk level and risk categories, or `No detected risk categories`
-- readiness score out of 100 with short readiness reasons when available
-- selected compile mode
-- a compact context summary explaining that the router receives the submitted process, deterministic signal scan, risk summary, readiness score, and selected mode
-
-Visible router output:
-
-- route
-- confidence
-- reason
-- safety note
-- suggested next step
-- provider
-- AI used
-- fallback used
-- LLM calls
-- deterministic blueprint generation label
-
-Provider path display:
-
-- Groq completed, failed, skipped, or was not used
-- Gemini completed, failed, skipped, or was not used
-- deterministic fallback was used or not used
-- each provider row includes one short reason and never exposes API keys
-
-The router boundary remains strict:
-
-- AI is used only for the server-side router decision in `balanced` and `full` modes
-- Groq is the primary router provider
-- Gemini is the fallback router provider
-- deterministic fallback always exists
-- missing provider keys are skipped, not counted as LLM calls
-- actual configured provider calls are counted whether they succeed, fail, return invalid JSON, or fail schema validation
-- the blueprint builder remains deterministic after the router decision
-- the clarification planner remains deterministic after the router decision
-- the staged UI progress is not real execution
-- the router can choose a route, but it does not generate or execute the blueprint
-
-## Future Compiler Architecture
-
-Future milestones can evolve the rule-only endpoint into a richer compiler flow:
+## Current compile pipeline
 
 ```text
 User input
-  -> initialize workflow state
-  -> signal scanner
-  -> risk scanner
-  -> readiness score
-  -> router
-  -> clarification planner
-  -> workflow architect
-  -> schema validator
-  -> repair loop if needed
-  -> safety critic
-  -> approval gate generator
-  -> dry-run generator
-  -> export builder
-  -> final blueprint
+  ↓
+Validate request body
+  ↓
+Signal scanner
+  ↓
+Risk scanner
+  ↓
+Readiness scorer
+  ↓
+Router Agent
+  - Groq primary
+  - Gemini fallback
+  - deterministic fallback
+  ↓
+Clarification planner
+  ↓
+Blueprint builder
+  ↓
+Safety Critic
+  ↓
+Schema validation
+  ↓
+CompileJob response
+  ↓
+Compiler UI
 ```
 
-## Future Server Layers
+In `server/api/compile.post.ts`, the pipeline is intentionally linear and auditable.
 
-Recommended future server folders:
+The Safety Critic runs **after** the blueprint is built because it reviews the final proposed workflow, not only the raw input.
+
+---
+
+## Compile API
+
+Endpoint:
 
 ```text
-server/
-  services/
-    compilerAgent.ts
-    signalScanner.ts
-    riskScanner.ts
-    readinessScorer.ts
-    routerAgent.ts
-    clarificationPlanner.ts
-    workflowArchitect.ts
-    schemaValidator.ts
-    blueprintRepair.ts
-    safetyCritic.ts
-    approvalGateGenerator.ts
-    dryRunGenerator.ts
-    exportBuilder.ts
-    tokenEstimator.ts
-  schemas/
-  rules/
-  prompts/
-  fixtures/
+POST /api/compile
 ```
 
-The AI provider layer should be isolated in server services. Frontend code
-should never call LLM providers directly.
+Request shape:
 
-## Provider Strategy
+```ts
+{
+  input: string;
+  mode?: "demo" | "rule_only" | "balanced" | "full";
+}
+```
 
-Only the Router Agent can use AI today. Groq is the primary provider for the Router Agent. Gemini is the fallback provider. If both fail, return invalid output, or are missing, a deterministic fallback ensures the compilation completes.
+Response:
 
-Provider accounting:
+```ts
+CompileJob
+```
 
-- missing `GROQ_API_KEY` or `GEMINI_API_KEY` is recorded as a skipped provider attempt
-- missing keys do not increment `llm_calls_made`
-- actual provider HTTP calls increment `llm_calls_made` immediately before the request
-- failed provider HTTP calls still count as LLM call attempts
-- invalid JSON or schema validation failures from a configured provider still count as LLM call attempts
-- deterministic fallback keeps `/api/compile` successful when provider routing cannot be used
+The returned job includes:
 
-Future provider strategy:
+- input
+- pipeline steps
+- signal summary
+- risk summary
+- readiness score
+- router decision
+- clarification plan
+- safe automation blueprint
+- Safety Critic review
+- agent trace
+- token/provider usage
+- validation-safe structure
 
-- balanced mode: at most 2 to 3 LLM calls
-- full mode: at most 4 LLM calls
-- rule-only mode: 0 LLM calls
-- fallback behavior when a provider fails
+---
 
-Provider calls should receive the smallest useful context, not the entire
-workflow state every time.
+## Main services
 
-## Safety Architecture
+### `signalScanner`
 
-Safety should not live only in prompts.
+Detects visible workflow structure from the raw process text.
 
-FlowForge should combine:
+Responsibilities:
 
-- deterministic scanner rules
-- explicit risk categories
-- schema validation
-- clarification planning before confident blueprint interpretation
+- trigger detection
+- workflow primitive detection
+- external action detection
+- human actor detection
+- system/data-source hints
+- clear output detection
+- missing critical information summary
+
+Examples of primitives:
+
+- classification
+- extraction
+- summarization
+- routing
+- drafting
+- approval
+- notification
+- record creation
+- risk detection
+
+### `riskScanner`
+
+Turns signal risk flags into a structured risk summary.
+
+Responsibilities:
+
+- low/medium/high risk level
+- risk categories
+- human review requirement
+- safe handling notes
+
+Examples of risk categories:
+
+- external communication
+- refund or payment
+- financial
+- visa or immigration
+- medical
+- legal
+- employment
+- account access
+- personal data
+- real-world execution
+- delete or destructive action
+
+### `readinessScorer`
+
+Scores whether the input is detailed enough to compile safely.
+
+Responsibilities:
+
+- numeric readiness score
+- strengths
+- weaknesses
+- implementation warnings
+
+Readiness does not decide safety alone. It supports clarification and UI explanation.
+
+### `routerAgent`
+
+Chooses the route for the compile request.
+
+Routes include:
+
+- compile
+- needs clarification
+- suggest safer workflow
+- assistant-only
+- reject
+
+Provider strategy:
+
+```text
+Groq primary
+Gemini fallback
+Deterministic fallback
+```
+
+The router can influence the compile path, but it cannot directly create the blueprint or override deterministic safety.
+
+### `clarificationPlanner`
+
+Decides whether the process needs more detail before the flow should be treated as implementation-ready.
+
+It checks:
+
+- missing trigger
+- missing data source
+- missing input data
+- missing output
+- missing decision rules
+- missing human owner
+- missing approval boundary
+- missing external action boundary
+- missing success criteria
+
+For vague input, the UI should show **Need details before flow**.
+
+For specific input, even if Groq is cautious, deterministic clarification should allow the flow to continue.
+
+### `blueprintBuilder`
+
+Builds the safe, non-executing workflow preview.
+
+Responsibilities:
+
+- workflow name
+- workflow category
+- workflow steps
+- automation policy per step
+- real-world execution policy per step
 - human approval gates
-- dry-run expectations
-- provider call budgets
-- blocked real-world execution in the MVP
+- safe-to-automate list
+- draft-only list
+- human-approval list
+- not-recommended list
+- not-safe-to-automate list
+- dry-run cases
+- assumptions
+- open questions
 
-External communication, sensitive decisions, and real-world execution must be
-visible in the blueprint and reviewable by a human.
+The builder never creates an executable automation.
+
+### `safetyCritic`
+
+Reviews the final blueprint after it is generated.
+
+It is deterministic and uses no LLM call.
+
+Possible statuses:
+
+```text
+safe_internal_preview
+needs_human_approval
+needs_clarification
+not_safe_to_automate
+```
+
+Responsibilities:
+
+- identify what can be automated safely
+- identify draft-only steps
+- identify approval-required steps
+- identify blocked MVP actions
+- decide the final main safety status
+- produce findings and next safe action
+
+Safety Critic rules:
+
+- clean internal workflows can be safe previews
+- external replies require human approval
+- refunds/payments require human approval, not blanket blocking
+- medical, visa/immigration, account access, legal, and destructive actions are not safe to automate
+- router false positives must not override deterministic Safety Critic status
+
+### `schemaValidator`
+
+Validates the final `CompileJob` before returning it to the frontend.
+
+If validation fails, the API should return a server error rather than rendering unsafe or malformed UI data.
+
+---
+
+## Safety Critic status meanings
+
+### `safe_internal_preview`
+
+The workflow is safe to preview internally.
+
+Typical example:
+
+```text
+Every morning, collect job application emails, extract fields,
+classify priority, and create an internal review task.
+```
+
+Expected UI:
+
+```text
+Safe internal flow
+Safe internal preview
+low risk
+0 gates
+```
+
+### `needs_human_approval`
+
+The workflow can be previewed, but one or more actions must stay gated or draft-only.
+
+Typical examples:
+
+- draft a support reply before a human sends it
+- prepare a refund case for finance review
+- route sensitive cases to a team lead
+
+Expected UI:
+
+```text
+Flow needs human gates
+Needs human approval
+medium risk
+1+ gates
+```
+
+### `needs_clarification`
+
+The input is too vague or missing important process structure.
+
+Typical example:
+
+```text
+Automate my customer messages.
+```
+
+Expected UI:
+
+```text
+Need details before flow
+Needs clarification
+```
+
+### `not_safe_to_automate`
+
+The request asks for something the MVP must not automate.
+
+Typical examples:
+
+- medical diagnosis or advice
+- visa eligibility decisions
+- legal decisions
+- account access changes
+- deleting records
+- cancelling subscriptions
+- sending high-stakes answers automatically
+
+Expected UI:
+
+```text
+Do not automate
+Not safe to automate
+high risk
+blocker
+```
+
+---
+
+## Frontend architecture
+
+Main page:
+
+```text
+app/pages/compiler.vue
+```
+
+Responsibilities:
+
+- process input
+- compile mode selection
+- suggested use cases
+- loading state
+- main result panel
+- Safety Critic panel
+- flow preview
+- clarification view
+- safe alternative view
+- details on demand
+
+The UI should make one thing primary:
+
+```text
+safe flow
+human-gated flow
+missing details
+do not automate
+```
+
+Details should remain hidden until the user asks for them.
+
+Detail sections:
+
+- Critic
+- Workflow
+- Risks
+- Dry runs
+- Router
+- Before build
+- Trace
+
+Main state should be driven by `safety_critic.overall_status`, not directly by router output.
+
+---
+
+## Agent trace
+
+The API returns an agent trace for transparency.
+
+Important trace events:
+
+- initialize compile job
+- router provider attempts
+- router decision selected
+- clarification planner
+- blueprint builder
+- safety critic
+- schema validation
+
+The trace is not the main UI; it belongs in details.
+
+---
+
+## Validation commands
+
+Use these before considering a milestone complete:
+
+```bash
+npm run validate:fixtures
+npm run typecheck
+```
+
+Expected:
+
+- fixture matches Zod schema
+- app types compile
+- no stale schema/type mismatch
+- Safety Critic is included in the validated compile job
+
+---
+
+## Demo reliability
+
+The final demo should not depend on provider availability.
+
+Demo mode should work with:
+
+```text
+0 LLM calls
+deterministic route
+deterministic blueprint
+deterministic Safety Critic
+```
+
+Balanced and Full mode can show Groq/Gemini routing when configured, but safety outcomes must remain consistent with deterministic logic.
+
+---
+
+## Known architecture limits
+
+Current MVP does not include:
+
+- database persistence
+- user accounts
+- auth
+- n8n export execution
+- real automation execution
+- real email sending
+- real account updates
+- real refund/payment actions
+- production tool connectors
+- streaming backend jobs
+
+These are intentionally out of scope.
+
+---
+
+## Future architecture direction
+
+Possible later upgrades:
+
+- persisted compile jobs
+- team workspaces
+- saved templates
+- real provider abstraction service
+- automated test fixtures for safety scenarios
+- n8n export as a static, non-executing draft
+- explicit connector policy layer
+- richer risk-specific Safety Critic recommendations
+- evaluation suite for router/provider drift

@@ -23,11 +23,19 @@ const DATA_PRIMITIVES = [
   "summarization",
   "drafting",
   "record_creation",
+  "routing",
 ] as const;
 
-const DATA_HANDLING_PRIMITIVES = ["extraction", "summarization"] as const;
-
 type PrimitiveName = SignalSummary["workflow_primitives"][number];
+
+function normalizeInput(input: string): string {
+  return input
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function countWords(input: string): number {
   return input.trim().split(/\s+/).filter(Boolean).length;
@@ -58,23 +66,68 @@ function isVagueInput(processInput: string, signals: SignalSummary): boolean {
   return words < 20 && meaningfulPrimitiveCount === 0;
 }
 
+function hasNamedDataSource(input: string): boolean {
+  return /\b(?:support|admissions|sales|shared|email|customer|student)?\s*inbox\b/.test(input)
+    || /\b(?:zendesk|intercom|hubspot|salesforce|crm|database|spreadsheet|google sheet|form|queue|channel)\b/.test(input)
+    || /\b(?:arrives?|comes?|lands?|received|submitted|created)\s+(?:in|from|via|through)\s+(?:the\s+)?[a-z0-9 -]{2,60}\b/.test(input)
+    || /\b(?:read|collect|get|pull|fetch)\s+(?:new\s+)?[a-z0-9 -]{2,60}\s+(?:from|in)\s+(?:the\s+)?[a-z0-9 -]{2,60}\b/.test(input);
+}
+
+function hasNamedInputData(input: string): boolean {
+  return /\b(?:customer|student|support|inbound|new)\s+(?:message|messages|email|emails|ticket|tickets|request|requests|application|applications)\b/.test(input)
+    || /\b(?:message|messages|email|emails|ticket|tickets|request|requests|record|records|form submission|submits)\b/.test(input);
+}
+
+function hasApprovalOwner(input: string): boolean {
+  return /\b(?:route|send|forward|assign|escalate|hand off|handoff)\s+(?:it\s+)?to\s+(?:the\s+)?[a-z0-9 -]{2,80}?(?:team|lead|owner|manager|agent|reviewer|advisor|staff|human)\b/.test(input)
+    || /\b(?:support|finance|admissions|sales|hr|legal|medical)\s+(?:team|lead|manager|owner|reviewer|advisor)\b/.test(input)
+    || /\b(?:human|manager|reviewer|agent|owner|staff|team|approver|advisor)\b/.test(input);
+}
+
+function hasApprovalBoundary(input: string): boolean {
+  return /\b(?:for|to)\s+review\b/.test(input)
+    || /\b(?:review|approve|approval|human approval|manual approval|sign off|sign-off)\b/.test(input)
+    || /\bbefore\s+any\s+(?:reply|message|email|response|refund|charge|account update|update|change)\s+(?:is\s+)?(?:sent|made|issued|executed|applied)\b/.test(input);
+}
+
+function hasExternalActionBoundary(input: string): boolean {
+  return /\bbefore\s+any\s+(?:reply|message|email|response|refund|charge|account update|update|change)\s+(?:is\s+)?(?:sent|made|issued|executed|applied)\b/.test(input)
+    || /\bbefore\s+sending\b/.test(input)
+    || /\bwithout\s+(?:automatically\s+)?(?:sending|send|updating|update|charging|charge|refunding|refund|deleting|delete)\b/.test(input)
+    || /\b(?:no|never|do not|don't)\s+(?:automatically\s+)?(?:send|message|email|update|charge|refund|delete)\b/.test(input)
+    || /\b(?:draft only|draft-only|human-approved before sending|review before sending)\b/.test(input);
+}
+
+function hasSuccessCriteria(input: string): boolean {
+  return /\b(?:success|correctly|done|ran correctly|worked|verify|verified|created|tagged|assigned|routed|no messages were sent|no message was sent)\b/.test(input);
+}
+
 function detectMissingFields(
   processInput: string,
   signals: SignalSummary,
   risks: RiskSummary,
 ): ClarificationField[] {
+  const input = normalizeInput(processInput);
   const missing: ClarificationField[] = [];
   const vague = isVagueInput(processInput, signals);
   const hasDataPrimitive = hasPrimitive(signals, DATA_PRIMITIVES);
-  const hasDataHandling = hasPrimitive(signals, DATA_HANDLING_PRIMITIVES);
   const highStakes = hasHighStakesRisk(risks);
+  const dataSourceKnown = hasNamedDataSource(input);
+  const inputDataKnown = hasNamedInputData(input);
+  const ownerKnown = signals.has_human_actor || hasApprovalOwner(input);
+  const approvalBoundaryKnown = hasApprovalBoundary(input);
+  const externalBoundaryKnown = hasExternalActionBoundary(input);
+  const successCriteriaKnown = hasSuccessCriteria(input);
 
   if (!signals.has_trigger) {
     addMissingField(missing, "trigger");
   }
 
-  if (!hasDataPrimitive || !hasDataHandling || vague) {
+  if ((vague || !hasDataPrimitive) && !dataSourceKnown) {
     addMissingField(missing, "data_source");
+  }
+
+  if ((vague || !hasDataPrimitive) && !inputDataKnown) {
     addMissingField(missing, "input_data");
   }
 
@@ -86,20 +139,31 @@ function detectMissingFields(
     addMissingField(missing, "decision_rules");
   }
 
-  if (signals.has_external_action && !signals.has_human_actor) {
-    addMissingField(missing, "human_owner");
-    addMissingField(missing, "external_action_boundary");
-  } else if (signals.has_external_action) {
-    addMissingField(missing, "approval_boundary");
-    addMissingField(missing, "external_action_boundary");
+  if (signals.has_external_action) {
+    if (!ownerKnown) {
+      addMissingField(missing, "human_owner");
+    }
+
+    if (!approvalBoundaryKnown) {
+      addMissingField(missing, "approval_boundary");
+    }
+
+    if (!externalBoundaryKnown) {
+      addMissingField(missing, "external_action_boundary");
+    }
   }
 
-  if (highStakes && !signals.has_human_actor) {
-    addMissingField(missing, "human_owner");
-    addMissingField(missing, "approval_boundary");
+  if (highStakes) {
+    if (!ownerKnown) {
+      addMissingField(missing, "human_owner");
+    }
+
+    if (!approvalBoundaryKnown) {
+      addMissingField(missing, "approval_boundary");
+    }
   }
 
-  if (highStakes || signals.has_external_action || vague) {
+  if ((highStakes || vague) && !successCriteriaKnown) {
     addMissingField(missing, "success_criteria");
   }
 
@@ -214,6 +278,7 @@ function buildClarificationReason(
   signals: SignalSummary,
   readiness: AutomationReadinessScore,
   route: RouterDecision["route"],
+  missingFields: ClarificationField[],
 ): string {
   const parts: string[] = [];
 
@@ -231,11 +296,11 @@ function buildClarificationReason(
     parts.push("The input is short and does not describe enough workflow structure.");
   }
 
-  if (!signals.has_trigger) {
+  if (missingFields.includes("trigger")) {
     parts.push("No clear trigger was detected.");
   }
 
-  if (!signals.has_clear_output) {
+  if (missingFields.includes("output")) {
     parts.push("No clear expected output was detected.");
   }
 
@@ -261,20 +326,22 @@ export type BuildClarificationPlanInput = {
 export function buildClarificationPlan(input: BuildClarificationPlanInput): ClarificationPlan {
   const { processInput, signals, risks, readiness, route } = input;
 
+  const missingFields = detectMissingFields(processInput, signals, risks);
   const routeNeedsClarification = route === "needs_clarification";
   const lowReadiness = readiness.score < 60;
   const hasMissingCriticalInfo = signals.missing_critical_info.length > 0;
-  const noTrigger = !signals.has_trigger;
-  const noOutput = !signals.has_clear_output;
   const vague = isVagueInput(processInput, signals);
-  const externalWithoutHuman = signals.has_external_action && !signals.has_human_actor;
-  const highStakesWithoutHuman = hasHighStakesRisk(risks) && !signals.has_human_actor;
+  const externalOrHighStakes = signals.has_external_action || hasHighStakesRisk(risks);
 
   const needed =
-    routeNeedsClarification
-    || (lowReadiness && (noTrigger || noOutput || hasMissingCriticalInfo || vague))
-    || externalWithoutHuman
-    || highStakesWithoutHuman;
+    missingFields.length > 0
+    && (
+      routeNeedsClarification
+      || lowReadiness
+      || hasMissingCriticalInfo
+      || vague
+      || externalOrHighStakes
+    );
 
   if (!needed) {
     return {
@@ -287,11 +354,9 @@ export function buildClarificationPlan(input: BuildClarificationPlanInput): Clar
     };
   }
 
-  const missingFields = detectMissingFields(processInput, signals, risks);
-
   return {
     needed: true,
-    reason: buildClarificationReason(processInput, signals, readiness, route),
+    reason: buildClarificationReason(processInput, signals, readiness, route, missingFields),
     missing_fields: missingFields,
     questions: buildQuestions(missingFields),
     suggested_template: GENERIC_TEMPLATE,

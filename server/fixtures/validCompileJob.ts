@@ -38,12 +38,23 @@ export const validCompileJob: CompileJob = {
       token_cost: 0,
     },
     {
+      id: "rule_based_risk_review",
+      label: "Rule-Based Risk Review",
+      description: "Summarize risk level and review requirements with deterministic rules.",
+      status: "done",
+      tool_name: "riskScanner",
+      output_summary: `Risk level is ${validBlueprintRisks.risk_level}; human review ${validBlueprintRisks.requires_human_review ? "is required" : "is not required"
+        }.`,
+      token_cost: 0,
+    },
+    {
       id: "clarification_planner",
       label: "Clarification Planner",
       description: "Determine whether clarification is needed before building a reliable blueprint.",
       status: "done",
       tool_name: "clarificationPlanner",
       output_summary: "No clarification needed.",
+      token_cost: 0,
     },
     {
       id: "dynamic_blueprint_preview",
@@ -54,6 +65,15 @@ export const validCompileJob: CompileJob = {
       output_summary: `${validBlueprint.workflow_name} is ready for schema validation.`,
       token_cost: 0,
     },
+    {
+      id: "safety_critic_review",
+      label: "Safety Critic Review",
+      description: "Review the final blueprint and decide what is safe, gated, draft-only, or blocked.",
+      status: "done",
+      tool_name: "safetyCritic",
+      output_summary: "Safety critic review: this workflow is safe as a non-executing internal automation preview.",
+      token_cost: 0,
+    },
   ],
   signals: validBlueprintSignals,
   risks: validBlueprintRisks,
@@ -61,9 +81,9 @@ export const validCompileJob: CompileJob = {
   router_decision: {
     route: "compile_blueprint",
     confidence: "high",
-    reason: "Fixture data implies a safe compilation.",
+    reason: "Fixture data implies a safe internal preview workflow.",
     safety_note: "No execution permitted in fixture mode.",
-    suggested_next_step: "Review the blueprint output.",
+    suggested_next_step: "Review the blueprint output and dry-run cases.",
     provider: "deterministic",
     used_ai: false,
     fallback_used: true,
@@ -77,6 +97,31 @@ export const validCompileJob: CompileJob = {
       "When [trigger happens], read [data source], extract/classify [important fields], create [safe internal output], and route [risky or external actions] to [human/team] before anything is sent, updated, charged, deleted, or executed.",
     improved_prompt_starter: "",
   },
+  safety_critic: {
+    overall_status: "safe_internal_preview",
+    summary: "Safety critic review: this workflow is safe as a non-executing internal automation preview.",
+    findings: [
+      {
+        id: "safety_finding_safe_internal_preview",
+        type: "safe_to_automate",
+        severity: "info",
+        title: "Internal preview is safe",
+        explanation:
+          "This workflow stays inside a non-executing internal preview. Classification, extraction, summarization, and internal task creation can be represented safely when they do not send messages, change production systems, issue refunds, delete records, or make high-stakes decisions.",
+        recommendation:
+          "Review the workflow map and dry-run cases before connecting this design to any real tools.",
+        related_step_ids: validBlueprint.steps.map((step) => step.id),
+        related_risk_ids: [],
+        related_gate_ids: [],
+      },
+    ],
+    safe_to_automate: validBlueprint.safe_to_automate,
+    must_remain_draft_only: [],
+    requires_human_approval: [],
+    blocked_or_not_recommended: [],
+    next_safe_action:
+      "Review the flow and dry-run cases. Do not connect production tools until a human approves the implementation.",
+  },
   result: validBlueprint,
   agent_trace: [
     {
@@ -89,6 +134,46 @@ export const validCompileJob: CompileJob = {
       metadata: {
         provider_calls: 0,
         external_execution: false,
+      },
+    },
+    {
+      id: "trace_fixture_signal_scan",
+      timestamp: fixtureTimestamp,
+      actor: "tool",
+      action: "Ran deterministic signal scanner",
+      status: "completed",
+      tool_name: "signalScanner",
+      output_summary: `Detected ${validBlueprintSignals.workflow_primitives.join(", ")} primitives.`,
+      metadata: {
+        primitive_count: validBlueprintSignals.workflow_primitives.length,
+        external_action: validBlueprintSignals.has_external_action,
+      },
+    },
+    {
+      id: "trace_fixture_risk_scan",
+      timestamp: fixtureTimestamp,
+      actor: "tool",
+      action: "Ran deterministic risk scanner",
+      status: "completed",
+      tool_name: "riskScanner",
+      output_summary: `Risk level is ${validBlueprintRisks.risk_level}.`,
+      metadata: {
+        risk_level: validBlueprintRisks.risk_level,
+        risk_count: validBlueprintRisks.categories.length,
+        requires_human_review: validBlueprintRisks.requires_human_review,
+      },
+    },
+    {
+      id: "trace_fixture_router_decision",
+      timestamp: fixtureTimestamp,
+      actor: "system",
+      action: "Selected deterministic router decision",
+      status: "completed",
+      output_summary: "Route: compile_blueprint (deterministic)",
+      metadata: {
+        used_ai: false,
+        fallback_used: true,
+        confidence: "high",
       },
     },
     {
@@ -117,14 +202,26 @@ export const validCompileJob: CompileJob = {
         risk_count: validBlueprintRisks.categories.length,
       },
     },
+    {
+      id: "trace_fixture_safety_critic",
+      timestamp: fixtureTimestamp,
+      actor: "tool",
+      action: "Ran deterministic safety critic",
+      status: "completed",
+      tool_name: "safetyCritic",
+      output_summary: "Safety critic review: this workflow is safe as a non-executing internal automation preview.",
+      metadata: {
+        finding_count: 1,
+        overall_status: "safe_internal_preview",
+      },
+    },
   ],
   token_usage: {
     mode: "demo",
     llm_calls_used: 0,
     llm_calls_limit: 0,
     estimated_input_tokens: Math.max(1, Math.ceil(validBlueprintInput.length / 4)),
-    rule_based_checks: 5,
+    rule_based_checks: 6,
     skipped_ai_calls: 0,
   },
 };
-

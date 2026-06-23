@@ -9,6 +9,10 @@ import type {
   CompileMode,
   PipelineStep,
   PipelineStepStatus,
+  SafetyCriticFinding,
+  SafetyCriticFindingType,
+  SafetyCriticReview,
+  SafetyCriticSeverity,
   TokenUsage,
 } from "../../shared/types/compileJob";
 import type {
@@ -140,6 +144,53 @@ export const clarificationPlanSchema = z
   })
   .strict() satisfies z.ZodType<ClarificationPlan>;
 
+export const safetyCriticSeveritySchema = z.enum([
+  "info",
+  "warning",
+  "blocker",
+]) satisfies z.ZodType<SafetyCriticSeverity>;
+
+export const safetyCriticFindingTypeSchema = z.enum([
+  "safe_to_automate",
+  "draft_only",
+  "human_approval_required",
+  "blocked_in_mvp",
+  "needs_clarification",
+  "implementation_warning",
+]) satisfies z.ZodType<SafetyCriticFindingType>;
+
+export const safetyCriticFindingSchema = z
+  .object({
+    id: requiredString,
+    type: safetyCriticFindingTypeSchema,
+    severity: safetyCriticSeveritySchema,
+    title: requiredString,
+    explanation: requiredString,
+    recommendation: requiredString,
+    related_step_ids: z.array(requiredString),
+    related_risk_ids: z.array(requiredString),
+    related_gate_ids: z.array(requiredString),
+  })
+  .strict() satisfies z.ZodType<SafetyCriticFinding>;
+
+export const safetyCriticReviewSchema = z
+  .object({
+    overall_status: z.enum([
+      "safe_internal_preview",
+      "needs_human_approval",
+      "needs_clarification",
+      "not_safe_to_automate",
+    ]),
+    summary: requiredString,
+    findings: z.array(safetyCriticFindingSchema),
+    safe_to_automate: z.array(requiredString),
+    must_remain_draft_only: z.array(requiredString),
+    requires_human_approval: z.array(requiredString),
+    blocked_or_not_recommended: z.array(requiredString),
+    next_safe_action: requiredString,
+  })
+  .strict() satisfies z.ZodType<SafetyCriticReview>;
+
 export const compileJobSchema = z
   .object({
     id: requiredString,
@@ -154,6 +205,7 @@ export const compileJobSchema = z
     readiness: automationReadinessScoreSchema,
     router_decision: routerDecisionSchema.optional(),
     clarification_plan: clarificationPlanSchema.optional(),
+    safety_critic: safetyCriticReviewSchema.optional(),
     result: safeAutomationBlueprintSchema,
     agent_trace: z.array(agentTraceEventSchema),
     token_usage: tokenUsageSchema,

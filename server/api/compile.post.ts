@@ -11,6 +11,7 @@ import { scanRisks } from "../services/riskScanner";
 import { safeValidateCompileJob } from "../services/schemaValidator";
 import { scanSignals } from "../services/signalScanner";
 import { routeCompileRequest } from "../services/routerAgent";
+import { buildSafetyCriticReview } from "../services/safetyCritic";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
 
@@ -93,6 +94,14 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     readiness,
     mode,
   });
+  const safetyCriticReview = buildSafetyCriticReview({
+    signals,
+    risks,
+    readiness,
+    routerDecision: routerResult.decision,
+    clarificationPlan,
+    blueprint: result,
+  });
 
   const steps: PipelineStep[] = [
     {
@@ -136,6 +145,14 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       tool_name: "blueprintBuilder",
       output_summary: `${result.workflow_name} is ready for UI preview.`,
     },
+    {
+      id: "safety_critic_review",
+      label: "Safety Critic Review",
+      description: "Review the blueprint boundary and explain what must stay gated, draft-only, or blocked.",
+      status: "done",
+      tool_name: "safetyCritic",
+      output_summary: safetyCriticReview.summary,
+    },
   ];
 
   const tokenUsage: TokenUsage = {
@@ -143,7 +160,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     llm_calls_used: routerResult.llm_calls_made,
     llm_calls_limit: llmCallLimits[mode],
     estimated_input_tokens: Math.max(1, Math.ceil(trimmedInput.length / 4)),
-    rule_based_checks: 5,
+    rule_based_checks: 6,
     skipped_ai_calls: routerResult.attempts.filter((attempt) => {
       return attempt.provider !== "deterministic" && !attempt.attempted;
     }).length,
@@ -166,6 +183,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     result,
     router_decision: routerResult.decision,
     clarification_plan: clarificationPlan,
+    safety_critic: safetyCriticReview,
     agent_trace: [
       {
         id: "trace_initialize",
@@ -229,6 +247,19 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
           risk_count: risks.categories.length,
         },
       },
+      {
+        id: "trace_safety_critic",
+        timestamp: now,
+        actor: "tool",
+        action: "Ran deterministic safety critic",
+        status: "completed",
+        tool_name: "safetyCritic",
+        output_summary: safetyCriticReview.summary,
+        metadata: {
+          finding_count: safetyCriticReview.findings.length,
+          overall_status: safetyCriticReview.overall_status,
+        },
+      },
     ],
     token_usage: tokenUsage,
   };
@@ -247,5 +278,3 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
 
   return validation.data;
 });
-
-

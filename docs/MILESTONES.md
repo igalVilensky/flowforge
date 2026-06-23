@@ -1,428 +1,364 @@
 # FlowForge Milestones
 
-## Current Milestone Note
+FlowForge is a non-executing automation compiler. It turns a plain-language process into a safe preview blueprint with deterministic scanners, explicit safety boundaries, human approval gates, dry-run examples, and an agent trace.
 
-M9 is complete. FlowForge is polished for course demos with blank-input handling, stronger example coverage, workflow-first result hierarchy, Lucide icons, a visual workflow map, collapsed router transparency, visible provider path explanation, and clearer decision copy. The backend still returns one compile response; no streaming, real-world execution, database, auth, or n8n export has been added.
+## Status summary
 
-## M0 - Project Setup And Documentation - Complete
+Current milestone: **M11 — Safety Critic Agent**  
+Status: **completed / ready for validation**
 
-Status: complete.
+M11 adds a deterministic Safety Critic after blueprint generation. It reviews the final blueprint without calling AI and decides whether the workflow is safe as an internal preview, needs clarification, needs human approval, or must not be automated in the MVP.
 
-Goal: prepare the repository for safe, incremental implementation.
+---
 
-Deliverables:
+## M0 — Project setup and docs
 
-- README
-- project docs
-- shared TypeScript types
-- landing page at `/`
-- compiler preview page at `/compiler`
-- placeholder `POST /api/compile`
-
-Acceptance criteria:
-
-- `npm install` succeeds
-- `npm run dev` starts the app
-- `/` loads
-- `/compiler` loads
-- `/api/compile` returns a placeholder compile job
-- no real provider calls, database, auth, n8n export, or execution
-
-## M1 - Static Prototype
-
-Status: complete.
-
-Goal: build the compiler UI with fake data.
+Goal: Create the project structure, documentation, and initial shared planning files.
 
 Deliverables:
 
-- process input panel
-- preset selector
-- visible pipeline timeline
-- token budget panel
-- signal summary
-- router decision
-- automation boundary
-- blueprint viewer
-- risk map
-- approval gates
-- dry-run preview
-- export prompt preview
+- Nuxt app initialized
+- Docs folder created
+- Project brief written
+- Requirements written
+- Initial architecture notes written
+- README created
 
 Acceptance criteria:
 
-- user can choose a preset or edit input
-- fake pipeline and result display clearly
-- no backend work is required beyond the M0 placeholder
-- no LLM is required
+- App can be installed and run locally
+- README explains what FlowForge is
+- Docs explain scope and MVP limits
+- Basic `/compiler` route exists
 
-## M2 - Shared Schemas And Fixtures
+Status: completed
 
-Status: complete.
+---
 
-Goal: add runtime validation to the shared contracts.
+## M1 — Static compiler prototype
+
+Goal: Build the first compiler UI using static or fake data.
 
 Deliverables:
 
-- schema definitions
-- sample valid blueprint fixture
-- sample invalid blueprint fixture
-- schema tests
+- Process input area
+- Example process presets
+- Compile/result layout
+- Pipeline preview
+- Blueprint preview cards
+- Risk and approval preview sections
 
 Acceptance criteria:
 
-- valid fixture passes
-- invalid fixture fails
-- schema names match shared TypeScript types
-- schemas can be used by frontend and backend
+- User can select or type a process
+- UI communicates the product idea clearly
+- No backend or LLM is required for the prototype
 
-## M3 - Rule-Based Signal Scanner
+Status: completed
 
-Status: complete.
+---
 
-Goal: implement deterministic signal scanning.
+## M2 — Shared types and schema foundation
+
+Goal: Define the contract for compile jobs, blueprint data, risks, gates, dry runs, router decisions, clarification plans, and trace events.
 
 Deliverables:
 
-- signal scanner service
-- primitive detection rules
-- missing information detection
-- rough action detection
-- unit tests
+- Shared TypeScript types
+- Compile job schema
+- Fixture validation path
+- Server/client-safe data model
 
 Acceptance criteria:
 
-- detects trigger, repeated process, rough actions, and primitives
-- detects missing critical information
-- does not call any LLM
+- Shared types can be used by API and UI
+- Valid fixture shape is documented
+- Invalid results can be rejected before UI rendering
 
-## M4 - Risk Scanner And Readiness Score
+Status: completed
 
-Status: complete.
+---
 
-Goal: detect sensitive automation risk and calculate an explainable readiness
-score.
+## M3 — Rule-based signal scanner
+
+Goal: Detect process structure with deterministic rules.
 
 Deliverables:
 
-- risk scanner service
-- readiness score service
-- risk rules
-- readiness rules
-- tests
+- `signalScanner`
+- Primitive detection
+- Trigger detection
+- Output detection
+- Human/system actor detection
+- Missing critical information summary
 
 Acceptance criteria:
 
-- detects external communication, payments, refunds, legal, medical, visa,
-  employment, account, personal data, and destructive-action risks
-- returns score and reasons
-- does not call any LLM
+- Detects triggers like scheduled or event-based workflows
+- Detects primitives such as classification, extraction, routing, drafting, approval, record creation, and notification
+- Detects whether an input is too vague
+- Uses no LLM call
 
-## M5 - Dynamic Blueprint Builder
+Status: completed
 
-Status: complete.
+---
 
-Goal: replace the static blueprint preview with a deterministic builder that
-uses scanner output.
+## M4 — Risk scanner and readiness score
+
+Goal: Detect sensitive automation risks and calculate an explainable readiness score.
 
 Deliverables:
 
-- reusable `blueprintBuilder` service
-- dynamic workflow name and summary
-- dynamic workflow steps based on detected primitives
-- dynamic safety buckets, risk items, approval gates, and dry-run test cases
-- compile API integration with Zod validation
+- `riskScanner`
+- `readinessScorer`
+- Risk categories
+- Review requirement summary
+- Readiness reasons and weaknesses
 
 Acceptance criteria:
 
-- `/api/compile` calls `scanSignals`, `scanRisks`, `scoreReadiness`, and `buildBlueprint`
-- blueprint output changes based on detected primitives and risk categories
-- fixture validation passes
-- typecheck passes
-- no AI provider, database, auth, n8n export, or real execution is added
+- Detects external communication
+- Detects refund/payment, financial, visa, legal, medical, account, employment, personal data, destructive action, and real-world execution risks
+- Produces low/medium/high risk
+- Produces an explainable readiness score
 
-## M6 - Visible Blueprint Output
+Status: completed
 
-Status: complete.
+---
 
-Goal: make the generated blueprint visible and understandable in `/compiler`.
+## M5 — Compile API with deterministic preview
+
+Goal: Connect the frontend to a backend compile endpoint and return a real non-executing preview.
 
 Deliverables:
 
-- visible compiled workflow section
-- trigger and automation boundary display
-- ordered workflow step plan with safety policy labels
-- user-facing risk cards
-- visible approval gates with review checklists
-- visible dry-run test cases
-- assumptions and open questions section
-- technical details kept secondary
+- `POST /api/compile`
+- Request validation
+- Rule-based signal scan integration
+- Risk scan integration
+- Readiness score integration
+- Initial deterministic blueprint output
 
 Acceptance criteria:
 
-- workflow name, summary, trigger, and boundary are visible after compile
-- generated steps show primitive, actor, automation policy, risk, approval, and execution policy
-- risks, gates, dry runs, assumptions, and open questions are visible outside technical details
-- different inputs visibly change the rendered blueprint
-- no API fields, schemas, providers, persistence, n8n export, or real execution are added
+- User input produces a backend result
+- The compiler does not execute any real-world actions
+- The UI can render returned workflow, risks, gates, dry runs, and trace data
+- No LLM is required
 
-## M7 - Router Agent And Fallbacks
+Status: completed
 
-Status: complete.
+---
 
-Goal: Add the first constrained AI decision point to FlowForge to decide what route the compiler should take, without generating the full blueprint with AI yet.
+## M6 — Router Agent
+
+Goal: Add the first AI-assisted decision point while keeping the blueprint deterministic.
 
 Deliverables:
 
-- Router decision schema
-- Router agent service
-- Groq provider wrapper (primary)
-- Gemini provider wrapper (fallback)
-- Deterministic fallback logic
-- UI integration to display router decision
+- Router service
+- Router schema
+- Provider attempt tracking
+- Groq/Gemini/fallback support
+- Deterministic fallback route
 
 Acceptance criteria:
 
-- `demo` and `rule_only` modes make zero AI calls
-- `balanced` and `full` modes try Groq first, then Gemini, then deterministic fallback
-- Invalid provider output falls back safely
-- Compile endpoint still returns valid `CompileJob`
-- Router decision appears in UI compactly
-- No real execution or blueprint generation with AI added yet
+- Router returns strict JSON
+- Router can choose compile, clarify, safer workflow, assistant-only, or reject routes
+- Provider attempts are shown in the UI
+- Blueprint generation remains deterministic
+- Safety is not delegated to the LLM
 
-## M8 - Visible Agent Run / Compile Progress UX
+Status: completed
 
-Status: complete.
+---
 
-Goal: make the compile process feel like a visible agent run while keeping the backend synchronous and safe.
+## M7 — Dynamic safe blueprint builder
+
+Goal: Generate a structured safe automation blueprint from deterministic scanner output.
 
 Deliverables:
 
-- no automatic compile on page load
-- compile starts only after the user clicks `Compile preview`
-- compile run panel near the top of `/compiler`
-- frontend-only staged replay for prepare, signal scan, safety review, routing, provider decision, blueprint build, and schema validation
-- readable stage timing for fast responses, around 7 to 10 seconds total
-- previous result remains visible and marked as updating while a new compile replay runs
-- visible AI router explanation without opening Technical trace
-- provider path explanation for Groq, Gemini fallback, skipped AI, and deterministic fallback
-- readable router labels for route, provider, and confidence
-- expandable full-text behavior for long process, trigger, dry-run, router, and trace text
-- deterministic blueprint generation clearly labeled
-- no backend streaming added
-- no real execution added
+- `blueprintBuilder`
+- Workflow name/category selection
+- Step generation
+- Automation policy labels
+- Human approval gates
+- Automation boundary
+- Safe-to-automate, draft-only, approval, not-recommended, and not-safe lists
+- Dry-run cases
+- Open questions and assumptions
 
 Acceptance criteria:
 
-- [x] Page does not auto-compile on load
-- [x] Compile run appears immediately after click
-- [x] Stages remain visible long enough to read
-- [x] Previous result is marked as updating
-- [x] AI/router explanation is visible without Technical trace
-- [x] Groq/Gemini/deterministic provider path is understandable
-- [x] Truncated long text has Show full behavior
-- [x] Blueprint generation is labeled deterministic
-- [x] Typecheck passes
-- [x] Fixture validation passes
+- Clear inputs generate useful safe blueprints
+- Vague inputs do not become fake production workflows
+- High-risk inputs become safe alternatives or blocked previews
+- No production action is executed
 
-## M9 - Demo Polish & Router Transparency
+Status: completed
 
-Status: complete.
+---
 
-Goal: make the compiler page presentation-ready by improving blank-input handling, example coverage, router transparency, provider-path explanation, top-level decision copy, workflow-first result hierarchy, and milestone docs.
+## M8 — Validation and fixture safety
+
+Goal: Keep backend results schema-safe and fixture-validated.
 
 Deliverables:
 
-- blank input guard
-- improved demo examples
-- transparent router inputs
-- explainable router output
-- provider path display
-- clearer top-level decision copy
-- full-text expansion cleanup
-- milestone numbering cleanup
-- Lucide icon system
-- workflow-first result hierarchy
-- visual workflow map
-- recommended next step card
-- collapsed "How FlowForge decided"
-- compact compile run after completion
-- improved outcome hero
-- reduced visible clutter
-- clarification-needed visual hierarchy
+- Compile job Zod schema
+- Schema validator service
+- Valid compile fixture
+- Typecheck path
+- Fixture validation command
 
 Acceptance criteria:
 
-- [x] Empty input cannot call compile API
-- [x] Examples cover low-risk, human-gated, high-stakes, unsafe, and unclear workflows
-- [x] Router inputs show actual submitted process, primitive names, risk categories, readiness score, and mode
-- [x] Router output explains route, confidence, reason, safety note, next step, provider, AI usage, fallback usage, and LLM calls
-- [x] Provider path is visible without Technical trace
-- [x] Long text has Show full behavior
-- [x] Milestone numbering has no duplicate M12
-- [x] Lucide icons installed and used in compiler UI
-- [x] Workflow map appears above router/technical details
-- [x] Workflow map visually shows steps, connectors, risk, gates, and no execution
-- [x] Recommended next step is visible near the top
-- [x] AI/router explanation is collapsed by default
-- [x] Compile run is compact after completion
-- [x] Needs clarification state is visually distinct
-- [x] Typecheck passes
-- [x] Fixture validation passes
+- Compile API validates the final job before returning it
+- Fixture validation catches schema drift
+- Typecheck passes after schema/type changes
+- UI receives predictable data
 
-## M10 - Clarification Flow
+Status: completed
 
-Status: complete.
+---
 
-Goal: turn unclear or low-readiness compiler input into a guided clarification loop before implementation.
+## M9 — Dry runs, boundaries, and exports
 
-This milestone makes weak input a first-class product state instead of treating it like a failed or normal blueprint. When the user gives vague, incomplete, or unsafe process text, FlowForge now explains what is missing, asks concrete questions, suggests a safer rewrite template, and lets the user improve the input before recompiling.
+Goal: Make the preview testable and reviewable.
 
 Deliverables:
 
-* deterministic `clarificationPlanner` service
-* `clarification_plan` field on `CompileJob`
-* Zod validation for clarification fields, questions, and plans
-* compile API integration after router decision
-* clarification planner pipeline step
-* clarification planner trace event
-* fixture update for valid compile job validation
-* clarification-first UI state for weak input
-* missing-field display
-* concrete clarification questions with why-it-matters copy
-* suggested rewrite template
-* improved prompt starter
-* `Use starter` action that replaces the input without auto-compiling
-* `Copy` action for the improved starter
-* provisional workflow labeling when clarification is needed
-* separation between clarification questions and implementation open questions
-* docs updated
+- Dry-run scenarios
+- Normal and edge-case tests
+- Safe alternative paths
+- Implementation boundary notes
+- Copyable outputs or export-ready sections
 
 Acceptance criteria:
 
-* [x] Weak input produces clarification-first UI
-* [x] Clarification plan includes missing fields and concrete questions
-* [x] User can apply an improved starter to the input
-* [x] Applying the starter does not auto-compile
-* [x] Workflow map is labeled provisional when clarification is needed
-* [x] Good input does not show unnecessary clarification UI
-* [x] Clarification questions are separate from implementation open questions
-* [x] Compile output validates with `clarification_plan`
-* [x] Fixture validation passes
-* [x] Typecheck passes
+- Every blueprint includes dry-run checks
+- Risky workflows include safe alternatives
+- Exported or copied output is clearly non-executing
+- MVP does not claim working n8n import/export execution
 
-Manual validation cases:
+Status: completed
 
-* `Automate my customer messages.` shows clarification-first UI, missing fields, questions, suggested template, improved starter, and provisional safe outline.
-* `do stuff` shows clarification needed and does not present a confident final blueprint.
-* Job-application intake example stays clean and does not show the large clarification card.
-* Refund review example stays human-gated and is not treated as unclear when enough details are present.
-* Unsafe auto-send/update-account input keeps external action boundaries safe and does not imply automatic execution.
+---
 
-## M11 - Safety Critic Agent
+## M10 — Clarification Flow
 
-Goal: add a dedicated safety critic that reviews automation boundaries and explains unsafe or gated paths.
+Goal: Stop vague or underspecified requests from becoming misleading blueprints.
 
 Deliverables:
 
-- safety critic agent
-- risk-to-boundary explanations
-- critic trace entries
-- UI copy for safe, gated, redirected, and blocked decisions
+- `clarificationPlanner`
+- Missing field detection
+- Clarification questions
+- Suggested improved starter prompt
+- UI state for “Need details before flow”
+- Replace-input and copy-starter actions
 
 Acceptance criteria:
 
-- external send actions require review
-- sensitive topics require approval
-- unsafe automation boundaries are clearly explained
-- critic output remains non-executing
+- Vague input shows clarification as the main result
+- Clarified input proceeds to flow preview
+- Unsafe high-stakes input is not softened into clarification when it should be blocked
+- AI router false positives do not override deterministic clarification state
+- Clarification UI is details-first and does not pretend to be an implementation-ready workflow
 
-## M12 - Security & Privacy Agent
+Status: completed
 
-Goal: review data access, secrets, credentials, retention, and privacy boundaries before implementation.
+Validated examples:
+
+- `Automate my customer messages.` → needs clarification
+- Specific support inbox + support team lead + review-before-send workflow → needs human approval, not clarification
+- Visa/payment/account auto-send workflow → not safe to automate, not clarification
+
+---
+
+## M11 — Safety Critic Agent
+
+Goal: Add a deterministic Safety Critic that reviews the final blueprint and explains what is safe, gated, draft-only, or blocked.
 
 Deliverables:
 
-- security and privacy agent
-- data-source and permission checks
-- secret/API-key warnings
-- retention and minimization recommendations
+- `SafetyCriticSeverity`, `SafetyCriticFindingType`, `SafetyCriticFinding`, and `SafetyCriticReview` types
+- `safety_critic?: SafetyCriticReview` on `CompileJob`
+- Safety Critic Zod schema
+- `server/services/safetyCritic.ts`
+- Compile API integration after blueprint generation
+- Pipeline step: `safety_critic_review`
+- Agent trace event: `trace_safety_critic`
+- Fixture update
+- Compiler UI Safety Critic panel
+- Main result driven by Safety Critic status
 
 Acceptance criteria:
 
-- personal data and account access require explicit scope
-- provider prompts avoid secrets and raw credentials
-- privacy risks are visible before implementation
-- no database/auth or production integrations are added
+- Safety Critic uses no LLM call
+- Safety Critic evaluates the final blueprint after `buildBlueprint`
+- Safe internal workflows return `safe_internal_preview`
+- External reply/draft workflows return `needs_human_approval`
+- Refund/payment workflows require human approval instead of becoming blanket blockers
+- Medical, visa/immigration, account access, legal, and destructive/delete workflows return `not_safe_to_automate`
+- Vague workflows return `needs_clarification`
+- AI router false positives do not override deterministic Safety Critic status
+- UI shows the correct main state:
+  - Safe internal flow
+  - Flow needs human gates
+  - Need details before flow
+  - Do not automate
+- Details remain hidden until requested
+- No workflow executes real-world actions
 
-## M13 - Human Gate Planner
+Status: completed / ready for validation
 
-Goal: generate clearer human approval gates, review checklists, owners, and escalation paths.
+Validated examples:
+
+- Internal admissions email triage → safe internal preview
+- Customer support draft reply with support lead review → needs human approval
+- Refund/payment review routed to finance → needs human approval
+- Vague customer messages request → needs clarification
+- Visa/payment/account auto-send request → not safe to automate
+- Medical diagnosis/advice/profile update request → not safe to automate
+- Account deletion/subscription cancellation/email request → not safe to automate
+- Balanced and Full modes preserve deterministic Safety Critic outcomes
+
+Known follow-up polish:
+
+- Rename or hide “Blocked” count when it only means MVP boundaries
+- Hide “Before build questions” unless the main status is `needs_clarification`
+- Show only the top clarification questions first, then reveal the rest on demand
+- Reword unsafe recommendations by risk category, especially medical and visa cases
+- Reword “Build non-executing preview — Blocked in MVP” so users understand execution is blocked, not the preview
+
+---
+
+## M12 — Final demo polish
+
+Goal: Make the project presentation-ready.
 
 Deliverables:
 
-- human gate planner
-- gate owner suggestions
-- review checklist generation
-- UI for gate rationale and next human action
+- Final demo script
+- Final README screenshots or walkthrough
+- Polished empty/loading/error states
+- Reduced noisy counters
+- Cleaner clarification question reveal
+- Final validation run
+- Final project submission notes
 
 Acceptance criteria:
 
-- risky actions map to explicit gates
-- gates include concrete review checklists
-- low-risk internal previews avoid unnecessary approval language
-- no real execution is added
+- Demo works in Demo mode without provider dependency
+- Balanced and Full modes show provider routing clearly when configured
+- Risky inputs clearly trigger safer workflow or blocked states
+- Vague inputs clearly ask for missing details
+- The UI communicates “non-executing preview” throughout
+- Final commands pass:
+  - `npm run validate:fixtures`
+  - `npm run typecheck`
 
-## M14 - Dry Run Test Agent
-
-Goal: generate stronger dry-run scenarios for safe, risky, edge, and unclear workflows.
-
-Deliverables:
-
-- dry-run test agent
-- normal, edge, and failure case generation
-- expected route and gate assertions
-- UI for dry-run review
-
-Acceptance criteria:
-
-- dry runs cover normal, edge, and risky cases
-- unsafe examples include blocked or gated expectations
-- unclear workflows include clarification expectations
-- dry runs remain non-executing
-
-## M15 - Implementation Prompt Export
-
-Goal: export reviewed implementation prompts and plans without creating live integrations.
-
-Deliverables:
-
-- human-readable implementation prompt export
-- structured JSON plan export
-- safety boundary recap in exports
-- explicit non-execution labels
-
-Acceptance criteria:
-
-- exports are clearly marked as plans
-- exports include gates, assumptions, and open questions
-- no direct n8n import/export is required yet
-- no production credentials or execution paths are added
-
-## M16 - Final Demo Polish
-
-Goal: make the local demo reliable, polished, and ready for final presentation.
-
-Deliverables:
-
-- curated demo presets
-- polished empty, loading, error, and result states
-- demo-safe fallback behavior
-- final documentation pass
-
-Acceptance criteria:
-
-- demo works without external credentials
-- risky examples show human gates
-- no automatic real-world execution is possible
-- docs match the final demo flow
+Status: next

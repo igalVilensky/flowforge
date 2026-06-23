@@ -79,6 +79,43 @@ export type ClarificationPlan = {
   improved_prompt_starter: string;
 };
 
+export type SafetyCriticSeverity = "info" | "warning" | "blocker";
+
+export type SafetyCriticFindingType =
+  | "safe_to_automate"
+  | "draft_only"
+  | "human_approval_required"
+  | "blocked_in_mvp"
+  | "needs_clarification"
+  | "implementation_warning";
+
+export type SafetyCriticFinding = {
+  id: string;
+  type: SafetyCriticFindingType;
+  severity: SafetyCriticSeverity;
+  title: string;
+  explanation: string;
+  recommendation: string;
+  related_step_ids: string[];
+  related_risk_ids: string[];
+  related_gate_ids: string[];
+};
+
+export type SafetyCriticReview = {
+  overall_status:
+  | "safe_internal_preview"
+  | "needs_human_approval"
+  | "needs_clarification"
+  | "not_safe_to_automate";
+  summary: string;
+  findings: SafetyCriticFinding[];
+  safe_to_automate: string[];
+  must_remain_draft_only: string[];
+  requires_human_approval: string[];
+  blocked_or_not_recommended: string[];
+  next_safe_action: string;
+};
+
 export type CompileJob = {
   id: string;
   status: CompileJobStatus;
@@ -92,6 +129,7 @@ export type CompileJob = {
   readiness: AutomationReadinessScore;
   router_decision?: RouterDecision;
   clarification_plan?: ClarificationPlan;
+  safety_critic?: SafetyCriticReview;
   result: SafeAutomationBlueprint;
   agent_trace: AgentTraceEvent[];
   token_usage: TokenUsage;
