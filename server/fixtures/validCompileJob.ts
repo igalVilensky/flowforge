@@ -38,6 +38,14 @@ export const validCompileJob: CompileJob = {
       token_cost: 0,
     },
     {
+      id: "clarification_planner",
+      label: "Clarification Planner",
+      description: "Determine whether clarification is needed before building a reliable blueprint.",
+      status: "done",
+      tool_name: "clarificationPlanner",
+      output_summary: "No clarification needed.",
+    },
+    {
       id: "dynamic_blueprint_preview",
       label: "Dynamic Blueprint Preview",
       description: "Build a deterministic safe automation blueprint from scanner output.",
@@ -60,6 +68,15 @@ export const validCompileJob: CompileJob = {
     used_ai: false,
     fallback_used: true,
   },
+  clarification_plan: {
+    needed: false,
+    reason: "",
+    missing_fields: [],
+    questions: [],
+    suggested_template:
+      "When [trigger happens], read [data source], extract/classify [important fields], create [safe internal output], and route [risky or external actions] to [human/team] before anything is sent, updated, charged, deleted, or executed.",
+    improved_prompt_starter: "",
+  },
   result: validBlueprint,
   agent_trace: [
     {
@@ -72,6 +89,19 @@ export const validCompileJob: CompileJob = {
       metadata: {
         provider_calls: 0,
         external_execution: false,
+      },
+    },
+    {
+      id: "trace_fixture_clarification_planner",
+      timestamp: fixtureTimestamp,
+      actor: "tool",
+      action: "Ran deterministic clarification planner",
+      status: "completed",
+      tool_name: "clarificationPlanner",
+      output_summary: "No clarification needed.",
+      metadata: {
+        clarification_needed: false,
+        missing_field_count: 0,
       },
     },
     {
@@ -97,3 +127,4 @@ export const validCompileJob: CompileJob = {
     skipped_ai_calls: 0,
   },
 };
+

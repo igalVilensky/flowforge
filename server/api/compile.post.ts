@@ -5,6 +5,7 @@ import type {
   TokenUsage,
 } from "../../shared/types/compileJob";
 import { buildBlueprint } from "../services/blueprintBuilder";
+import { buildClarificationPlan } from "../services/clarificationPlanner";
 import { scoreReadiness } from "../services/readinessScorer";
 import { scanRisks } from "../services/riskScanner";
 import { safeValidateCompileJob } from "../services/schemaValidator";
@@ -53,6 +54,14 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
   const routerResult = await routeCompileRequest(trimmedInput, signals, risks, readiness, mode);
+  const clarificationPlan = buildClarificationPlan({
+    processInput: trimmedInput,
+    signals,
+    risks,
+    readiness,
+    route: routerResult.decision.route,
+  });
+
   const displayedPrimitives = signals.workflow_primitives.filter((primitive) => {
     if (primitive === "approval" && !risks.requires_human_review) {
       return false;
@@ -69,6 +78,10 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     displayedPrimitives.length > 0
       ? `Detected ${displayedPrimitives.join(", ")} primitives.`
       : "No clear workflow primitives detected yet.";
+
+  const clarificationSummary = clarificationPlan.needed
+    ? `Clarification needed: ${clarificationPlan.missing_fields.join(", ")}.`
+    : "No clarification needed.";
 
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
@@ -108,6 +121,14 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         }.`,
     },
     {
+      id: "clarification_planner",
+      label: "Clarification Planner",
+      description: "Determine whether clarification is needed before building a reliable blueprint.",
+      status: "done",
+      tool_name: "clarificationPlanner",
+      output_summary: clarificationSummary,
+    },
+    {
       id: "dynamic_blueprint_preview",
       label: "Dynamic Blueprint Preview",
       description: "Build a deterministic safe automation blueprint from scanner output.",
@@ -144,6 +165,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     readiness,
     result,
     router_decision: routerResult.decision,
+    clarification_plan: clarificationPlan,
     agent_trace: [
       {
         id: "trace_initialize",
@@ -182,6 +204,19 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         },
       },
       {
+        id: "trace_clarification_planner",
+        timestamp: now,
+        actor: "tool",
+        action: "Ran deterministic clarification planner",
+        status: "completed",
+        tool_name: "clarificationPlanner",
+        output_summary: clarificationSummary,
+        metadata: {
+          clarification_needed: clarificationPlan.needed,
+          missing_field_count: clarificationPlan.missing_fields.length,
+        },
+      },
+      {
         id: "trace_build_blueprint",
         timestamp: now,
         actor: "tool",
@@ -212,3 +247,5 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
 
   return validation.data;
 });
+
+

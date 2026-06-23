@@ -456,9 +456,12 @@ const visibleGates = computed(() => {
 });
 
 const isClarificationNeeded = computed(() => {
-  return routerDecision.value?.route === "needs_clarification"
+  return job.value?.clarification_plan?.needed === true
+    || routerDecision.value?.route === "needs_clarification"
     || compiledBlueprint.value?.automation_boundary === "assistant_only";
 });
+
+const clarificationPlan = computed(() => job.value?.clarification_plan ?? null);
 
 const topClarificationQuestions = computed(() => {
   return compiledBlueprint.value?.open_questions.slice(0, 4) ?? [];
@@ -1121,6 +1124,25 @@ function chooseExample(value: string) {
   inputGuardMessage.value = "";
 }
 
+function applyStarter() {
+  const starter = clarificationPlan.value?.improved_prompt_starter;
+
+  if (starter) {
+    processInput.value = starter;
+    inputGuardMessage.value = "";
+  }
+}
+
+function copyStarter() {
+  const starter = clarificationPlan.value?.improved_prompt_starter;
+
+  if (starter) {
+    window.navigator.clipboard.writeText(starter).catch(() => {
+      // clipboard not available
+    });
+  }
+}
+
 function clearInputGuardMessage() {
   if (inputGuardMessage.value) {
     inputGuardMessage.value = "";
@@ -1483,19 +1505,73 @@ onBeforeUnmount(() => {
             <span v-if="isCompiling" class="result-update-badge">Updating preview...</span>
           </article>
 
-          <article v-if="isClarificationNeeded" class="ff-tile clarification-tile">
+          <article v-if="isClarificationNeeded && clarificationPlan" class="ff-tile clarification-tile">
             <div class="ff-tile-inner clarification-inner">
-              <div>
-                <p class="ff-kicker">Clarify before building</p>
-                <h2 class="ff-section-title">Missing details</h2>
-                <p class="ff-copy">Weak input stays provisional until a human fills in the workflow boundary.</p>
+              <div class="clarification-header">
+                <span class="clarification-icon-wrap">
+                  <HelpCircle class="ff-icon-lg" aria-hidden="true" />
+                </span>
+                <div>
+                  <p class="ff-kicker">Clarify before building</p>
+                  <h2 class="ff-section-title">FlowForge needs more detail</h2>
+                  <p class="ff-copy clarification-lead">
+                    FlowForge needs more detail before it can build a reliable automation blueprint.
+                  </p>
+                </div>
               </div>
 
-              <ul class="checklist compact-checklist">
-                <li v-for="question in topClarificationQuestions" :key="question">
-                  {{ question }}
-                </li>
-              </ul>
+              <div v-if="clarificationPlan.missing_fields.length > 0" class="clarification-missing-fields">
+                <p class="ff-kicker">Missing details</p>
+                <div class="missing-field-chips">
+                  <span
+                    v-for="field in clarificationPlan.missing_fields"
+                    :key="field"
+                    class="missing-field-chip"
+                  >
+                    {{ formatEnum(field) }}
+                  </span>
+                </div>
+              </div>
+
+              <div v-if="clarificationPlan.questions.length > 0" class="clarification-questions">
+                <p class="ff-kicker">Questions to answer before recompiling</p>
+                <ul class="clar-question-list">
+                  <li v-for="q in clarificationPlan.questions" :key="q.field" class="clar-question-item">
+                    <strong class="clar-question-text">{{ q.question }}</strong>
+                    <span class="clar-why">{{ q.why_it_matters }}</span>
+                    <span v-if="q.example_answer" class="clar-example">
+                      Example: {{ q.example_answer }}
+                    </span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="clarification-template">
+                <p class="ff-kicker">Suggested rewrite template</p>
+                <blockquote class="clar-template-text">{{ clarificationPlan.suggested_template }}</blockquote>
+              </div>
+
+              <div v-if="clarificationPlan.improved_prompt_starter" class="clarification-starter">
+                <p class="ff-kicker">Try this clearer process description</p>
+                <blockquote class="clar-starter-text">{{ clarificationPlan.improved_prompt_starter }}</blockquote>
+                <div class="clar-starter-actions">
+                  <button
+                    type="button"
+                    class="ff-button clar-use-starter-button"
+                    @click="applyStarter"
+                  >
+                    Use starter
+                  </button>
+                  <button
+                    type="button"
+                    class="ff-chip-button"
+                    @click="copyStarter"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p class="clar-starter-hint">Applying the starter replaces the input. You must click Compile preview to recompile.</p>
+              </div>
             </div>
           </article>
 
@@ -1968,7 +2044,7 @@ onBeforeUnmount(() => {
               </article>
 
               <article class="output-card">
-                <h3>Clarify before building</h3>
+                <h3>Questions before implementation</h3>
                 <ul class="checklist">
                   <li v-for="question in compiledBlueprint.open_questions" :key="question">
                     {{ question }}
@@ -2835,8 +2911,9 @@ onBeforeUnmount(() => {
 }
 
 .clarification-inner {
-  grid-template-columns: minmax(0, 0.85fr) minmax(240px, 1fr);
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .clarification-tile {
@@ -2844,9 +2921,132 @@ onBeforeUnmount(() => {
   background: #fffdf8;
 }
 
+.clarification-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.clarification-icon-wrap {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #f5e7a0;
+  color: #8a5f00;
+}
+
+.clarification-lead {
+  margin-top: 4px;
+  color: var(--ff-muted);
+}
+
+.clarification-missing-fields,
+.clarification-questions,
+.clarification-template,
+.clarification-starter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.missing-field-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.missing-field-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #f5e7a0;
+  color: #6b4a00;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+}
+
+.clar-question-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.clar-question-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border-left: 3px solid #f2d78c;
+  background: rgba(242, 215, 140, 0.12);
+  border-radius: 0 6px 6px 0;
+}
+
+.clar-question-text {
+  font-size: 14px;
+  color: var(--ff-text);
+}
+
+.clar-why {
+  font-size: 12px;
+  color: var(--ff-muted);
+}
+
+.clar-example {
+  font-size: 11px;
+  color: var(--ff-muted);
+  font-style: italic;
+}
+
+.clar-template-text,
+.clar-starter-text {
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--ff-primary);
+  background: var(--ff-bg);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+  color: var(--ff-text);
+  line-height: 1.7;
+  font-style: italic;
+}
+
+.clar-starter-text {
+  border-color: #5e9c4a;
+  background: rgba(94, 156, 74, 0.05);
+  font-style: normal;
+}
+
+.clar-starter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.clar-use-starter-button {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.clar-starter-hint {
+  font-size: 11px;
+  color: var(--ff-muted);
+  margin: 0;
+}
+
 .compact-checklist {
   margin: 0;
 }
+
 
 .next-step-inner {
   grid-template-columns: auto minmax(0, 1fr);

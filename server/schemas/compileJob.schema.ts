@@ -1,5 +1,8 @@
 import { z } from "zod";
 import type {
+  ClarificationField,
+  ClarificationPlan,
+  ClarificationQuestion,
   CompileInput,
   CompileJob,
   CompileJobStatus,
@@ -105,6 +108,38 @@ export const agentTraceEventSchema = z
   })
   .strict() satisfies z.ZodType<AgentTraceEvent>;
 
+export const clarificationFieldSchema = z.enum([
+  "trigger",
+  "input_data",
+  "output",
+  "decision_rules",
+  "human_owner",
+  "approval_boundary",
+  "external_action_boundary",
+  "data_source",
+  "success_criteria",
+]) satisfies z.ZodType<ClarificationField>;
+
+export const clarificationQuestionSchema = z
+  .object({
+    field: clarificationFieldSchema,
+    question: requiredString,
+    why_it_matters: requiredString,
+    example_answer: requiredString.optional(),
+  })
+  .strict() satisfies z.ZodType<ClarificationQuestion>;
+
+export const clarificationPlanSchema = z
+  .object({
+    needed: z.boolean(),
+    reason: z.string(),
+    missing_fields: z.array(clarificationFieldSchema),
+    questions: z.array(clarificationQuestionSchema),
+    suggested_template: z.string(),
+    improved_prompt_starter: z.string(),
+  })
+  .strict() satisfies z.ZodType<ClarificationPlan>;
+
 export const compileJobSchema = z
   .object({
     id: requiredString,
@@ -118,6 +153,7 @@ export const compileJobSchema = z
     risks: riskSummarySchema,
     readiness: automationReadinessScoreSchema,
     router_decision: routerDecisionSchema.optional(),
+    clarification_plan: clarificationPlanSchema.optional(),
     result: safeAutomationBlueprintSchema,
     agent_trace: z.array(agentTraceEventSchema),
     token_usage: tokenUsageSchema,

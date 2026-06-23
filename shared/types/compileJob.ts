@@ -52,6 +52,33 @@ export type RouterDecision = {
   fallback_used: boolean;
 };
 
+export type ClarificationField =
+  | "trigger"
+  | "input_data"
+  | "output"
+  | "decision_rules"
+  | "human_owner"
+  | "approval_boundary"
+  | "external_action_boundary"
+  | "data_source"
+  | "success_criteria";
+
+export type ClarificationQuestion = {
+  field: ClarificationField;
+  question: string;
+  why_it_matters: string;
+  example_answer?: string;
+};
+
+export type ClarificationPlan = {
+  needed: boolean;
+  reason: string;
+  missing_fields: ClarificationField[];
+  questions: ClarificationQuestion[];
+  suggested_template: string;
+  improved_prompt_starter: string;
+};
+
 export type CompileJob = {
   id: string;
   status: CompileJobStatus;
@@ -64,6 +91,7 @@ export type CompileJob = {
   risks: RiskSummary;
   readiness: AutomationReadinessScore;
   router_decision?: RouterDecision;
+  clarification_plan?: ClarificationPlan;
   result: SafeAutomationBlueprint;
   agent_trace: AgentTraceEvent[];
   token_usage: TokenUsage;
