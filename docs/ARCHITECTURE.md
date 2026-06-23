@@ -146,6 +146,7 @@ Page opens
   -> no result is generated
 
 User clicks Compile preview
+  -> frontend blocks empty input before any API request
   -> frontend starts a staged compile replay
   -> frontend sends one POST /api/compile request
   -> backend returns one CompileJob response
@@ -163,9 +164,20 @@ The staged progress replay is frontend-only UX. It is intentionally slower than 
 - build the deterministic non-executing blueprint preview
 - validate the compile job schema
 
-There is no SSE, WebSocket, backend streaming, background job runner, or real-world execution in this milestone. The staged UI is a visual explanation of the compile pipeline, not proof that each backend step is streaming live.
+There is no SSE, WebSocket, backend streaming, background job runner, n8n export, or real-world execution in this milestone. The staged UI is a visual explanation of the compile pipeline, not proof that each backend step is streaming live.
 
-When a previous result exists, the frontend keeps it visible, marks it as updating, and applies the new result only after the replay finishes. Technical trace remains collapsed by default.
+When a previous result exists, the frontend keeps it visible, marks it as updating, and applies the new result only after the replay finishes. While the replay is running, the staged compile run is readable. After completion, it compresses to a secondary status line such as `Compile complete · Groq router · Deterministic blueprint · No execution`.
+
+The completed compiler UI is workflow-first:
+
+- the outcome hero communicates the route, risk level, gate count, and no-execution boundary
+- Lucide icons from `lucide-vue-next` provide visual scanning for workflow, risk, approval, routing, drafting, messages, records, validation, and locked execution states
+- the visual workflow map is the primary output and renders deterministic blueprint steps with connectors, policy badges, risk badges, and obvious human-gate or blocked states
+- the recommended next step is promoted near the workflow map so the user knows whether to review, clarify, keep actions draft-only, use assistant-only guidance, or avoid automation
+- the compact safety summary shows risk level, gates, and locked execution before deeper details
+- detailed workflow metadata, risks and gates, trigger details, dry runs, before-implementation notes, and technical trace are collapsed by default
+
+The workflow map is a presentation layer over `compiledBlueprint.steps`; it does not add execution semantics and does not imply that the backend streams live step progress.
 
 The server response provides the real post-run summary:
 
@@ -174,7 +186,40 @@ The server response provides the real post-run summary:
 - `agent_trace` shows provider attempts, skipped calls, failures, and fallback behavior
 - `steps` summarizes deterministic pipeline steps
 
-The visible AI router explanation uses that response to show:
+## Router Transparency
+
+The AI router explanation uses the compile response to show what the Router Agent considered and what FlowForge did with the decision. In M9 it is collapsed by default under "How FlowForge decided" so the workflow result remains the main user output. AI routing is trust and debug context, not the primary blueprint display.
+
+Visible router inputs:
+
+- submitted process text, with `Show full` when long
+- detected workflow primitives by name
+- risk level and risk categories, or `No detected risk categories`
+- readiness score out of 100 with short readiness reasons when available
+- selected compile mode
+- a compact context summary explaining that the router receives the submitted process, deterministic signal scan, risk summary, readiness score, and selected mode
+
+Visible router output:
+
+- route
+- confidence
+- reason
+- safety note
+- suggested next step
+- provider
+- AI used
+- fallback used
+- LLM calls
+- deterministic blueprint generation label
+
+Provider path display:
+
+- Groq completed, failed, skipped, or was not used
+- Gemini completed, failed, skipped, or was not used
+- deterministic fallback was used or not used
+- each provider row includes one short reason and never exposes API keys
+
+The router boundary remains strict:
 
 - AI is used only for the server-side router decision in `balanced` and `full` modes
 - Groq is the primary router provider
@@ -184,6 +229,7 @@ The visible AI router explanation uses that response to show:
 - actual configured provider calls are counted whether they succeed, fail, return invalid JSON, or fail schema validation
 - the blueprint builder remains deterministic after the router decision
 - the staged UI progress is not real execution
+- the router can choose a route, but it does not generate or execute the blueprint
 
 ## Future Compiler Architecture
 

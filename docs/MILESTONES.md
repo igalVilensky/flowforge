@@ -2,7 +2,7 @@
 
 ## Current Milestone Note
 
-M8 is complete. FlowForge now starts `/compiler` in an idle ready state, waits for the user to click `Compile preview`, then shows a readable frontend-only compile replay with a first-class AI router explanation. The backend still returns one compile response; no streaming, real-world execution, database, auth, or n8n export has been added.
+M9 is complete. FlowForge is polished for course demos with blank-input handling, stronger example coverage, workflow-first result hierarchy, Lucide icons, a visual workflow map, collapsed router transparency, visible provider path explanation, and clearer decision copy. The backend still returns one compile response; no streaming, real-world execution, database, auth, or n8n export has been added.
 
 ## M0 - Project Setup And Documentation - Complete
 
@@ -225,85 +225,168 @@ Acceptance criteria:
 - [x] Typecheck passes
 - [x] Fixture validation passes
 
-## M9 - Blueprint Repair Loop
+## M9 - Demo Polish & Router Transparency
 
-Goal: repair invalid structured outputs once before failing clearly.
+Status: complete.
+
+Goal: make the compiler page presentation-ready by improving blank-input handling, example coverage, router transparency, provider-path explanation, top-level decision copy, workflow-first result hierarchy, and milestone docs.
 
 Deliverables:
 
-- repair prompt or deterministic repair function
-- retry logic
-- max retry guard
-- validation error display
+- blank input guard
+- improved demo examples
+- transparent router inputs
+- explainable router output
+- provider path display
+- clearer top-level decision copy
+- full-text expansion cleanup
+- milestone numbering cleanup
+- Lucide icon system
+- workflow-first result hierarchy
+- visual workflow map
+- recommended next step card
+- collapsed "How FlowForge decided"
+- compact compile run after completion
+- improved outcome hero
+- reduced visible clutter
+- clarification-needed visual hierarchy
 
 Acceptance criteria:
 
-- malformed output can be repaired when possible
-- repair attempts appear in the agent trace
-- unrepaired failures are visible and understandable
+- [x] Empty input cannot call compile API
+- [x] Examples cover low-risk, human-gated, high-stakes, unsafe, and unclear workflows
+- [x] Router inputs show actual submitted process, primitive names, risk categories, readiness score, and mode
+- [x] Router output explains route, confidence, reason, safety note, next step, provider, AI usage, fallback usage, and LLM calls
+- [x] Provider path is visible without Technical trace
+- [x] Long text has Show full behavior
+- [x] Milestone numbering has no duplicate M12
+- [x] Lucide icons installed and used in compiler UI
+- [x] Workflow map appears above router/technical details
+- [x] Workflow map visually shows steps, connectors, risk, gates, and no execution
+- [x] Recommended next step is visible near the top
+- [x] AI/router explanation is collapsed by default
+- [x] Compile run is compact after completion
+- [x] Needs clarification state is visually distinct
+- [x] Typecheck passes
+- [x] Fixture validation passes
 
-## M10 - Safety Critic And Approval Gates
+## M10 - Clarification Flow
 
-Goal: review unsafe automation boundaries and generate explicit gates.
+Goal: turn unclear or low-readiness compiler results into a guided clarification loop before implementation.
 
 Deliverables:
 
-- safety critic
-- approval gate generator
-- risk-to-gate rules
-- UI for safe, approval, not-recommended, and blocked steps
+- clarification question UI
+- answer capture for missing trigger, data source, output, owner, and approval boundary
+- recompile path that preserves the original process context
+- clearer low-readiness state handling
+
+Acceptance criteria:
+
+- unclear workflows ask concrete follow-up questions
+- provisional outlines do not look like final blueprints
+- answered questions can improve readiness on recompile
+- no real execution is added
+
+## M11 - Safety Critic Agent
+
+Goal: add a dedicated safety critic that reviews automation boundaries and explains unsafe or gated paths.
+
+Deliverables:
+
+- safety critic agent
+- risk-to-boundary explanations
+- critic trace entries
+- UI copy for safe, gated, redirected, and blocked decisions
 
 Acceptance criteria:
 
 - external send actions require review
 - sensitive topics require approval
 - unsafe automation boundaries are clearly explained
-- gates include review checklists
+- critic output remains non-executing
 
-## M11 - Dry Runs And Exports
+## M12 - Security & Privacy Agent
 
-Goal: create test cases and exportable implementation plans.
+Goal: review data access, secrets, credentials, retention, and privacy boundaries before implementation.
 
 Deliverables:
 
-- dry-run generator
-- human-readable export
-- custom JSON export
-- n8n-style outline
-- implementation prompt export
+- security and privacy agent
+- data-source and permission checks
+- secret/API-key warnings
+- retention and minimization recommendations
+
+Acceptance criteria:
+
+- personal data and account access require explicit scope
+- provider prompts avoid secrets and raw credentials
+- privacy risks are visible before implementation
+- no database/auth or production integrations are added
+
+## M13 - Human Gate Planner
+
+Goal: generate clearer human approval gates, review checklists, owners, and escalation paths.
+
+Deliverables:
+
+- human gate planner
+- gate owner suggestions
+- review checklist generation
+- UI for gate rationale and next human action
+
+Acceptance criteria:
+
+- risky actions map to explicit gates
+- gates include concrete review checklists
+- low-risk internal previews avoid unnecessary approval language
+- no real execution is added
+
+## M14 - Dry Run Test Agent
+
+Goal: generate stronger dry-run scenarios for safe, risky, edge, and unclear workflows.
+
+Deliverables:
+
+- dry-run test agent
+- normal, edge, and failure case generation
+- expected route and gate assertions
+- UI for dry-run review
 
 Acceptance criteria:
 
 - dry runs cover normal, edge, and risky cases
-- exports are clearly marked as non-executing plans
-- no direct n8n import is required yet
+- unsafe examples include blocked or gated expectations
+- unclear workflows include clarification expectations
+- dry runs remain non-executing
 
-## M12 - Agent Trace And Token Budget UI
+## M15 - Implementation Prompt Export
 
-Goal: make the compiler process observable.
+Goal: export reviewed implementation prompts and plans without creating live integrations.
 
 Deliverables:
 
-- detailed trace panel
-- provider call budget display
-- skipped/fallback call display
-- error and retry states
+- human-readable implementation prompt export
+- structured JSON plan export
+- safety boundary recap in exports
+- explicit non-execution labels
 
 Acceptance criteria:
 
-- users can see what ran, what skipped, and why
-- provider limits are visible
-- failures remain understandable
+- exports are clearly marked as plans
+- exports include gates, assumptions, and open questions
+- no direct n8n import/export is required yet
+- no production credentials or execution paths are added
 
-## M12 - Demo Mode And Polish
+## M16 - Final Demo Polish
 
-Goal: make the local demo reliable and presentation-ready.
+Goal: make the local demo reliable, polished, and ready for final presentation.
 
 Deliverables:
 
-- curated presets
+- curated demo presets
 - polished empty, loading, error, and result states
-- demo-safe fallback data
+- demo-safe fallback behavior
 - final documentation pass
 
 Acceptance criteria:
@@ -311,3 +394,4 @@ Acceptance criteria:
 - demo works without external credentials
 - risky examples show human gates
 - no automatic real-world execution is possible
+- docs match the final demo flow

@@ -1,10 +1,35 @@
 <script setup lang="ts">
+import type { Component } from "vue";
+import {
+  ArrowRight,
+  Bot,
+  CheckCircle2,
+  CircleAlert,
+  ClipboardCheck,
+  FileText,
+  GitBranch,
+  HelpCircle,
+  Inbox,
+  Lock,
+  MessageSquare,
+  PencilLine,
+  Route as RouteIcon,
+  ScanSearch,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  UserCheck,
+  Workflow as WorkflowIcon,
+  XCircle,
+} from "lucide-vue-next";
+
 import type { CompileJob, CompileMode, RouterDecision } from "../../shared/types/compileJob";
 import type {
   HumanApprovalGate,
   RiskItem,
   RiskLevel,
   StepAutomationPolicy,
+  WorkflowPrimitive,
   WorkflowStep,
 } from "../../shared/types/workflow";
 
@@ -20,19 +45,28 @@ useHead({
 
 const examples = [
   {
-    label: "Refund",
+    label: "Internal intake",
     value:
-      "When a customer asks for a refund, classify the reason, detect angry or legal language, draft a reply, and route high-risk cases to a human.",
+      "Every morning, collect new job application emails from the admissions inbox, extract the candidate name, role, portfolio link, and application source, classify the application priority, and create an internal review task for the admissions team without sending any external messages.",
   },
   {
-    label: "Student",
+    label: "Refund review",
     value:
-      "When a student asks about a course, classify the inquiry, draft a helpful reply, and create a follow-up task for admissions if needed.",
+      "When a customer says they were charged twice, classify the complaint, extract the order ID and payment amount, draft a refund response, and route the case to finance for approval before any refund or message is sent.",
   },
   {
-    label: "Risky send",
+    label: "Visa guidance",
     value:
-      "When a student asks about visa eligibility or payment problems, draft a reply and send it automatically.",
+      "When a student asks if they can legally work in Germany on their visa, draft a cautious internal note, summarize the question, and route it to an advisor for review before anyone replies.",
+  },
+  {
+    label: "Unsafe auto-send",
+    value:
+      "When a student asks about visa eligibility or payment problems, decide the answer, update their account, send the message automatically, and close the case.",
+  },
+  {
+    label: "Unclear request",
+    value: "Automate my customer messages.",
   },
 ];
 
@@ -65,10 +99,22 @@ type ProviderAttemptDisplay = {
   detail: string;
 };
 
+type SafetySummaryCard = {
+  label: string;
+  value: string;
+  detail: string;
+  icon: Component;
+  className: string;
+};
+
 const FINAL_STAGE_HOLD_MS = 600;
 const PREVIEW_TEXT_LIMIT = 180;
 const routerRoleCopy = "AI is used only to choose the routing decision. It does not generate or execute the blueprint.";
 const deterministicBoundaryCopy = "Blueprint generation remained deterministic after the router decision.";
+const routerPromptContextSummary =
+  "The router receives the submitted process, deterministic signal scan, risk summary, readiness score, and selected mode.";
+const routerOutputBoundaryCopy =
+  "FlowForge validates the router JSON before using it. The router can only choose a route; it does not generate or execute the blueprint.";
 
 const compileStages: CompileStage[] = [
   {
@@ -126,6 +172,7 @@ const activeCompileStageIndex = ref(0);
 const compileRunState = ref<CompileRunState>("idle");
 const compileReplayFinished = ref(false);
 const errorMessage = ref("");
+const inputGuardMessage = ref("");
 
 let compileRunToken = 0;
 const compileReplayTimers = new Set<number>();
@@ -134,9 +181,10 @@ const expandedSteps = ref<Record<string, boolean>>({});
 const expandedRisks = ref<Record<string, boolean>>({});
 const expandedGates = ref<Record<string, boolean>>({});
 const expandedSections = ref<Record<string, boolean>>({
+  howDecided: false,
+  workflowDetails: false,
+  risksAndGates: false,
   trigger: false,
-  risks: false,
-  gates: false,
   dryRuns: false,
   beforeImplementation: false,
   technicalTrace: false,
@@ -146,6 +194,11 @@ const activeExample = computed(() => {
   return examples.find((example) => example.value === processInput.value)?.label ?? "";
 });
 
+const trimmedProcessInput = computed(() => processInput.value.trim());
+const hasProcessInput = computed(() => trimmedProcessInput.value.length > 0);
+const inputHelperCopy = computed(() => {
+  return inputGuardMessage.value || "Paste a process or choose an example first.";
+});
 const compiledBlueprint = computed(() => job.value?.result ?? null);
 const gateCount = computed(() => compiledBlueprint.value?.human_approval_gates.length ?? 0);
 const riskLevel = computed<RiskLevel>(() => job.value?.risks?.risk_level ?? "medium");
@@ -224,28 +277,6 @@ const compileRunStateClass = computed(() => {
 
   return "ff-status-approval";
 });
-const routerRunStatus = computed(() => {
-  const currentJob = job.value;
-  const decision = routerDecision.value;
-
-  if (!currentJob || !decision) {
-    return "Pending";
-  }
-
-  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
-    return "Skipped";
-  }
-
-  if (decision.provider === "deterministic") {
-    return "Fallback";
-  }
-
-  if (decision.fallback_used) {
-    return "Fallback";
-  }
-
-  return "Completed";
-});
 const currentCompileStatus = computed(() => {
   if (compileRunState.value === "running") {
     if (compileReplayFinished.value && !pendingJob.value) {
@@ -273,37 +304,27 @@ const currentCompileStatus = computed(() => {
 
   return "Ready to compile.";
 });
-const compileSummaryItems = computed(() => {
-  if (!job.value || compileRunState.value !== "complete") {
-    return [];
+const compactCompileCompleteSummary = computed(() => {
+  const currentJob = job.value;
+  const decision = routerDecision.value;
+
+  if (!currentJob || !decision) {
+    return "Compile complete · Deterministic blueprint · No execution";
   }
 
-  return [
-    {
-      label: "Signal scan",
-      value: pipelineStepStatus("rule_based_signal_scan"),
-    },
-    {
-      label: "Risk review",
-      value: pipelineStepStatus("rule_based_risk_review"),
-    },
-    {
-      label: "Router",
-      value: routerRunStatus.value,
-    },
-    {
-      label: "Blueprint",
-      value: pipelineStepStatus("dynamic_blueprint_preview"),
-    },
-    {
-      label: "LLM calls",
-      value: llmCallsLabel.value,
-    },
-    {
-      label: "Provider",
-      value: providerLabel(routerDecision.value?.provider),
-    },
-  ];
+  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
+    return "Compile complete · Deterministic routing · Deterministic blueprint · No execution";
+  }
+
+  if (decision.provider === "groq" && decision.used_ai) {
+    return "Compile complete · Groq router · Deterministic blueprint · No execution";
+  }
+
+  if (decision.provider === "gemini" && decision.used_ai) {
+    return "Compile complete · Gemini fallback router · Deterministic blueprint · No execution";
+  }
+
+  return "Compile complete · Deterministic fallback · Deterministic blueprint · No execution";
 });
 const aiUsageVisible = computed(() => {
   if (isCompiling.value) {
@@ -345,7 +366,7 @@ const providerPathCopy = computed(() => {
 const routerInputItems = computed<TextDisplayItem[]>(() => {
   if (isCompiling.value) {
     return [
-      { label: "Process text", value: "Submitted input" },
+      { label: "Submitted process", value: trimmedProcessInput.value || "Pending" },
       { label: "Signal scan", value: "Pending" },
       { label: "Risk summary", value: "Pending" },
       { label: "Readiness score", value: "Pending" },
@@ -358,10 +379,10 @@ const routerInputItems = computed<TextDisplayItem[]>(() => {
   }
 
   return [
-    { label: "Process text", value: "Submitted input" },
-    { label: "Signal scan", value: `${job.value.signals.workflow_primitives.length} primitives` },
-    { label: "Risk summary", value: `${sentenceLabel(job.value.risks.risk_level)} risk` },
-    { label: "Readiness score", value: `${job.value.readiness.score}/100` },
+    { label: "Submitted process", value: job.value.input.trimmed },
+    { label: "Detected primitives", value: formatList(job.value.signals.workflow_primitives) },
+    { label: "Risk summary", value: buildRiskSummaryInput(job.value) },
+    { label: "Readiness score", value: buildReadinessInput(job.value) },
     { label: "Mode", value: job.value.mode },
   ];
 });
@@ -379,8 +400,10 @@ const routerOutputItems = computed<TextDisplayItem[]>(() => {
         label: "Provider",
         value: activeCompileMode.value === "demo" || activeCompileMode.value === "rule_only" ? "Deterministic fallback" : "Pending",
       },
+      { label: "AI used", value: activeCompileMode.value === "demo" || activeCompileMode.value === "rule_only" ? "No" : "Pending" },
       { label: "Fallback used", value: "Pending" },
       { label: "LLM calls", value: usesAiRouter(activeCompileMode.value) ? "Pending" : "0 / 0" },
+      { label: "Blueprint generation", value: "Deterministic" },
     ];
   }
 
@@ -391,8 +414,10 @@ const routerOutputItems = computed<TextDisplayItem[]>(() => {
     { label: "Safety note", value: decision.safety_note },
     { label: "Suggested next step", value: decision.suggested_next_step },
     { label: "Provider", value: providerLabel(decision.provider) },
+    { label: "AI used", value: yesNo(decision.used_ai) },
     { label: "Fallback used", value: yesNo(decision.fallback_used) },
     { label: "LLM calls", value: llmCallsLabel.value },
+    { label: "Blueprint generation", value: "Deterministic" },
   ];
 });
 const providerAttemptItems = computed<ProviderAttemptDisplay[]>(() => {
@@ -418,10 +443,6 @@ const isLowRiskInternalPreview = computed(() => {
   return riskLevel.value === "low" && gateCount.value === 0;
 });
 
-const primaryGate = computed(() => {
-  return compiledBlueprint.value?.human_approval_gates[0] ?? null;
-});
-
 const visibleWorkflowSteps = computed(() => {
   return compiledBlueprint.value?.steps ?? [];
 });
@@ -432,6 +453,161 @@ const visibleRisks = computed(() => {
 
 const visibleGates = computed(() => {
   return compiledBlueprint.value?.human_approval_gates ?? [];
+});
+
+const isClarificationNeeded = computed(() => {
+  return routerDecision.value?.route === "needs_clarification"
+    || compiledBlueprint.value?.automation_boundary === "assistant_only";
+});
+
+const topClarificationQuestions = computed(() => {
+  return compiledBlueprint.value?.open_questions.slice(0, 4) ?? [];
+});
+
+const outcomeTitle = computed(() => {
+  if (!compiledBlueprint.value) {
+    return "";
+  }
+
+  const route = routerDecision.value?.route;
+
+  if (route === "needs_clarification") {
+    return "Clarification needed";
+  }
+
+  if (route === "suggest_safer_workflow") {
+    return "Safer workflow recommended";
+  }
+
+  if (route === "assistant_only") {
+    return "Assistant guidance only";
+  }
+
+  if (route === "reject") {
+    return "Do not automate";
+  }
+
+  if (compiledBlueprint.value.automation_boundary === "not_safe_to_automate") {
+    return "Unsafe auto-execution blocked";
+  }
+
+  return "Workflow preview ready";
+});
+
+const outcomeIcon = computed<Component>(() => {
+  if (!compiledBlueprint.value) {
+    return WorkflowIcon;
+  }
+
+  const route = routerDecision.value?.route;
+
+  if (route === "needs_clarification") {
+    return HelpCircle;
+  }
+
+  if (route === "reject" || compiledBlueprint.value.automation_boundary === "not_safe_to_automate") {
+    return XCircle;
+  }
+
+  if (route === "suggest_safer_workflow" || riskLevel.value === "high") {
+    return ShieldAlert;
+  }
+
+  if (gateCount.value > 0) {
+    return UserCheck;
+  }
+
+  return WorkflowIcon;
+});
+
+const workflowMapTitle = computed(() => {
+  return isClarificationNeeded.value ? "Provisional safe outline" : "Workflow map";
+});
+
+const workflowMapCopy = computed(() => {
+  if (isClarificationNeeded.value) {
+    return "This outline is intentionally provisional until the missing details are answered.";
+  }
+
+  return "A deterministic non-executing workflow preview built from the submitted process.";
+});
+
+const recommendedNextStepCopy = computed(() => {
+  const route = routerDecision.value?.route;
+
+  if (route === "needs_clarification") {
+    return "Answer the missing questions before building. FlowForge needs more detail to produce a reliable workflow.";
+  }
+
+  if (route === "suggest_safer_workflow") {
+    return "Keep risky actions draft-only or human-approved before implementation.";
+  }
+
+  if (route === "assistant_only") {
+    return "Use this as assistant guidance only. Do not connect it to execution.";
+  }
+
+  if (route === "reject") {
+    return "Do not automate this workflow as described.";
+  }
+
+  return "Review the workflow map, then use the blueprint as an implementation guide. FlowForge will not execute anything.";
+});
+
+const decisionSummaryCopy = computed(() => {
+  const currentJob = job.value;
+  const decision = routerDecision.value;
+
+  if (!currentJob || !decision) {
+    return "Router details will appear after compile.";
+  }
+
+  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
+    return "AI skipped in demo mode. Deterministic routing was used.";
+  }
+
+  if (decision.provider === "groq" && decision.used_ai) {
+    return "Groq routed this request. Blueprint generation stayed deterministic.";
+  }
+
+  if (decision.provider === "gemini" && decision.used_ai) {
+    return "Gemini handled fallback routing. Blueprint generation stayed deterministic.";
+  }
+
+  return "Deterministic fallback routed this request. Blueprint generation stayed deterministic.";
+});
+
+const safetySummaryCards = computed<SafetySummaryCard[]>(() => {
+  const categories = job.value?.risks.categories.map(formatEnum) ?? [];
+  const categoryDetail = categories.length > 0
+    ? `Detected: ${formatList(categories)}.`
+    : "No detected risk categories.";
+
+  return [
+    {
+      label: "Risk level",
+      value: `${riskLevel.value} risk`,
+      detail: categoryDetail,
+      icon: riskLevel.value === "high" ? ShieldAlert : ShieldCheck,
+      className: riskClass(riskLevel.value),
+    },
+    {
+      label: "Human gates",
+      value: `${gateCount.value}`,
+      detail: gateCount.value > 0
+        ? "Human review is required before sensitive or external actions."
+        : "No approval gates generated for this preview.",
+      icon: gateCount.value > 0 ? UserCheck : CheckCircle2,
+      className: gateCount.value > 0 ? "policy-approval" : "policy-safe",
+    },
+    {
+      label: "Execution",
+      value: "Locked",
+      detail: "FlowForge created a preview only. It does not run workflows or touch external systems.",
+      icon: Lock,
+      className: "policy-safe",
+    },
+  ];
 });
 
 const capabilityText = computed(() => {
@@ -497,8 +673,24 @@ const plainEnglishResult = computed(() => {
     return "";
   }
 
+  if (compiledBlueprint.value.automation_boundary === "not_safe_to_automate") {
+    return "FlowForge blocked unsafe auto-execution and redirected the process into a non-executing review plan. Automatic sending, account updates, payments, and destructive actions cannot run in the MVP.";
+  }
+
+  if (routerDecision.value?.route === "needs_clarification" || compiledBlueprint.value.automation_boundary === "assistant_only") {
+    return "FlowForge needs a clearer process before a reliable automation blueprint can be built. Add the trigger, allowed data source, expected output, owner, and approval boundary.";
+  }
+
   if (isLowRiskInternalPreview.value) {
-    return `FlowForge can ${capabilityText.value}. It does not connect to email or task systems yet.`;
+    return `FlowForge produced a safe internal preview that can ${capabilityText.value}. Nothing connects to production systems.`;
+  }
+
+  if (riskLevel.value === "high") {
+    return `FlowForge created a safe draft and review path that can ${capabilityText.value}. Human review is required because this touches high-stakes or real-world outcomes.`;
+  }
+
+  if (gateCount.value > 0) {
+    return `FlowForge created a protected workflow preview that can ${capabilityText.value}. Human approval stays in front of messages, refunds, sensitive decisions, or production changes.`;
   }
 
   return `FlowForge can ${capabilityText.value}. It keeps risky actions behind human approval and does not execute anything.`;
@@ -509,33 +701,73 @@ const primaryDecision = computed(() => {
     return "";
   }
 
+  const route = routerDecision.value?.route;
+
   if (compiledBlueprint.value.automation_boundary === "not_safe_to_automate") {
     return "Blocked from auto-running";
+  }
+
+  if (route === "needs_clarification" || compiledBlueprint.value.automation_boundary === "assistant_only") {
+    return "Needs clarification";
   }
 
   if (compiledBlueprint.value.automation_boundary === "human_approval_required") {
     return "Human approval required";
   }
 
-  const routerDecision = job.value?.router_decision?.route;
-
-  if (routerDecision === "compile_blueprint" && isLowRiskInternalPreview.value) {
+  if (route === "compile_blueprint" && isLowRiskInternalPreview.value) {
     return "Internal preview";
-  }
-
-  if (compiledBlueprint.value.automation_boundary === "assistant_only") {
-    return "Assistant-only preview";
   }
 
   return "Partially automatable";
 });
 
-const mainDecisionCopy = computed(() => {
-  if (isLowRiskInternalPreview.value) {
-    return "FlowForge produced a non-executing internal workflow preview. It can help prepare extraction and review-task steps, but it does not connect to email or task systems yet.";
+const primaryDecisionClass = computed(() => {
+  if (!compiledBlueprint.value) {
+    return "policy-assist";
   }
 
-  return "FlowForge produced a non-executing workflow plan. Risky actions stay draft-only or human-approved.";
+  if (compiledBlueprint.value.automation_boundary === "not_safe_to_automate") {
+    return "policy-blocked";
+  }
+
+  if (routerDecision.value?.route === "needs_clarification" || compiledBlueprint.value.automation_boundary === "assistant_only") {
+    return "policy-assist";
+  }
+
+  if (isLowRiskInternalPreview.value) {
+    return "policy-safe";
+  }
+
+  if (compiledBlueprint.value.automation_boundary === "human_approval_required" || gateCount.value > 0) {
+    return "policy-approval";
+  }
+
+  return "policy-assist";
+});
+
+const mainDecisionCopy = computed(() => {
+  if (!compiledBlueprint.value) {
+    return "";
+  }
+
+  if (compiledBlueprint.value.automation_boundary === "not_safe_to_automate") {
+    return "FlowForge blocked unsafe execution and kept the plan non-executing. The next human step is to remove automatic send/update/payment actions or put them behind explicit review.";
+  }
+
+  if (routerDecision.value?.route === "needs_clarification" || compiledBlueprint.value.automation_boundary === "assistant_only") {
+    return "FlowForge needs more structure before implementation. Clarify the trigger, output, data source, owner, and approval rule, then compile again.";
+  }
+
+  if (isLowRiskInternalPreview.value) {
+    return "FlowForge found a safe internal preview path. It can prepare extraction, classification, and review-task steps without human gates or production connections.";
+  }
+
+  if (riskLevel.value === "high") {
+    return "FlowForge protected this workflow by keeping replies, sensitive decisions, and production changes in a draft/review path. The next human step is to review the gate checklist before any implementation.";
+  }
+
+  return "FlowForge produced a non-executing workflow plan. Review the approval gate before turning any draft, refund, message, or system change into a production action.";
 });
 
 const policyLabels: Record<StepAutomationPolicy, { label: string; className: string }> = {
@@ -563,6 +795,24 @@ const policyLabels: Record<StepAutomationPolicy, { label: string; className: str
     label: "Blocked in MVP",
     className: "policy-blocked",
   },
+};
+
+const primitiveIcons: Record<WorkflowPrimitive, Component> = {
+  intake: Inbox,
+  classification: GitBranch,
+  extraction: ScanSearch,
+  risk_detection: ShieldCheck,
+  routing: RouteIcon,
+  drafting: PencilLine,
+  approval: UserCheck,
+  validation: CheckCircle2,
+  notification: MessageSquare,
+  record_creation: ClipboardCheck,
+  monitoring: ScanSearch,
+  escalation: UserCheck,
+  summarization: FileText,
+  reporting: FileText,
+  export: FileText,
 };
 
 function formatEnum(value: string): string {
@@ -617,18 +867,6 @@ function confidenceLabel(confidence?: RouterDecision["confidence"]): string {
   return confidence ? sentenceLabel(confidence) : "Pending";
 }
 
-function statusLabel(status?: string): string {
-  if (status === "done" || status === "completed") {
-    return "Completed";
-  }
-
-  return status ? sentenceLabel(status) : "Pending";
-}
-
-function pipelineStepStatus(stepId: string): string {
-  return statusLabel(job.value?.steps.find((step) => step.id === stepId)?.status);
-}
-
 function policyLabel(policy: StepAutomationPolicy): string {
   return policyLabels[policy]?.label ?? formatEnum(policy);
 }
@@ -637,12 +875,86 @@ function policyClass(policy: StepAutomationPolicy): string {
   return policyLabels[policy]?.className ?? "policy-assist";
 }
 
+function stepIcon(step: WorkflowStep): Component {
+  if (step.automation_policy === "blocked_in_mvp" || step.automation_policy === "not_recommended") {
+    return XCircle;
+  }
+
+  if (step.approval_required || step.automation_policy === "human_approval") {
+    return UserCheck;
+  }
+
+  if (step.primitive === "risk_detection" && step.risk_level === "high") {
+    return ShieldAlert;
+  }
+
+  return primitiveIcons[step.primitive] ?? WorkflowIcon;
+}
+
+function workflowMapStepClass(step: WorkflowStep): string {
+  if (step.automation_policy === "blocked_in_mvp" || step.automation_policy === "not_recommended") {
+    return "is-blocked";
+  }
+
+  if (step.approval_required || step.automation_policy === "human_approval") {
+    return "is-approval";
+  }
+
+  if (step.risk_level === "high") {
+    return "is-risky";
+  }
+
+  return "is-safe";
+}
+
+function providerAttemptClass(status: string): string {
+  if (status === "Completed" || status === "Used") {
+    return "policy-safe";
+  }
+
+  if (status === "Failed") {
+    return "policy-blocked";
+  }
+
+  return "policy-assist";
+}
+
 function riskClass(level: RiskLevel): string {
   return `risk-${level}`;
 }
 
 function yesNo(value: boolean): string {
   return value ? "Yes" : "No";
+}
+
+function formatList(items: readonly string[], emptyLabel = "None detected"): string {
+  if (items.length === 0) {
+    return emptyLabel;
+  }
+
+  return items.join(", ");
+}
+
+function buildRiskSummaryInput(currentJob: CompileJob): string {
+  const categories = currentJob.risks.categories.map(formatEnum);
+  const categorySummary = categories.length > 0
+    ? `Categories: ${formatList(categories)}`
+    : "No detected risk categories";
+
+  return `${sentenceLabel(currentJob.risks.risk_level)} risk. ${categorySummary}.`;
+}
+
+function buildReadinessInput(currentJob: CompileJob): string {
+  const reasons = [
+    ...currentJob.readiness.strengths.slice(0, 2),
+    ...currentJob.readiness.weaknesses.slice(0, 2),
+  ];
+
+  if (reasons.length === 0) {
+    return `${currentJob.readiness.score}/100`;
+  }
+
+  return `${currentJob.readiness.score}/100. ${formatList(reasons)}`;
 }
 
 function textValue(value?: string | null): string {
@@ -685,7 +997,9 @@ function providerAttemptStatus(currentJob: CompileJob, provider: "groq" | "gemin
     return {
       provider: providerName,
       status: "Not used",
-      detail: provider === "groq" ? "Primary router provider was not reached." : "Fallback router provider was not reached.",
+      detail: provider === "groq"
+        ? "Primary router provider was not reached."
+        : "A validated Groq decision was available, so Gemini was not used.",
     };
   }
 
@@ -694,8 +1008,8 @@ function providerAttemptStatus(currentJob: CompileJob, provider: "groq" | "gemin
       provider: providerName,
       status: "Completed",
       detail: provider === "groq"
-        ? "Returned a validated constrained JSON router decision."
-        : "Returned a validated constrained JSON router decision after Groq was unavailable or failed.",
+        ? "Primary router provider returned validated router JSON."
+        : "Fallback provider returned validated router JSON.",
     };
   }
 
@@ -710,7 +1024,7 @@ function providerAttemptStatus(currentJob: CompileJob, provider: "groq" | "gemin
   return {
     provider: providerName,
     status: "Failed",
-    detail: traceEvent.reason ?? "Provider call failed or returned an invalid router decision.",
+    detail: traceEvent.reason ?? "Provider call failed or returned invalid router JSON.",
   };
 }
 
@@ -730,7 +1044,7 @@ function deterministicAttemptStatus(currentJob: CompileJob, decision: RouterDeci
   return {
     provider: "Deterministic",
     status: "Not used",
-    detail: "A validated AI router decision was available, so fallback routing was not needed.",
+    detail: "A validated AI router decision was available.",
   };
 }
 
@@ -804,6 +1118,13 @@ async function runCompileReplay(runToken: number) {
 
 function chooseExample(value: string) {
   processInput.value = value;
+  inputGuardMessage.value = "";
+}
+
+function clearInputGuardMessage() {
+  if (inputGuardMessage.value) {
+    inputGuardMessage.value = "";
+  }
 }
 
 function resetExpandedState() {
@@ -811,9 +1132,10 @@ function resetExpandedState() {
   expandedRisks.value = {};
   expandedGates.value = {};
   expandedSections.value = {
+    howDecided: false,
+    workflowDetails: false,
+    risksAndGates: false,
     trigger: false,
-    risks: false,
-    gates: false,
     dryRuns: false,
     beforeImplementation: false,
     technicalTrace: false,
@@ -865,7 +1187,13 @@ async function compilePreview() {
     return;
   }
 
+  if (!hasProcessInput.value) {
+    inputGuardMessage.value = "Paste a process or choose an example first.";
+    return;
+  }
+
   errorMessage.value = "";
+  inputGuardMessage.value = "";
   pendingJob.value = null;
   isCompiling.value = true;
   compileRunState.value = "running";
@@ -878,7 +1206,7 @@ async function compilePreview() {
   const requestPromise = $fetch<CompileJob>("/api/compile", {
     method: "POST",
     body: {
-      input: processInput.value,
+      input: trimmedProcessInput.value,
       mode: mode.value,
     },
   }).then((result) => {
@@ -966,8 +1294,16 @@ onBeforeUnmount(() => {
                 v-model="processInput"
                 class="ff-textarea"
                 :disabled="isCompiling"
+                aria-describedby="process-input-helper"
+                @input="clearInputGuardMessage"
                 placeholder="When a customer asks for a refund, classify the request, draft a reply, and route risky cases to a human."
               />
+              <span
+                id="process-input-helper"
+                :class="['input-helper', { 'is-warning': inputGuardMessage }]"
+              >
+                {{ inputHelperCopy }}
+              </span>
             </label>
 
             <div class="compact-row" aria-label="Example processes">
@@ -997,7 +1333,7 @@ onBeforeUnmount(() => {
                 </label>
               </fieldset>
 
-              <button class="ff-button compile-button" type="submit" :disabled="isCompiling">
+              <button class="ff-button compile-button" type="submit" :disabled="isCompiling || !hasProcessInput">
                 {{ isCompiling ? "Building..." : "Compile preview" }}
               </button>
             </div>
@@ -1068,83 +1404,22 @@ onBeforeUnmount(() => {
               </li>
             </ol>
 
-            <dl
+            <div
               v-else-if="job && compileRunState === 'complete'"
-              class="compile-summary-grid"
+              class="compile-complete-compact"
               aria-label="Compile run summary"
             >
-              <div v-for="item in compileSummaryItems" :key="item.label">
-                <dt>{{ item.label }}</dt>
-                <dd>{{ item.value }}</dd>
-              </div>
-            </dl>
-          </div>
-        </article>
-
-        <article v-if="aiUsageVisible" class="ff-tile ai-usage-tile">
-          <div class="ff-tile-inner ai-router-inner">
-            <div class="ai-router-head">
-              <div>
-                <p class="ff-kicker">AI router explanation</p>
-                <h2 class="ff-section-title">AI router explanation</h2>
-              </div>
-              <span class="ff-status ff-status-neutral">Router only</span>
+              <CheckCircle2 class="ff-icon" aria-hidden="true" />
+              <span>{{ compactCompileCompleteSummary }}</span>
             </div>
-
-            <div class="ai-explanation-grid">
-              <section class="ai-explanation-card">
-                <h3>Router role</h3>
-                <p>{{ routerRoleCopy }}</p>
-                <p>AI providers return only a constrained JSON router decision, and FlowForge validates that decision before using it.</p>
-              </section>
-
-              <section class="ai-explanation-card">
-                <h3>Provider path</h3>
-                <p>{{ providerPathCopy }}</p>
-                <ul class="provider-attempt-list" aria-label="Provider attempts">
-                  <li v-for="item in providerAttemptItems" :key="item.provider">
-                    <span class="provider-attempt-name">{{ item.provider }}</span>
-                    <span class="provider-attempt-status">{{ item.status }}</span>
-                    <small>{{ item.detail }}</small>
-                  </li>
-                </ul>
-              </section>
-
-              <section class="ai-explanation-card">
-                <h3>Router inputs</h3>
-                <ul class="router-input-list" aria-label="Router inputs">
-                  <li v-for="item in routerInputItems" :key="item.label">
-                    <strong>{{ item.label }}</strong>
-                    <span>{{ item.value }}</span>
-                  </li>
-                </ul>
-              </section>
-
-              <section class="ai-explanation-card router-output-card">
-                <h3>Router output</h3>
-                <dl class="router-output-grid">
-                  <div v-for="item in routerOutputItems" :key="item.label">
-                    <dt>{{ item.label }}</dt>
-                    <dd>
-                      <span>{{ previewText(item.value) }}</span>
-                      <details v-if="hasFullText(item.value)" class="expandable-text">
-                        <summary>Show full</summary>
-                        <p>{{ textValue(item.value) }}</p>
-                      </details>
-                    </dd>
-                  </div>
-                </dl>
-              </section>
-            </div>
-
-            <p class="ff-copy ai-boundary-copy">
-              {{ deterministicBoundaryCopy }} The blueprint builder then created a deterministic non-executing preview.
-            </p>
           </div>
         </article>
 
         <article v-if="compileRunState !== 'failed' && !isCompiling && !job" class="ff-tile result-state-tile">
           <div class="ff-tile-inner result-state-inner">
+            <span class="ready-icon" aria-hidden="true">
+              <Sparkles class="ff-icon-lg" />
+            </span>
             <p class="ff-kicker">Ready</p>
             <h2 class="ff-page-title">
               Paste a process or choose an example, then run a safe compile preview.
@@ -1158,16 +1433,36 @@ onBeforeUnmount(() => {
             :aria-busy="isCompiling"
           >
             <div class="ff-tile-inner result-hero-inner">
-              <div class="result-hero-main">
-                <p class="ff-kicker">Result</p>
-                <h2 class="result-title">{{ compiledBlueprint.workflow_name }}</h2>
-                <p class="result-summary">{{ plainEnglishResult }}</p>
+              <div class="result-hero-topline">
+                <span :class="['result-icon-wrap', primaryDecisionClass]">
+                  <component :is="outcomeIcon" class="ff-icon-lg" aria-hidden="true" />
+                </span>
+
+                <div class="result-hero-main">
+                  <p class="ff-kicker">Outcome</p>
+                  <h2 class="result-eyebrow-title">{{ outcomeTitle }}</h2>
+                  <h3 class="result-title">{{ compiledBlueprint.workflow_name }}</h3>
+                  <p class="result-summary">{{ plainEnglishResult }}</p>
+                </div>
               </div>
 
               <div class="hero-badges" aria-label="Compile status">
-                <span class="policy-badge policy-approval">{{ primaryDecision }}</span>
-                <span :class="['policy-badge', riskClass(riskLevel)]">{{ riskLevel }} risk</span>
-                <span class="policy-badge policy-safe">No execution</span>
+                <span :class="['policy-badge', primaryDecisionClass]">
+                  <WorkflowIcon class="ff-icon-sm" aria-hidden="true" />
+                  {{ primaryDecision }}
+                </span>
+                <span :class="['policy-badge', riskClass(riskLevel)]">
+                  <CircleAlert class="ff-icon-sm" aria-hidden="true" />
+                  {{ riskLevel }} risk
+                </span>
+                <span :class="['policy-badge', gateCount > 0 ? 'policy-approval' : 'policy-safe']">
+                  <UserCheck class="ff-icon-sm" aria-hidden="true" />
+                  {{ gateCount }} gates
+                </span>
+                <span class="policy-badge policy-safe">
+                  <Lock class="ff-icon-sm" aria-hidden="true" />
+                  No execution
+                </span>
               </div>
 
               <dl class="result-metrics" aria-label="Compile summary">
@@ -1188,69 +1483,138 @@ onBeforeUnmount(() => {
             <span v-if="isCompiling" class="result-update-badge">Updating preview...</span>
           </article>
 
-          <article class="ff-tile decision-tile">
-            <div class="ff-tile-inner decision-inner">
+          <article v-if="isClarificationNeeded" class="ff-tile clarification-tile">
+            <div class="ff-tile-inner clarification-inner">
               <div>
-                <p class="ff-kicker">Main decision</p>
-                <h2 class="ff-section-title">Plan first. Execute later.</h2>
-                <p class="ff-copy">{{ mainDecisionCopy }}</p>
+                <p class="ff-kicker">Clarify before building</p>
+                <h2 class="ff-section-title">Missing details</h2>
+                <p class="ff-copy">Weak input stays provisional until a human fills in the workflow boundary.</p>
               </div>
 
-              <div v-if="primaryGate" class="primary-gate">
-                <span class="policy-badge policy-approval">Main approval</span>
-                <strong>{{ primaryGate.label }}</strong>
-                <span>{{ primaryGate.reason }}</span>
-              </div>
+              <ul class="checklist compact-checklist">
+                <li v-for="question in topClarificationQuestions" :key="question">
+                  {{ question }}
+                </li>
+              </ul>
             </div>
           </article>
 
-          <article v-if="job?.router_decision" class="ff-tile router-tile">
-            <div class="ff-tile-inner router-inner">
-              <div class="router-main">
-                <p class="ff-kicker">Router decision</p>
-                <h2 class="ff-section-title">Route: {{ routeLabel(job.router_decision.route) }}</h2>
-                <div class="expandable-copy">
-                  <strong>Reason</strong>
-                  <p>{{ previewText(job.router_decision.reason) }}</p>
-                  <details v-if="hasFullText(job.router_decision.reason)" class="expandable-text">
-                    <summary>Show full</summary>
-                    <p>{{ textValue(job.router_decision.reason) }}</p>
-                  </details>
-                </div>
-                <div class="expandable-copy">
-                  <strong>Safety note</strong>
-                  <p>{{ previewText(job.router_decision.safety_note) }}</p>
-                  <details v-if="hasFullText(job.router_decision.safety_note)" class="expandable-text">
-                    <summary>Show full</summary>
-                    <p>{{ textValue(job.router_decision.safety_note) }}</p>
-                  </details>
-                </div>
-                <div class="expandable-copy">
-                  <strong>Next step</strong>
-                  <p>{{ previewText(job.router_decision.suggested_next_step) }}</p>
-                  <details v-if="hasFullText(job.router_decision.suggested_next_step)" class="expandable-text">
-                    <summary>Show full</summary>
-                    <p>{{ textValue(job.router_decision.suggested_next_step) }}</p>
-                  </details>
-                </div>
-              </div>
-              <div class="router-metrics">
-                <span class="policy-badge">Provider: {{ providerLabel(job.router_decision.provider) }}</span>
-                <span class="policy-badge">Confidence: {{ confidenceLabel(job.router_decision.confidence) }}</span>
-              </div>
-            </div>
-          </article>
-
-          <section class="blueprint-section workflow-section" aria-labelledby="workflow-plan-title">
+          <section
+            :class="['blueprint-section', 'workflow-map-section', { 'is-provisional': isClarificationNeeded }]"
+            aria-labelledby="workflow-map-title"
+          >
             <div class="section-head">
               <div>
-                <p class="ff-kicker">Workflow plan</p>
-                <h2 id="workflow-plan-title" class="ff-section-title">What happens next</h2>
+                <p class="ff-kicker">{{ isClarificationNeeded ? "Safe outline" : "Workflow" }}</p>
+                <h2 id="workflow-map-title" class="ff-section-title">{{ workflowMapTitle }}</h2>
+                <p class="ff-copy">{{ workflowMapCopy }}</p>
               </div>
-              <span class="ff-status ff-status-neutral">{{ visibleWorkflowSteps.length }} steps</span>
+              <span class="section-toggle-right">
+                <span class="ff-status ff-status-neutral">{{ visibleWorkflowSteps.length }} steps</span>
+                <span class="policy-badge policy-safe">
+                  <Lock class="ff-icon-sm" aria-hidden="true" />
+                  No execution
+                </span>
+              </span>
             </div>
 
-            <ol class="workflow-list">
+            <ol class="workflow-map">
+              <li
+                v-for="(step, index) in visibleWorkflowSteps"
+                :key="step.id"
+                :class="['workflow-map-item', workflowMapStepClass(step)]"
+              >
+                <article class="workflow-map-card">
+                  <div class="workflow-map-card-head">
+                    <span class="workflow-map-icon">
+                      <component :is="stepIcon(step)" class="ff-icon" aria-hidden="true" />
+                    </span>
+                    <span class="step-number">{{ index + 1 }}</span>
+                  </div>
+
+                  <div class="workflow-title-block">
+                    <strong>{{ step.label }}</strong>
+                    <small>{{ step.description }}</small>
+                  </div>
+
+                  <div class="workflow-badges">
+                    <span :class="['policy-badge', policyClass(step.automation_policy)]">
+                      {{ policyLabel(step.automation_policy) }}
+                    </span>
+                    <span
+                      v-if="step.risk_level !== 'low'"
+                      :class="['policy-badge', riskClass(step.risk_level)]"
+                    >
+                      {{ step.risk_level }}
+                    </span>
+                    <span v-if="step.approval_required" class="policy-badge policy-approval">
+                      <UserCheck class="ff-icon-sm" aria-hidden="true" />
+                      Approval
+                    </span>
+                  </div>
+                </article>
+
+                <ArrowRight
+                  v-if="index < visibleWorkflowSteps.length - 1"
+                  class="workflow-connector"
+                  aria-hidden="true"
+                />
+              </li>
+            </ol>
+          </section>
+
+          <article class="ff-tile next-step-tile">
+            <div class="ff-tile-inner next-step-inner">
+              <span class="next-step-icon">
+                <ArrowRight class="ff-icon" aria-hidden="true" />
+              </span>
+              <div>
+                <p class="ff-kicker">Recommended next step</p>
+                <h2 class="ff-section-title">{{ recommendedNextStepCopy }}</h2>
+              </div>
+            </div>
+          </article>
+
+          <section class="blueprint-section compact-section safety-summary-section" aria-label="Key safety output">
+            <div class="section-head">
+              <div>
+                <p class="ff-kicker">Safety summary</p>
+                <h2 class="ff-section-title">What is safe, gated, or locked</h2>
+                <p class="ff-copy">{{ mainDecisionCopy }}</p>
+              </div>
+            </div>
+
+            <div class="safety-grid">
+              <article
+                v-for="item in safetySummaryCards"
+                :key="item.label"
+                class="safety-card safety-summary-card"
+              >
+                <span :class="['summary-card-icon', item.className]">
+                  <component :is="item.icon" class="ff-icon" aria-hidden="true" />
+                </span>
+                <div>
+                  <span class="ff-kicker">{{ item.label }}</span>
+                  <h3>{{ item.value }}</h3>
+                  <p>{{ item.detail }}</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('workflowDetails')">
+              <span>
+                <span class="ff-kicker">Detailed workflow metadata</span>
+                <strong>Step policies, actors, and execution boundary</strong>
+              </span>
+              <span class="section-toggle-right">
+                <span class="ff-status ff-status-neutral">{{ visibleWorkflowSteps.length }} steps</span>
+                <span>{{ expandedSections.workflowDetails ? "Hide" : "Show" }}</span>
+              </span>
+            </button>
+
+            <ol v-if="expandedSections.workflowDetails" class="workflow-list">
               <li
                 v-for="(step, index) in visibleWorkflowSteps"
                 :key="step.id"
@@ -1316,117 +1680,150 @@ onBeforeUnmount(() => {
             </ol>
           </section>
 
-          <section class="blueprint-section compact-section" aria-label="Key safety output">
-            <div class="section-head">
-              <div>
-                <p class="ff-kicker">Safety output</p>
-                <h2 class="ff-section-title">What is allowed, gated, or blocked</h2>
+          <section v-if="aiUsageVisible" class="blueprint-section">
+            <button class="section-toggle" type="button" @click="toggleSection('howDecided')">
+              <span class="section-toggle-main">
+                <span class="section-toggle-icon">
+                  <Bot class="ff-icon" aria-hidden="true" />
+                </span>
+                <span>
+                  <span class="ff-kicker">How FlowForge decided</span>
+                  <strong>{{ decisionSummaryCopy }}</strong>
+                </span>
+              </span>
+              <span class="section-toggle-right">
+                <span class="ff-status ff-status-neutral">Router only</span>
+                <span>{{ expandedSections.howDecided ? "Hide" : "Show" }}</span>
+              </span>
+            </button>
+
+            <div v-if="expandedSections.howDecided" class="ff-tile nested-tile ai-usage-tile">
+              <div class="ff-tile-inner ai-router-inner">
+                <div class="ai-router-head">
+                  <div>
+                    <p class="ff-kicker">AI router explanation</p>
+                    <h2 class="ff-section-title">AI router explanation</h2>
+                  </div>
+                  <span class="ff-status ff-status-neutral">Trust context</span>
+                </div>
+
+                <div class="ai-explanation-grid">
+                  <section class="ai-explanation-card">
+                    <h3>Router role</h3>
+                    <p>{{ routerRoleCopy }}</p>
+                    <p>AI providers return only a constrained JSON router decision, and FlowForge validates that decision before using it.</p>
+                  </section>
+
+                  <section class="ai-explanation-card">
+                    <h3>Provider path</h3>
+                    <p>{{ providerPathCopy }}</p>
+                    <ul class="provider-attempt-list" aria-label="Provider attempts">
+                      <li v-for="item in providerAttemptItems" :key="item.provider">
+                        <span class="provider-attempt-name">{{ item.provider }}</span>
+                        <span :class="['policy-badge', providerAttemptClass(item.status)]">{{ item.status }}</span>
+                        <small>{{ item.detail }}</small>
+                      </li>
+                    </ul>
+                  </section>
+
+                  <section class="ai-explanation-card">
+                    <h3>Router inputs</h3>
+                    <p>{{ routerPromptContextSummary }}</p>
+                    <ul class="router-input-list" aria-label="Router inputs">
+                      <li v-for="item in routerInputItems" :key="item.label">
+                        <strong>{{ item.label }}</strong>
+                        <span>{{ previewText(item.value) }}</span>
+                        <details v-if="hasFullText(item.value)" class="expandable-text">
+                          <summary>Show full</summary>
+                          <p>{{ textValue(item.value) }}</p>
+                        </details>
+                      </li>
+                    </ul>
+                  </section>
+
+                  <section class="ai-explanation-card router-output-card">
+                    <h3>Router output</h3>
+                    <dl class="router-output-grid">
+                      <div v-for="item in routerOutputItems" :key="item.label">
+                        <dt>{{ item.label }}</dt>
+                        <dd>
+                          <span>{{ previewText(item.value) }}</span>
+                          <details v-if="hasFullText(item.value)" class="expandable-text">
+                            <summary>Show full</summary>
+                            <p>{{ textValue(item.value) }}</p>
+                          </details>
+                        </dd>
+                      </div>
+                    </dl>
+                    <p class="router-output-note">{{ routerOutputBoundaryCopy }}</p>
+                  </section>
+                </div>
+
+                <p class="ff-copy ai-boundary-copy">
+                  {{ deterministicBoundaryCopy }} The blueprint builder then created a deterministic non-executing preview.
+                </p>
               </div>
-            </div>
-
-            <div class="safety-grid">
-              <article class="safety-card">
-                <span class="policy-badge policy-safe">Safe</span>
-                <h3>Can automate</h3>
-                <ul>
-                  <li v-for="item in compiledBlueprint.safe_to_automate.slice(0, 4)" :key="item">
-                    {{ item }}
-                  </li>
-                </ul>
-              </article>
-
-              <article class="safety-card">
-                <span class="policy-badge policy-approval">Approval</span>
-                <h3>Needs human review</h3>
-                <ul>
-                  <li v-for="item in compiledBlueprint.needs_human_approval.slice(0, 4)" :key="item">
-                    {{ item }}
-                  </li>
-                </ul>
-              </article>
-
-              <article class="safety-card">
-                <span class="policy-badge policy-blocked">Blocked</span>
-                <h3>Must not auto-run</h3>
-                <ul>
-                  <li v-for="item in compiledBlueprint.not_safe_to_automate.slice(0, 4)" :key="item">
-                    {{ item }}
-                  </li>
-                </ul>
-              </article>
             </div>
           </section>
 
           <section class="blueprint-section">
-            <button class="section-toggle" type="button" @click="toggleSection('gates')">
+            <button class="section-toggle" type="button" @click="toggleSection('risksAndGates')">
               <span>
-                <span class="ff-kicker">Human gates</span>
-                <strong>Approval requirements</strong>
+                <span class="ff-kicker">Risks and gates</span>
+                <strong>Approval requirements and risk reasons</strong>
               </span>
               <span class="section-toggle-right">
                 <span class="ff-status ff-status-approval">{{ visibleGates.length }} gates</span>
-                <span>{{ expandedSections.gates ? "Hide" : "Show" }}</span>
-              </span>
-            </button>
-
-            <div v-if="expandedSections.gates" class="output-grid">
-              <article v-if="visibleGates.length === 0" class="output-card">
-                <h3>No approval gates generated</h3>
-                <p>
-                  The scanner did not detect a gate-worthy risk, but the preview still does not execute external actions.
-                </p>
-              </article>
-
-              <article v-for="gate in visibleGates" :key="gate.id" class="output-card">
-                <button class="card-toggle" type="button" @click="toggleGate(gate.id)">
-                  <strong>{{ gate.label }}</strong>
-                  <span>{{ isGateExpanded(gate) ? "Hide checklist" : "Show checklist" }}</span>
-                </button>
-
-                <p>{{ gate.reason }}</p>
-
-                <ul v-if="isGateExpanded(gate)" class="checklist">
-                  <li v-for="item in gate.review_checklist" :key="item">{{ item }}</li>
-                </ul>
-              </article>
-            </div>
-          </section>
-
-          <section class="blueprint-section">
-            <button class="section-toggle" type="button" @click="toggleSection('risks')">
-              <span>
-                <span class="ff-kicker">Risks</span>
-                <strong>Why this decision happened</strong>
-              </span>
-              <span class="section-toggle-right">
                 <span :class="['ff-status', riskClass(riskLevel)]">{{ riskLevel }}</span>
-                <span>{{ expandedSections.risks ? "Hide" : "Show" }}</span>
+                <span>{{ expandedSections.risksAndGates ? "Hide" : "Show" }}</span>
               </span>
             </button>
 
-            <div v-if="expandedSections.risks" class="output-grid">
-              <article v-if="visibleRisks.length === 0" class="output-card">
-                <h3>No obvious risk flags detected</h3>
-                <p>
-                  FlowForge still keeps this as a non-executing preview until a human verifies the workflow boundary.
-                </p>
+            <div v-if="expandedSections.risksAndGates" class="output-grid">
+              <article class="output-card">
+                <h3>Human gates</h3>
+
+                <template v-if="visibleGates.length === 0">
+                  <p>The scanner did not detect a gate-worthy risk, but the preview still does not execute external actions.</p>
+                </template>
+
+                <div v-for="gate in visibleGates" :key="gate.id" class="stacked-detail">
+                  <button class="card-toggle" type="button" @click="toggleGate(gate.id)">
+                    <strong>{{ gate.label }}</strong>
+                    <span>{{ isGateExpanded(gate) ? "Hide checklist" : "Show checklist" }}</span>
+                  </button>
+
+                  <p>{{ gate.reason }}</p>
+
+                  <ul v-if="isGateExpanded(gate)" class="checklist">
+                    <li v-for="item in gate.review_checklist" :key="item">{{ item }}</li>
+                  </ul>
+                </div>
               </article>
 
-              <article
-                v-for="risk in visibleRisks"
-                :key="risk.id"
-                :class="['output-card', riskClass(risk.risk_level)]"
-              >
-                <button class="card-toggle" type="button" @click="toggleRisk(risk.id)">
-                  <strong>{{ risk.label }}</strong>
-                  <span :class="['policy-badge', riskClass(risk.risk_level)]">
-                    {{ risk.risk_level }}
-                  </span>
-                </button>
+              <article class="output-card">
+                <h3>Risk reasons</h3>
 
-                <div v-if="isRiskExpanded(risk)" class="card-expanded">
-                  <p><strong>Reason:</strong> {{ risk.reason }}</p>
-                  <p><strong>Recommendation:</strong> {{ risk.recommendation }}</p>
+                <template v-if="visibleRisks.length === 0">
+                  <p>FlowForge did not detect obvious risk flags, but the preview still stays non-executing.</p>
+                </template>
+
+                <div
+                  v-for="risk in visibleRisks"
+                  :key="risk.id"
+                  :class="['stacked-detail', riskClass(risk.risk_level)]"
+                >
+                  <button class="card-toggle" type="button" @click="toggleRisk(risk.id)">
+                    <strong>{{ risk.label }}</strong>
+                    <span :class="['policy-badge', riskClass(risk.risk_level)]">
+                      {{ risk.risk_level }}
+                    </span>
+                  </button>
+
+                  <div v-if="isRiskExpanded(risk)" class="card-expanded">
+                    <p><strong>Reason:</strong> {{ risk.reason }}</p>
+                    <p><strong>Recommendation:</strong> {{ risk.recommendation }}</p>
+                  </div>
                 </div>
               </article>
             </div>
@@ -1662,11 +2059,34 @@ onBeforeUnmount(() => {
 }
 
 .input-tile {
-  grid-column: span 8;
+  grid-column: span 12;
 }
 
 .result-hero-tile {
-  grid-column: span 4;
+  grid-column: span 12;
+}
+
+.ff-icon,
+.ff-icon-sm,
+.ff-icon-lg {
+  display: block;
+  flex: 0 0 auto;
+  stroke-width: 2.2;
+}
+
+.ff-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.ff-icon-sm {
+  width: 15px;
+  height: 15px;
+}
+
+.ff-icon-lg {
+  width: 30px;
+  height: 30px;
 }
 
 .input-inner {
@@ -1746,9 +2166,28 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
+.compile-button:disabled {
+  cursor: not-allowed;
+}
+
+.input-helper {
+  display: block;
+  margin-top: 8px;
+  color: var(--ff-muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.input-helper.is-warning {
+  color: var(--ff-blocked);
+}
+
 .error-tile,
 .compile-run-tile,
 .result-state-tile,
+.clarification-tile,
+.next-step-tile,
 .decision-tile,
 .ai-usage-tile,
 .router-tile,
@@ -1919,6 +2358,22 @@ onBeforeUnmount(() => {
   line-height: 1.3;
 }
 
+.compile-complete-compact {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #b7ebcb;
+  border-radius: 999px;
+  background: var(--ff-safe-soft);
+  color: var(--ff-safe);
+  font-size: 0.88rem;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
 .compile-summary-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -1952,7 +2407,19 @@ onBeforeUnmount(() => {
 .result-state-inner {
   display: grid;
   min-height: 170px;
+  gap: 10px;
   align-content: center;
+}
+
+.ready-icon {
+  display: inline-grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid var(--ff-primary);
+  border-radius: 14px;
+  background: var(--ff-primary-soft);
+  color: var(--ff-primary-strong);
 }
 
 .result-hero-tile {
@@ -1987,19 +2454,50 @@ onBeforeUnmount(() => {
 
 .result-hero-inner {
   display: grid;
-  gap: 22px;
+  gap: 18px;
+}
+
+.result-hero-topline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.result-icon-wrap,
+.summary-card-icon,
+.next-step-icon,
+.section-toggle-icon,
+.workflow-map-icon {
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--ff-border);
+  background: var(--ff-neutral-soft);
+}
+
+.result-icon-wrap {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
 }
 
 .result-hero-main {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+}
+
+.result-eyebrow-title {
+  margin: 0;
+  color: var(--ff-ink);
+  font-size: clamp(1.4rem, 2.6vw, 2.15rem);
+  line-height: 1.08;
 }
 
 .result-title {
   margin: 0;
-  color: var(--ff-ink);
-  font-size: clamp(1.75rem, 4vw, 2.8rem);
-  line-height: 1.02;
+  color: var(--ff-muted);
+  font-size: clamp(1.05rem, 1.8vw, 1.25rem);
+  line-height: 1.2;
 }
 
 .result-summary {
@@ -2124,8 +2622,15 @@ onBeforeUnmount(() => {
   font-weight: 950;
 }
 
-.provider-attempt-status,
 .router-input-list span {
+  color: var(--ff-muted);
+  font-size: 0.9rem;
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.provider-attempt-status {
   color: var(--ff-primary-strong);
   font-size: 0.78rem;
   font-weight: 950;
@@ -2166,6 +2671,13 @@ onBeforeUnmount(() => {
   font-size: 0.88rem;
   font-weight: 850;
   overflow-wrap: anywhere;
+}
+
+.router-output-note {
+  margin: 10px 0 0;
+  color: var(--ff-muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
 }
 
 .expandable-copy {
@@ -2300,6 +2812,149 @@ onBeforeUnmount(() => {
   color: var(--ff-muted);
   font-size: 0.86rem;
   font-weight: 850;
+}
+
+.section-toggle-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-toggle-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: var(--ff-primary-strong);
+}
+
+.clarification-inner,
+.next-step-inner {
+  display: grid;
+  gap: 14px;
+}
+
+.clarification-inner {
+  grid-template-columns: minmax(0, 0.85fr) minmax(240px, 1fr);
+  align-items: start;
+}
+
+.clarification-tile {
+  border-color: #f2d78c;
+  background: #fffdf8;
+}
+
+.compact-checklist {
+  margin: 0;
+}
+
+.next-step-inner {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.next-step-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: var(--ff-primary);
+  color: #ffffff;
+}
+
+.next-step-tile {
+  border-color: color-mix(in srgb, var(--ff-primary) 42%, var(--ff-border));
+}
+
+.workflow-map-section {
+  padding: 16px;
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius);
+  background: var(--ff-surface);
+  box-shadow: var(--ff-shadow);
+}
+
+.workflow-map-section.is-provisional {
+  border-color: #f2d78c;
+  background: #fffdf8;
+}
+
+.workflow-map {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: stretch;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-map-item {
+  display: flex;
+  flex: 1 1 220px;
+  min-width: 220px;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.workflow-map-card {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--ff-border);
+  border-radius: var(--ff-radius);
+  background: #ffffff;
+  box-shadow: var(--ff-shadow);
+}
+
+.workflow-map-item.is-safe .workflow-map-card {
+  border-color: #b7ebcb;
+}
+
+.workflow-map-item.is-approval .workflow-map-card {
+  border-color: #f2b8b5;
+  background: #fff8f6;
+}
+
+.workflow-map-item.is-risky .workflow-map-card,
+.workflow-map-item.is-blocked .workflow-map-card {
+  border-color: #f2b8b5;
+  background: #fff7f7;
+}
+
+.workflow-map-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workflow-map-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: var(--ff-primary-strong);
+}
+
+.workflow-map-item.is-approval .workflow-map-icon {
+  border-color: #f2b8b5;
+  background: var(--ff-blocked-soft);
+  color: var(--ff-blocked);
+}
+
+.workflow-map-item.is-blocked .workflow-map-icon {
+  border-color: #f2b8b5;
+  background: var(--ff-blocked);
+  color: #ffffff;
+}
+
+.workflow-connector {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--ff-muted);
 }
 
 .workflow-list {
@@ -2453,11 +3108,36 @@ onBeforeUnmount(() => {
   box-shadow: var(--ff-shadow);
 }
 
+.safety-summary-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.summary-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+}
+
 .safety-card h3,
 .output-card h3 {
   margin: 10px 0 8px;
   color: var(--ff-ink);
   font-size: 1rem;
+}
+
+.safety-summary-card h3 {
+  margin: 3px 0 4px;
+  text-transform: capitalize;
+}
+
+.safety-summary-card p {
+  margin: 0;
+  color: var(--ff-muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
 }
 
 .safety-card ul,
@@ -2534,6 +3214,18 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--ff-border);
 }
 
+.stacked-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ff-border);
+}
+
+.stacked-detail:first-of-type {
+  border-top: 0;
+}
+
 .checklist {
   display: grid;
   gap: 8px;
@@ -2578,6 +3270,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   min-height: 30px;
   padding: 0 10px;
   border: 1px solid var(--ff-border);
@@ -2619,6 +3312,8 @@ onBeforeUnmount(() => {
 @media (max-width: 1040px) {
   .input-tile,
   .result-hero-tile,
+  .clarification-tile,
+  .next-step-tile,
   .decision-tile,
   .ai-usage-tile,
   .router-tile,
@@ -2627,7 +3322,8 @@ onBeforeUnmount(() => {
   }
 
   .decision-inner,
-  .router-inner {
+  .router-inner,
+  .clarification-inner {
     grid-template-columns: 1fr;
   }
 
@@ -2690,6 +3386,12 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .result-hero-topline,
+  .next-step-inner,
+  .safety-summary-card {
+    grid-template-columns: 1fr;
+  }
+
   .section-head,
   .section-toggle,
   .output-card-head,
@@ -2700,6 +3402,24 @@ onBeforeUnmount(() => {
 
   .section-toggle-right {
     justify-content: flex-start;
+  }
+
+  .section-toggle-main {
+    align-items: flex-start;
+  }
+
+  .workflow-map {
+    flex-direction: column;
+  }
+
+  .workflow-map-item {
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  .workflow-connector {
+    transform: rotate(90deg);
   }
 
   .workflow-summary {

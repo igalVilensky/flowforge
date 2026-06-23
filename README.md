@@ -15,11 +15,12 @@ not recommended, and what must not execute automatically.
 
 ## Current Status
 
-This repository has completed Milestone 8: Visible Agent Run / Compile Progress UX.
+This repository has completed Milestone 9: Demo Polish & Router Transparency.
 
 Implemented so far:
 
 - Nuxt 4, Vue 3, and TypeScript scaffold
+- Lucide Vue icons from `lucide-vue-next`
 - Tile-based UI prototype at `/compiler`
 - Progressive disclosure UI for complex blueprints
 - Shared TypeScript types for workflow blueprints, compile jobs, and agent trace events
@@ -31,8 +32,13 @@ Implemented so far:
 - Deterministic dynamic blueprint building from input, signals, risks, and readiness
 - Router Agent for evaluating safety and deciding compilation routes via Groq with Gemini fallback
 - Manual compile start in `/compiler`; the page does not auto-run on load
+- Blank input guard so empty process text cannot call the compile API
+- Curated example set for low-risk, human-gated, high-stakes, unsafe, and unclear workflows
 - Visible compile progress with a readable staged frontend agent-run replay
-- Visible AI router explanation covering router role, inputs, output, provider path, and deterministic boundary
+- Workflow-first compiler UI with an outcome hero, visual workflow map, compact safety summary, and recommended next step
+- Cognitive-load reduction through collapsed detail sections for router, risk, trigger, dry-run, implementation, and technical trace details
+- Transparent AI router explanation covering actual submitted input, primitives, risk categories, readiness, route, provider path, and deterministic boundary, collapsed under "How FlowForge decided"
+- Provider path display for Groq, Gemini fallback, and deterministic fallback
 - Deterministic fallback routing when provider keys are missing or provider calls fail
 - Expandable full text for long process, trigger, dry-run, router, and trace text
 - Product, architecture, milestone, demo, and Codex workflow documentation
@@ -47,7 +53,7 @@ This milestone intentionally does not include:
 - Background jobs
 - Deployment configuration
 
-Blueprint generation remains deterministic. Groq is the primary router provider, Gemini is the fallback router provider, and deterministic fallback always exists. The visible compile replay is frontend-only; the backend still returns one compile response and does not stream progress.
+Blueprint generation remains deterministic. Groq is the primary router provider, Gemini is the fallback router provider, and deterministic fallback always exists. AI only chooses the constrained router decision in `balanced` and `full` modes. The visible compile replay is frontend-only; the backend still returns one compile response and does not stream progress. The workflow map is a non-executing preview, not a live workflow or n8n export.
 
 ## Safety Boundary
 
@@ -117,13 +123,19 @@ curl -X POST http://localhost:3000/api/compile \
 
 Test the compiler UI and `/api/compile` across these routing paths:
 
+- empty input: compile button disabled, helper copy asks for a process or example, and no API request is sent
+- Internal intake example: workflow map is the main output, low-risk internal preview, no approval gates expected, deterministic blueprint generation
+- Refund review example: workflow map shows human approval before refund/message, no automatic refund or send
+- Visa guidance example: workflow map shows advisor or human review, high-stakes review path, no automatic reply
+- Unsafe auto-send example: unsafe execution blocked or redirected into a safer outline, no automatic send/account update
+- Unclear request example: clarification-needed hero, visible missing questions, and provisional workflow outline
 - demo mode: AI router skipped, deterministic routing, deterministic blueprint builder, `0 / 0` LLM calls
 - balanced/full with Groq available: Groq handles the router decision, blueprint generation remains deterministic
 - balanced/full with Groq failing and Gemini available: Gemini handles fallback routing, blueprint generation remains deterministic
 - balanced/full with missing provider keys: Groq and Gemini are skipped, deterministic fallback keeps compile successful
 - balanced/full with failed configured providers: failed HTTP attempts count as LLM calls, deterministic fallback keeps compile successful
 
-The `/compiler` page should open in an idle ready state with no automatic API request. After clicking `Compile preview`, it should show a staged compile replay even when the API responds quickly. The previous result remains visible and marked as updating until the staged replay finishes. Long process, trigger, dry-run, router, and trace text should expose a `Show full` option when collapsed.
+The `/compiler` page should open in an idle ready state with no automatic API request. After choosing an example or pasting input and clicking `Compile preview`, it should show a staged compile replay even when the API responds quickly. The previous result remains visible and marked as updating until the staged replay finishes. After completion, the compile run becomes compact, the workflow map appears above router and technical details, and the recommended next step stays near the top. The AI router explanation should be available under "How FlowForge decided" and show actual submitted input, primitive names, risk categories, readiness score, router output, LLM calls, and Groq/Gemini/deterministic provider path. Long process, trigger, dry-run, router, and trace text should expose a `Show full` option when collapsed.
 
 ## Project Structure
 
