@@ -25,6 +25,7 @@ Browser
   -> scanRisks(signals)
   -> scoreReadiness(signals, risks)
   -> routeCompileRequest(input, signals, risks, readiness, mode)
+  -> buildClarificationPlan(input, signals, risks, readiness, route)
   -> buildBlueprint(...)
   -> validate compile job with Zod
   -> safe non-executing preview
@@ -46,6 +47,7 @@ server/
     compile.post.ts
   services/
     blueprintBuilder.ts
+    clarificationPlanner.ts
     readinessScorer.ts
     riskScanner.ts
     routerAgent.ts
@@ -90,17 +92,17 @@ The shared types define the boundary between frontend and backend:
 - `HumanApprovalGate`
 - `DryRunTestCase`
 - `CompileJob`
+- `ClarificationPlan`
+- `ClarificationQuestion`
 - `PipelineStep`
 - `TokenUsage`
 - `AgentTraceEvent`
 
-Runtime Zod schemas validate the shared contracts for compile jobs, blueprints,
-signal summaries, risk summaries, and readiness scores. Fixtures are validated
-with `npm run validate:fixtures`.
+Runtime Zod schemas validate the shared contracts for compile jobs, clarification plans, blueprints, signal summaries, risk summaries, and readiness scores. Fixtures are validated with `npm run validate:fixtures`.
 
 ## Current Compile Flow
 
-The compile endpoint is synchronous. It may use an AI provider only for the Router Agent in `balanced` and `full` modes; scanner output, readiness scoring, blueprint building, and schema validation remain deterministic:
+The compile endpoint is synchronous. It may use an AI provider only for the Router Agent in `balanced` and `full` modes; scanner output, readiness scoring, clarification planning, blueprint building, and schema validation remain deterministic:
 
 ```text
 POST /api/compile
@@ -110,6 +112,7 @@ POST /api/compile
   -> scanRisks(signals)
   -> scoreReadiness(signals, risks)
   -> routeCompileRequest(input, signals, risks, readiness, mode)
+  -> buildClarificationPlan({ processInput, signals, risks, readiness, route })
   -> buildBlueprint({ jobId, processInput, signals, risks, readiness, mode })
   -> validate compile job with Zod
   -> return safe non-executing preview
@@ -126,6 +129,44 @@ score to generate:
 - human approval gates
 - dry-run test cases
 - assumptions and open questions
+
+## Clarification Flow
+
+M10 adds a deterministic clarification planner between the Router Agent and the blueprint builder.
+
+The clarification planner does not call AI. It uses:
+
+- submitted process text
+- deterministic signal scan
+- deterministic risk scan
+- readiness score
+- router route
+
+The planner returns `clarification_plan` on the compile job:
+
+- `needed`
+- `reason`
+- `missing_fields`
+- `questions`
+- `suggested_template`
+- `improved_prompt_starter`
+
+Clarification is needed when the input is too vague, low-readiness, missing critical information, missing a trigger, missing an expected output, or unsafe without a clear human/external-action boundary.
+
+Examples:
+
+- `Automate my customer messages.` should become a clarification-first state.
+- `do stuff` should become a clarification-first state.
+- a complete internal intake workflow should remain a clean workflow preview.
+
+Clarification questions are different from implementation open questions:
+
+- `clarification_plan.questions` are questions to answer before recompiling a weak process description.
+- `result.open_questions` are questions to review before implementing a sufficiently clear blueprint.
+
+When clarification is needed, the `/compiler` UI prioritizes the clarification card above the workflow map. The workflow map remains visible but is labeled as a provisional safe outline. The user can apply the deterministic improved prompt starter to the input, edit it, and manually run `Compile preview` again.
+
+The clarification planner does not execute anything, does not add backend streaming, does not export to n8n, and does not let AI generate the full blueprint.
 
 The response demonstrates the current safety posture:
 
@@ -174,16 +215,19 @@ The completed compiler UI is workflow-first:
 - Lucide icons from `lucide-vue-next` provide visual scanning for workflow, risk, approval, routing, drafting, messages, records, validation, and locked execution states
 - the visual workflow map is the primary output and renders deterministic blueprint steps with connectors, policy badges, risk badges, and obvious human-gate or blocked states
 - the recommended next step is promoted near the workflow map so the user knows whether to review, clarify, keep actions draft-only, use assistant-only guidance, or avoid automation
+- if `clarification_plan.needed` is true, a clarification-first card shows missing fields, questions, why-it-matters copy, suggested rewrite template, improved prompt starter, and a `Use starter` action
+- when clarification is needed, the workflow map is labeled as a provisional safe outline rather than a final confident blueprint
 - the compact safety summary shows risk level, gates, and locked execution before deeper details
-- detailed workflow metadata, risks and gates, trigger details, dry runs, before-implementation notes, and technical trace are collapsed by default
+- detailed workflow metadata, risks and gates, trigger details, dry runs, before-implementation notes, router explanation, and technical trace are collapsed by default
 
 The workflow map is a presentation layer over `compiledBlueprint.steps`; it does not add execution semantics and does not imply that the backend streams live step progress.
 
 The server response provides the real post-run summary:
 
 - `router_decision` shows route, confidence, provider, AI usage, and fallback usage
+- `clarification_plan` shows missing fields, clarification questions, suggested rewrite template, and improved starter when the process input is weak
 - `token_usage` shows LLM calls used and the mode-specific limit
-- `agent_trace` shows provider attempts, skipped calls, failures, and fallback behavior
+- `agent_trace` shows provider attempts, skipped calls, failures, fallback behavior, clarification planning, and blueprint construction
 - `steps` summarizes deterministic pipeline steps
 
 ## Router Transparency
@@ -228,6 +272,7 @@ The router boundary remains strict:
 - missing provider keys are skipped, not counted as LLM calls
 - actual configured provider calls are counted whether they succeed, fail, return invalid JSON, or fail schema validation
 - the blueprint builder remains deterministic after the router decision
+- the clarification planner remains deterministic after the router decision
 - the staged UI progress is not real execution
 - the router can choose a route, but it does not generate or execute the blueprint
 
@@ -242,6 +287,7 @@ User input
   -> risk scanner
   -> readiness score
   -> router
+  -> clarification planner
   -> workflow architect
   -> schema validator
   -> repair loop if needed
@@ -264,6 +310,7 @@ server/
     riskScanner.ts
     readinessScorer.ts
     routerAgent.ts
+    clarificationPlanner.ts
     workflowArchitect.ts
     schemaValidator.ts
     blueprintRepair.ts
@@ -313,6 +360,7 @@ FlowForge should combine:
 - deterministic scanner rules
 - explicit risk categories
 - schema validation
+- clarification planning before confident blueprint interpretation
 - human approval gates
 - dry-run expectations
 - provider call budgets

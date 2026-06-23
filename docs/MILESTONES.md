@@ -272,21 +272,52 @@ Acceptance criteria:
 
 ## M10 - Clarification Flow
 
-Goal: turn unclear or low-readiness compiler results into a guided clarification loop before implementation.
+Status: complete.
+
+Goal: turn unclear or low-readiness compiler input into a guided clarification loop before implementation.
+
+This milestone makes weak input a first-class product state instead of treating it like a failed or normal blueprint. When the user gives vague, incomplete, or unsafe process text, FlowForge now explains what is missing, asks concrete questions, suggests a safer rewrite template, and lets the user improve the input before recompiling.
 
 Deliverables:
 
-- clarification question UI
-- answer capture for missing trigger, data source, output, owner, and approval boundary
-- recompile path that preserves the original process context
-- clearer low-readiness state handling
+* deterministic `clarificationPlanner` service
+* `clarification_plan` field on `CompileJob`
+* Zod validation for clarification fields, questions, and plans
+* compile API integration after router decision
+* clarification planner pipeline step
+* clarification planner trace event
+* fixture update for valid compile job validation
+* clarification-first UI state for weak input
+* missing-field display
+* concrete clarification questions with why-it-matters copy
+* suggested rewrite template
+* improved prompt starter
+* `Use starter` action that replaces the input without auto-compiling
+* `Copy` action for the improved starter
+* provisional workflow labeling when clarification is needed
+* separation between clarification questions and implementation open questions
+* docs updated
 
 Acceptance criteria:
 
-- unclear workflows ask concrete follow-up questions
-- provisional outlines do not look like final blueprints
-- answered questions can improve readiness on recompile
-- no real execution is added
+* [x] Weak input produces clarification-first UI
+* [x] Clarification plan includes missing fields and concrete questions
+* [x] User can apply an improved starter to the input
+* [x] Applying the starter does not auto-compile
+* [x] Workflow map is labeled provisional when clarification is needed
+* [x] Good input does not show unnecessary clarification UI
+* [x] Clarification questions are separate from implementation open questions
+* [x] Compile output validates with `clarification_plan`
+* [x] Fixture validation passes
+* [x] Typecheck passes
+
+Manual validation cases:
+
+* `Automate my customer messages.` shows clarification-first UI, missing fields, questions, suggested template, improved starter, and provisional safe outline.
+* `do stuff` shows clarification needed and does not present a confident final blueprint.
+* Job-application intake example stays clean and does not show the large clarification card.
+* Refund review example stays human-gated and is not treated as unclear when enough details are present.
+* Unsafe auto-send/update-account input keeps external action boundaries safe and does not imply automatic execution.
 
 ## M11 - Safety Critic Agent
 

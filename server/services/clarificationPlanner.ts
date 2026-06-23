@@ -4,95 +4,106 @@ import type { AutomationReadinessScore, RiskSummary, SignalSummary } from "../..
 const GENERIC_TEMPLATE =
   "When [trigger happens], read [data source], extract/classify [important fields], create [safe internal output], and route [risky or external actions] to [human/team] before anything is sent, updated, charged, deleted, or executed.";
 
+const HIGH_STAKES_RISK_CATEGORIES = [
+  "financial",
+  "refund_or_payment",
+  "legal",
+  "medical",
+  "visa_or_immigration",
+  "employment",
+  "account_access",
+  "high_stakes_decision",
+  "real_world_execution",
+  "delete_or_destructive_action",
+] as const;
+
+const DATA_PRIMITIVES = [
+  "classification",
+  "extraction",
+  "summarization",
+  "drafting",
+  "record_creation",
+] as const;
+
+const DATA_HANDLING_PRIMITIVES = ["extraction", "summarization"] as const;
+
+type PrimitiveName = SignalSummary["workflow_primitives"][number];
+
 function countWords(input: string): number {
   return input.trim().split(/\s+/).filter(Boolean).length;
 }
 
+function hasPrimitive(signals: SignalSummary, primitives: readonly PrimitiveName[]): boolean {
+  return signals.workflow_primitives.some((primitive) => primitives.includes(primitive));
+}
+
+function hasHighStakesRisk(risks: RiskSummary): boolean {
+  return risks.categories.some((category) =>
+    HIGH_STAKES_RISK_CATEGORIES.includes(category as (typeof HIGH_STAKES_RISK_CATEGORIES)[number]),
+  );
+}
+
+function addMissingField(fields: ClarificationField[], field: ClarificationField): void {
+  if (!fields.includes(field)) {
+    fields.push(field);
+  }
+}
+
 function isVagueInput(processInput: string, signals: SignalSummary): boolean {
   const words = countWords(processInput);
-  // Very short OR has almost no primitives detected (just intake)
-  return words < 20 && signals.workflow_primitives.filter((p) => p !== "intake").length === 0;
+  const meaningfulPrimitiveCount = signals.workflow_primitives.filter((primitive) => {
+    return primitive !== "intake" && primitive !== "risk_detection";
+  }).length;
+
+  return words < 20 && meaningfulPrimitiveCount === 0;
 }
 
 function detectMissingFields(
   processInput: string,
   signals: SignalSummary,
   risks: RiskSummary,
-  readiness: AutomationReadinessScore,
 ): ClarificationField[] {
   const missing: ClarificationField[] = [];
+  const vague = isVagueInput(processInput, signals);
+  const hasDataPrimitive = hasPrimitive(signals, DATA_PRIMITIVES);
+  const hasDataHandling = hasPrimitive(signals, DATA_HANDLING_PRIMITIVES);
+  const highStakes = hasHighStakesRisk(risks);
 
   if (!signals.has_trigger) {
-    missing.push("trigger");
+    addMissingField(missing, "trigger");
+  }
+
+  if (!hasDataPrimitive || !hasDataHandling || vague) {
+    addMissingField(missing, "data_source");
+    addMissingField(missing, "input_data");
   }
 
   if (!signals.has_clear_output) {
-    missing.push("output");
+    addMissingField(missing, "output");
   }
 
-  // No primitives that imply a data source or clear input data
-  const hasDataPrimitive =
-    signals.workflow_primitives.some((p) =>
-      ["classification", "extraction", "summarization", "drafting", "record_creation"].includes(p),
-    );
-
-  if (!hasDataPrimitive || isVagueInput(processInput, signals)) {
-    if (!missing.includes("output")) {
-      // Only add data_source if we have no clear data handling either
-      const hasDataHandling = signals.workflow_primitives.some((p) =>
-        ["extraction", "summarization"].includes(p),
-      );
-
-      if (!hasDataHandling) {
-        missing.push("data_source");
-      }
-    }
+  if (vague) {
+    addMissingField(missing, "decision_rules");
   }
 
-  // If there's external action risk but no human actor, ask for human owner and boundary
   if (signals.has_external_action && !signals.has_human_actor) {
-    missing.push("human_owner");
-    missing.push("external_action_boundary");
+    addMissingField(missing, "human_owner");
+    addMissingField(missing, "external_action_boundary");
   } else if (signals.has_external_action) {
-    // Has external action AND human actor, but still clarify what stays draft-only
-    if (!missing.includes("external_action_boundary")) {
-      missing.push("approval_boundary");
-    }
+    addMissingField(missing, "approval_boundary");
+    addMissingField(missing, "external_action_boundary");
   }
 
-  // High-stakes risks but no human actor mentioned
-  const highStakesRisks = [
-    "financial",
-    "refund_or_payment",
-    "legal",
-    "medical",
-    "visa_or_immigration",
-    "employment",
-    "account_access",
-    "high_stakes_decision",
-    "real_world_execution",
-    "delete_or_destructive_action",
-  ] as const;
-
-  const hasHighStakes = risks.categories.some((c) => highStakesRisks.includes(c as (typeof highStakesRisks)[number]));
-
-  if (hasHighStakes && !signals.has_human_actor) {
-    if (!missing.includes("human_owner")) {
-      missing.push("human_owner");
-    }
-
-    if (!missing.includes("approval_boundary") && !missing.includes("external_action_boundary")) {
-      missing.push("approval_boundary");
-    }
+  if (highStakes && !signals.has_human_actor) {
+    addMissingField(missing, "human_owner");
+    addMissingField(missing, "approval_boundary");
   }
 
-  // Vague or empty primitives → ask for decision rules
-  if (isVagueInput(processInput, signals) && !missing.includes("decision_rules")) {
-    missing.push("decision_rules");
+  if (highStakes || signals.has_external_action || vague) {
+    addMissingField(missing, "success_criteria");
   }
 
-  // Remove duplicates while preserving order
-  return [...new Set(missing)];
+  return missing;
 }
 
 const QUESTION_MAP: Record<ClarificationField, Omit<ClarificationQuestion, "field">> = {
@@ -104,8 +115,9 @@ const QUESTION_MAP: Record<ClarificationField, Omit<ClarificationQuestion, "fiel
   },
   input_data: {
     question: "What data or messages should the workflow read?",
-    why_it_matters: "Without a data source, FlowForge cannot describe what will be processed or extracted.",
-    example_answer: "Customer emails in the support@company.com inbox.",
+    why_it_matters:
+      "Without input data, FlowForge cannot describe what will be processed, classified, extracted, or reviewed.",
+    example_answer: "Customer emails in the support inbox, including subject, body, sender, and order ID if present.",
   },
   output: {
     question: "What should the workflow produce — a draft reply, a tag, a task, or a summary?",
@@ -138,7 +150,7 @@ const QUESTION_MAP: Record<ClarificationField, Omit<ClarificationQuestion, "fiel
     example_answer: "No messages sent. No account changes. No charges. All external actions remain draft-only.",
   },
   data_source: {
-    question: "What customer messages, emails, or records should FlowForge read?",
+    question: "What customer messages, emails, tickets, or records should FlowForge read?",
     why_it_matters:
       "Without a data source, the blueprint is too abstract to validate or plan safely.",
     example_answer: "New inbound emails in the admissions inbox, or Zendesk tickets tagged as unread.",
@@ -158,18 +170,14 @@ function buildQuestions(missingFields: ClarificationField[]): ClarificationQuest
   }));
 }
 
-function buildSuggestedTemplate(): string {
-  return GENERIC_TEMPLATE;
-}
-
 function buildImprovedPromptStarter(
   processInput: string,
   signals: SignalSummary,
   risks: RiskSummary,
 ): string {
-  // Detect likely domain for a more targeted starter
+  const lowerInput = processInput.toLowerCase();
   const hasExternalComm = risks.categories.includes("external_communication");
-  const hasFinancial = risks.categories.some((c) => ["financial", "refund_or_payment"].includes(c));
+  const hasFinancial = risks.categories.some((category) => ["financial", "refund_or_payment"].includes(category));
   const hasVisa = risks.categories.includes("visa_or_immigration");
   const hasEmployment = risks.categories.includes("employment");
   const hasMedical = risks.categories.includes("medical");
@@ -194,7 +202,10 @@ function buildImprovedPromptStarter(
     return "Every [morning/week], collect [new items] from [source/inbox], extract [key fields], classify [priority/type], and create an internal review task for [team] without sending any external messages.";
   }
 
-  // Generic fallback for vague inputs
+  if (lowerInput.includes("customer") || lowerInput.includes("message")) {
+    return "When a new customer message arrives in [channel], classify the topic and urgency, create an internal draft or task for [support owner/team], and keep every external reply human-approved before sending.";
+  }
+
   return "When [trigger happens], read [data source], extract and classify [important fields], create an internal [task/summary/draft] for [team/owner] to review, and keep all external actions draft-only until a human approves.";
 }
 
@@ -211,9 +222,13 @@ function buildClarificationReason(
   }
 
   if (readiness.score < 40) {
-    parts.push(`Readiness score is ${readiness.score}/100 — the process description is too vague for a safe blueprint.`);
+    parts.push(`Readiness score is ${readiness.score}/100, so the process description is too vague for a safe blueprint.`);
   } else if (readiness.score < 60) {
-    parts.push(`Readiness score is ${readiness.score}/100 — additional detail will make the blueprint more reliable.`);
+    parts.push(`Readiness score is ${readiness.score}/100, so additional detail will make the blueprint more reliable.`);
+  }
+
+  if (isVagueInput(processInput, signals)) {
+    parts.push("The input is short and does not describe enough workflow structure.");
   }
 
   if (!signals.has_trigger) {
@@ -246,7 +261,6 @@ export type BuildClarificationPlanInput = {
 export function buildClarificationPlan(input: BuildClarificationPlanInput): ClarificationPlan {
   const { processInput, signals, risks, readiness, route } = input;
 
-  // Determine whether clarification is needed
   const routeNeedsClarification = route === "needs_clarification";
   const lowReadiness = readiness.score < 60;
   const hasMissingCriticalInfo = signals.missing_critical_info.length > 0;
@@ -254,29 +268,13 @@ export function buildClarificationPlan(input: BuildClarificationPlanInput): Clar
   const noOutput = !signals.has_clear_output;
   const vague = isVagueInput(processInput, signals);
   const externalWithoutHuman = signals.has_external_action && !signals.has_human_actor;
-
-  // High stakes without human owner
-  const highStakesRisks = [
-    "financial",
-    "refund_or_payment",
-    "legal",
-    "medical",
-    "visa_or_immigration",
-    "employment",
-    "account_access",
-    "high_stakes_decision",
-    "real_world_execution",
-    "delete_or_destructive_action",
-  ] as const;
-
-  const hasHighStakes = risks.categories.some((c) => highStakesRisks.includes(c as (typeof highStakesRisks)[number]));
-  const highStakesWithoutHuman = hasHighStakes && !signals.has_human_actor;
+  const highStakesWithoutHuman = hasHighStakesRisk(risks) && !signals.has_human_actor;
 
   const needed =
-    routeNeedsClarification ||
-    (lowReadiness && (noTrigger || noOutput || hasMissingCriticalInfo || vague)) ||
-    externalWithoutHuman ||
-    highStakesWithoutHuman;
+    routeNeedsClarification
+    || (lowReadiness && (noTrigger || noOutput || hasMissingCriticalInfo || vague))
+    || externalWithoutHuman
+    || highStakesWithoutHuman;
 
   if (!needed) {
     return {
@@ -289,18 +287,14 @@ export function buildClarificationPlan(input: BuildClarificationPlanInput): Clar
     };
   }
 
-  const missingFields = detectMissingFields(processInput, signals, risks, readiness);
-  const questions = buildQuestions(missingFields);
-  const reason = buildClarificationReason(processInput, signals, readiness, route);
-  const suggestedTemplate = buildSuggestedTemplate();
-  const improvedPromptStarter = buildImprovedPromptStarter(processInput, signals, risks);
+  const missingFields = detectMissingFields(processInput, signals, risks);
 
   return {
     needed: true,
-    reason,
+    reason: buildClarificationReason(processInput, signals, readiness, route),
     missing_fields: missingFields,
-    questions,
-    suggested_template: suggestedTemplate,
-    improved_prompt_starter: improvedPromptStarter,
+    questions: buildQuestions(missingFields),
+    suggested_template: GENERIC_TEMPLATE,
+    improved_prompt_starter: buildImprovedPromptStarter(processInput, signals, risks),
   };
 }
