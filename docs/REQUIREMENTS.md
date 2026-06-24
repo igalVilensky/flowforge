@@ -1,8 +1,10 @@
- FlowForge Requirements
+# FlowForge Requirements
 
 FlowForge is a non-executing automation blueprint compiler.
 
 It accepts a plain-language workflow description and returns a safe, structured preview showing what can be automated, what must stay draft-only, what needs human approval, what needs clarification, and what is blocked in the MVP.
+
+M12 adds a guided clarification session so vague or messy input can be clarified one contextual question at a time before compiling.
 
 ---
 
@@ -18,6 +20,7 @@ What is safe to automate?
 What must stay human-reviewed?
 What is too vague?
 What is unsafe to automate?
+What is the next missing detail?
 ```
 
 The MVP must not execute any real-world action.
@@ -30,15 +33,16 @@ FlowForge must provide:
 
 - workflow input
 - compile modes
+- guided clarification session
 - deterministic signal scan
 - deterministic risk scan
 - readiness scoring
 - AI router support in Balanced/Full modes
-- deterministic clarification planner
-- deterministic safe blueprint builder
-- deterministic Safety Critic
+- deterministic clarification planner inside compile
+- safe blueprint builder
+- Safety Critic review
 - validated compile job response
-- main UI result
+- focused main UI result
 - details-on-demand UI
 - demo-ready test scenarios
 
@@ -73,14 +77,16 @@ The UI should support:
 
 - manual text input
 - suggested example prompts
-- compile button
+- guided compile button
 - clear indication that output is non-executing
+- advanced compile mode selection hidden behind a secondary control
 
 Acceptance criteria:
 
 - Empty input returns a validation error
-- Non-empty input can be compiled
+- Non-empty input can start guided clarification or compile
 - Previous result clears when a new compile starts
+- Default user flow does not require understanding compile modes
 
 ---
 
@@ -99,18 +105,52 @@ Mode behavior:
 
 - Demo: no AI calls
 - Rule-only: no AI calls
-- Balanced: AI router allowed, deterministic blueprint and critic
-- Full: most provider usage allowed, deterministic blueprint and critic
+- Balanced: AI routing/agents allowed where configured, deterministic safety validation remains
+- Full: most provider usage allowed, deterministic safety validation remains
 
 Acceptance criteria:
 
 - Demo works without provider keys
 - Balanced/Full show provider path when providers are configured
-- Safety outcome remains deterministic across modes
+- Safety outcome remains bounded by deterministic safety logic
+- Mode selection is not the primary UX
 
 ---
 
-### FR3 — Signal scanning
+### FR3 — Guided clarification session
+
+The system must support a dedicated clarification session before compile.
+
+Endpoint:
+
+```text
+POST /api/clarify
+```
+
+The clarification session must:
+
+- accept original input and previous answers
+- infer known facts from messy text
+- ask one contextual question at a time
+- use previous answers
+- stop when enough useful facts are collected
+- return `ready_to_compile=true`
+- return `rewritten_compile_prompt`
+- avoid repeated questions
+- hard-stop after a small maximum number of questions
+
+Acceptance criteria:
+
+- `Automate my tasks.` asks what task category to automate first
+- the first question is not a generic data-source question
+- support-ticket/email clarification stops after enough core details are collected
+- repeated human-review or decision-rule questions are detected and stopped
+- the system compiles with best available facts after the question limit
+- provider failure falls back to deterministic clarification behavior
+
+---
+
+### FR4 — Signal scanning
 
 The system must scan visible process structure.
 
@@ -153,7 +193,7 @@ Acceptance criteria:
 
 ---
 
-### FR4 — Risk scanning
+### FR5 — Risk scanning
 
 The system must classify risk deterministically.
 
@@ -183,7 +223,7 @@ Acceptance criteria:
 
 ---
 
-### FR5 — Readiness scoring
+### FR6 — Readiness scoring
 
 The system must calculate a readiness score.
 
@@ -205,7 +245,7 @@ Acceptance criteria:
 
 ---
 
-### FR6 — Router Agent
+### FR7 — Router Agent
 
 The system may use an AI router in Balanced and Full mode.
 
@@ -236,9 +276,9 @@ Acceptance criteria:
 
 ---
 
-### FR7 — Clarification planner
+### FR8 — Compile-time clarification planner
 
-The system must ask for clarification when the input is too vague or missing important details.
+The compile endpoint must still detect when a request is underspecified.
 
 Clarification fields:
 
@@ -254,17 +294,16 @@ Clarification fields:
 
 Acceptance criteria:
 
-- `Automate my customer messages.` returns `needs_clarification`
+- compile-time clarification remains available as a safety fallback
 - specific support inbox + support team lead + before any reply is sent does not remain stuck in clarification
 - high-stakes unsafe workflows are not softened into clarification when they should be blocked
-- clarification questions are readable and include example answers
-- suggested starter prompt is shown
+- compile-time clarification is not the primary user-facing guided conversation
 
 ---
 
-### FR8 — Safe blueprint builder
+### FR9 — Safe blueprint builder
 
-The system must build a deterministic safe automation blueprint.
+The system must build a safe automation blueprint.
 
 The blueprint must include:
 
@@ -295,9 +334,9 @@ Acceptance criteria:
 
 ---
 
-### FR9 — Safety Critic
+### FR10 — Safety Critic
 
-The system must run a deterministic Safety Critic after blueprint generation.
+The system must run a Safety Critic review after blueprint generation.
 
 Possible overall statuses:
 
@@ -318,18 +357,8 @@ The Safety Critic must produce:
 - blocked/not-recommended list
 - next safe action
 
-Finding types:
-
-- safe to automate
-- draft only
-- human approval required
-- blocked in MVP
-- needs clarification
-- implementation warning
-
 Acceptance criteria:
 
-- Safety Critic uses no LLM calls
 - safe internal workflow returns safe internal preview
 - support draft reply returns needs human approval
 - refund/payment workflow returns needs human approval
@@ -337,36 +366,34 @@ Acceptance criteria:
 - visa/payment/account auto-send returns not safe to automate
 - medical advice/diagnosis returns not safe to automate
 - destructive delete/cancel/email workflow returns not safe to automate
-- router false positives do not override deterministic Safety Critic state
+- router false positives do not override Safety Critic state
 
 ---
 
-### FR10 — Main UI state
+### FR11 — Focused main UI state
 
-The compiler page must show one main outcome.
+The compiler page must show one primary user outcome.
 
 Main outcomes:
 
 ```text
-Safe internal flow
-Flow needs human gates
-Need details before flow
-Do not automate
+Workflow blueprint
+Guided clarification
+Not safe to automate
 ```
-
-The main outcome must be driven by `safety_critic.overall_status`.
 
 Acceptance criteria:
 
-- `safe_internal_preview` shows safe flow
-- `needs_human_approval` shows flow with gates
-- `needs_clarification` shows missing details
-- `not_safe_to_automate` shows safe alternative path
-- router route alone does not hijack the main UI
+- Possible workflows show the workflow first
+- Missing information shows only the next clarification question
+- Unsafe workflows show only verdict + next safe move first
+- Risks, trace, providers, Safety Critic, and debug details are hidden by default
+- Details are available on demand
+- Main result is understandable at first glance
 
 ---
 
-### FR11 — Details on demand
+### FR12 — Details on demand
 
 The UI must keep advanced details hidden until requested.
 
@@ -379,6 +406,8 @@ Detail panels:
 - Router
 - Before build
 - Trace
+- Agent workbench
+- Agent debug
 
 Acceptance criteria:
 
@@ -386,17 +415,19 @@ Acceptance criteria:
 - Router provider path is inspectable
 - Trace is inspectable
 - Risk and gate details are inspectable
+- Agent debug is inspectable when available
 - Details do not clutter the first view
 
 ---
 
-### FR12 — Schema validation
+### FR13 — Schema validation
 
-The final compile job must validate before it is returned.
+The final compile job and clarification sessions must validate before use.
 
 Validation must cover:
 
 - compile job
+- clarification session
 - input
 - pipeline steps
 - signals
@@ -412,6 +443,7 @@ Validation must cover:
 Acceptance criteria:
 
 - Invalid compile job returns server error
+- Invalid clarification session returns server error or fallback
 - Fixture validation catches schema drift
 - `npm run validate:fixtures` passes
 - `npm run typecheck` passes
@@ -424,27 +456,32 @@ Acceptance criteria:
 
 The app must prefer safe refusal, clarification, draft-only output, or human approval over unsafe automation.
 
-### NFR2 — Determinism
+### NFR2 — Bounded AI behavior
 
-Core safety behavior must not depend on AI provider output.
+AI may guide, route, propose, or critique, but must not execute actions or override deterministic safety boundaries.
+
+### NFR3 — Determinism where it matters
+
+Core safety behavior must not depend only on AI provider output.
 
 Deterministic components:
 
 - signal scanner
 - risk scanner
 - readiness scorer
-- clarification planner
+- compile-time clarification planner
 - blueprint builder
-- Safety Critic
+- Safety Critic / Safety Guard
 - schema validator
+- clarification fallback readiness
 
-### NFR3 — Demo reliability
+### NFR4 — Demo reliability
 
 Demo mode must work without any provider keys.
 
-### NFR4 — Explainability
+### NFR5 — Explainability
 
-Every outcome must explain:
+Every outcome must explain, at least in details:
 
 - why this status was selected
 - what is safe
@@ -452,29 +489,49 @@ Every outcome must explain:
 - what is blocked
 - what the next safe action is
 
-### NFR5 — No execution
+### NFR6 — No execution
 
 The system must never execute real-world actions in the MVP.
 
 ---
 
-## Tested M11 scenarios
+## Tested M12 scenarios
 
-### Safe internal
+### Guided vague request
 
 Input:
 
 ```text
-Every morning, collect new job application emails from the admissions inbox, extract the candidate name, role, portfolio link, and application source, classify the application priority, and create an internal review task for the admissions team without sending any external messages.
+Automate my tasks.
 ```
 
 Expected:
 
 ```text
-Safe internal flow
-Safe internal preview
-low risk
-0 gates
+Guided clarification
+First question asks what kind of tasks to automate first
+No generic data-source question first
+```
+
+### Guided email support workflow
+
+Clarification answers should be enough after collecting:
+
+```text
+Task type: email/support ticket management
+Trigger: new support ticket or weekly review
+Source: email inbox
+Output: summary, draft reply, tags, internal task
+Human reviewer: support lead
+Boundary: no reply is sent automatically
+```
+
+Expected:
+
+```text
+ready_to_compile=true
+rewritten_compile_prompt exists
+compiler shows workflow blueprint first
 ```
 
 ### Human-gated support reply
@@ -488,45 +545,13 @@ When a new customer message arrives in the support inbox, classify the topic and
 Expected:
 
 ```text
-Flow needs human gates
+Workflow blueprint
 Needs human approval
 medium risk
 1 gate
 ```
 
-### Refund/payment review
-
-Input:
-
-```text
-When a customer reports a billing issue or charge dispute, classify the complaint, extract the order ID and payment amount, draft an internal case summary, and route it to the finance team for review before any refund or message is sent.
-```
-
-Expected:
-
-```text
-Flow needs human gates
-Needs human approval
-medium risk
-human approval gates
-```
-
-### Vague request
-
-Input:
-
-```text
-Automate my customer messages.
-```
-
-Expected:
-
-```text
-Need details before flow
-Needs clarification
-```
-
-### Visa/payment/account auto-send
+### Unsafe high-stakes workflow
 
 Input:
 
@@ -537,66 +562,31 @@ When a student asks about visa eligibility or payment problems, decide the answe
 Expected:
 
 ```text
-Do not automate
 Not safe to automate
 high risk
-blocker
-```
-
-### Medical advice/diagnosis
-
-Input:
-
-```text
-When a user describes symptoms, decide whether they need emergency care, send them medical advice, and update their profile with the diagnosis.
-```
-
-Expected:
-
-```text
-Do not automate
-Not safe to automate
-high risk
-blocker
-```
-
-### Destructive account workflow
-
-Input:
-
-```text
-Every Friday, find inactive customer accounts, delete their records, cancel their subscriptions, and email them that the account was removed.
-```
-
-Expected:
-
-```text
-Do not automate
-Not safe to automate
-high risk
-blocker
+next safe move
 ```
 
 ---
 
-## Acceptance checklist for M11
+## Acceptance checklist for M12
 
-M11 is complete when:
+M12 is complete when:
 
-- Safety Critic types exist
-- Safety Critic schema exists
-- `CompileJob` includes `safety_critic`
-- API builds Safety Critic after blueprint
-- API includes `safety_critic_review` pipeline step
-- API includes `trace_safety_critic`
-- UI renders Safety Critic
-- UI main state follows Safety Critic status
-- fixture validates
+- `clarificationSession` shared type exists
+- clarification session schema exists
+- clarification conversation prompt exists
+- clarification conversation agent exists
+- `/api/clarify` exists
+- compiler page calls `/api/clarify` before compiling vague input
+- clarification asks one contextual question at a time
+- clarification stops after enough facts or max question count
+- repeated questions are detected
+- UI compiles with `rewritten_compile_prompt`
+- workflow result is shown first
+- details are hidden by default
 - typecheck passes
-- tested scenarios pass in Demo
-- safe/human-gated/clarify/blocked paths pass in Balanced or Full
-
----
+- fixture validation passes
 
 ## Future requirements
 

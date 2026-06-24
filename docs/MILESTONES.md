@@ -1,13 +1,15 @@
 # FlowForge Milestones
 
-FlowForge is a non-executing automation compiler. It turns a plain-language process into a safe preview blueprint with deterministic scanners, explicit safety boundaries, human approval gates, dry-run examples, and an agent trace.
+FlowForge is a non-executing automation compiler. It turns a plain-language process into a safe preview blueprint with deterministic scanners, explicit safety boundaries, human approval gates, dry-run examples, and an inspectable agent trace.
 
 ## Status summary
 
-Current milestone: **M11 — Safety Critic Agent**  
-Status: **completed / ready for validation**
+Current milestone: **M12 — Guided Clarification + Focused Compiler UX**  
+Status: **implemented / ready for validation**
 
-M11 adds a deterministic Safety Critic after blueprint generation. It reviews the final blueprint without calling AI and decides whether the workflow is safe as an internal preview, needs clarification, needs human approval, or must not be automated in the MVP.
+M12 moves FlowForge from a report-style compiler screen to a guided workflow experience. The main screen now shows only the user-relevant outcome: a workflow blueprint, one clarification question, or a blocked/not-safe verdict. Advanced safety, trace, provider, and risk details are hidden behind optional inspection panels.
+
+M12 also introduces a dedicated **Clarification Conversation Agent**. Instead of only rewriting hardcoded missing-field questions, the agent reads messy user input, tracks known facts, asks one contextual question at a time, and returns a rewritten compile prompt when enough information has been collected.
 
 ---
 
@@ -276,11 +278,17 @@ Validated examples:
 - Specific support inbox + support team lead + review-before-send workflow → needs human approval, not clarification
 - Visa/payment/account auto-send workflow → not safe to automate, not clarification
 
+Known limitation addressed later in M12:
+
+- Questions were based on deterministic missing-field templates.
+- For very vague input, questions could feel generic or unrelated.
+- The UI could show too many questions/details at once.
+
 ---
 
 ## M11 — Safety Critic Agent
 
-Goal: Add a deterministic Safety Critic that reviews the final blueprint and explains what is safe, gated, draft-only, or blocked.
+Goal: Add a Safety Critic review layer that evaluates the final blueprint and explains what is safe, gated, draft-only, or blocked.
 
 Deliverables:
 
@@ -297,14 +305,13 @@ Deliverables:
 
 Acceptance criteria:
 
-- Safety Critic uses no LLM call
 - Safety Critic evaluates the final blueprint after `buildBlueprint`
 - Safe internal workflows return `safe_internal_preview`
 - External reply/draft workflows return `needs_human_approval`
 - Refund/payment workflows require human approval instead of becoming blanket blockers
 - Medical, visa/immigration, account access, legal, and destructive/delete workflows return `not_safe_to_automate`
 - Vague workflows return `needs_clarification`
-- AI router false positives do not override deterministic Safety Critic status
+- AI router false positives do not override Safety Critic status
 - UI shows the correct main state:
   - Safe internal flow
   - Flow needs human gates
@@ -313,7 +320,7 @@ Acceptance criteria:
 - Details remain hidden until requested
 - No workflow executes real-world actions
 
-Status: completed / ready for validation
+Status: completed
 
 Validated examples:
 
@@ -326,36 +333,87 @@ Validated examples:
 - Account deletion/subscription cancellation/email request → not safe to automate
 - Balanced and Full modes preserve deterministic Safety Critic outcomes
 
-Known follow-up polish:
+---
 
-- Rename or hide “Blocked” count when it only means MVP boundaries
-- Hide “Before build questions” unless the main status is `needs_clarification`
-- Show only the top clarification questions first, then reveal the rest on demand
-- Reword unsafe recommendations by risk category, especially medical and visa cases
-- Reword “Build non-executing preview — Blocked in MVP” so users understand execution is blocked, not the preview
+## M12 — Guided Clarification + Focused Compiler UX
+
+Goal: Make FlowForge feel like a guided AI automation planner instead of a dense technical report.
+
+Deliverables:
+
+- `shared/types/clarificationSession.ts`
+- `server/schemas/clarificationSession.schema.ts`
+- `server/prompts/clarificationConversationPrompt.ts`
+- `server/services/clarificationConversationAgent.ts`
+- `server/api/clarify.post.ts`
+- focused `app/pages/compiler.vue` flow
+- one-question-at-a-time clarification UI
+- compile-again flow using `rewritten_compile_prompt`
+- workflow-first blueprint result screen
+- blocked-result screen focused on verdict + next safe move
+- advanced details hidden behind optional panels
+- hard stop for clarification loops
+- repeated-question guard
+
+Acceptance criteria:
+
+- Vague input starts a guided clarification session instead of showing hardcoded missing-field questions.
+- The clarification agent asks one contextual question at a time.
+- `Automate my tasks.` asks about task category first, not data source.
+- Clarification stops once enough core facts are collected.
+- Clarification does not exceed a small maximum question count.
+- Repeated questions force compile-readiness with best available facts.
+- When `ready_to_compile=true`, the UI compiles using `rewritten_compile_prompt`.
+- If the workflow is possible, the first result view shows the workflow blueprint, not risk/report details.
+- If the workflow is unclear, the first result view shows only the next clarification question.
+- If the workflow is not safe, the first result view shows only the verdict and next safe move.
+- Diagnostics, risk details, provider path, trace, and Safety Critic details remain available but hidden by default.
+
+Status: implemented / ready for validation
+
+Validated today:
+
+- `Automate my tasks.` no longer goes directly to the old hardcoded data-source question.
+- Guided clarification asks contextual questions.
+- Clarification loop issue was found after long support-ticket session and fixed with:
+  - max clarification questions
+  - readiness inference
+  - repeated-question detection
+  - deterministic compile-ready fallback
+
+Known validation still needed:
+
+- Run `npm run typecheck`
+- Run `npm run validate:fixtures`
+- Test `/api/clarify` with provider keys and without provider keys
+- Test focused compiler UI with:
+  - vague input
+  - clear safe internal workflow
+  - human-gated support workflow
+  - high-stakes blocked workflow
 
 ---
 
-## M12 — Final demo polish
+## M13 — Final demo polish
 
-Goal: Make the project presentation-ready.
+Goal: Prepare final demo and submission package after M12 validation.
 
 Deliverables:
 
 - Final demo script
-- Final README screenshots or walkthrough
-- Polished empty/loading/error states
-- Reduced noisy counters
-- Cleaner clarification question reveal
-- Final validation run
-- Final project submission notes
+- README walkthrough
+- final screenshots or short screen recording
+- final scenario list
+- project submission notes
+- final command validation
 
 Acceptance criteria:
 
-- Demo works in Demo mode without provider dependency
-- Balanced and Full modes show provider routing clearly when configured
+- Demo works without provider dependency for deterministic paths
+- Guided clarification works with provider keys and fallback
+- Workflow-first result view is clear in first glance
 - Risky inputs clearly trigger safer workflow or blocked states
-- Vague inputs clearly ask for missing details
+- Vague inputs are guided one question at a time
 - The UI communicates “non-executing preview” throughout
 - Final commands pass:
   - `npm run validate:fixtures`

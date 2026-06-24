@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Bot,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   ClipboardCheck,
   Copy,
@@ -24,6 +25,8 @@ import {
   Workflow as WorkflowIcon,
   X,
   XCircle,
+  ChevronUp,
+  Info,
 } from "lucide-vue-next";
 
 import type {
@@ -38,6 +41,11 @@ import type {
   SafetyCriticSeverity,
 } from "../../shared/types/compileJob";
 import type {
+  ClarificationSession,
+  ClarificationSessionAnswer,
+  ClarificationSessionResponse,
+} from "../../shared/types/clarificationSession";
+import type {
   HumanApprovalGate,
   RiskItem,
   RiskLevel,
@@ -47,11 +55,11 @@ import type {
 } from "../../shared/types/workflow";
 
 useHead({
-  title: "FlowForge Compiler Preview",
+  title: "FlowForge — Safe Automation Compiler",
   meta: [
     {
       name: "description",
-      content: "Preview a safe automation blueprint compile in FlowForge.",
+      content: "Compile a safe, non-executing automation preview with FlowForge.",
     },
   ],
 });
@@ -116,7 +124,7 @@ const examples: ExampleProcess[] = [
   },
   {
     label: "Refund review",
-    tone: "Approval",
+    tone: "Needs approval",
     value:
       "When a customer says they were charged twice, classify the complaint, extract the order ID and payment amount, draft a refund response, and route the case to finance for approval before any refund or message is sent.",
   },
@@ -128,40 +136,40 @@ const examples: ExampleProcess[] = [
   },
   {
     label: "Unsafe auto-send",
-    tone: "Blocked",
+    tone: "Will be blocked",
     value:
       "When a student asks about visa eligibility or payment problems, decide the answer, update their account, send the message automatically, and close the case.",
   },
   {
-    label: "Unclear request",
-    tone: "Clarify",
+    label: "Too vague",
+    tone: "Needs clarification",
     value: "Automate my customer messages.",
   },
 ];
 
-const modes: Array<{ label: string; value: CompileMode }> = [
-  { label: "Demo", value: "demo" },
-  { label: "Rule", value: "rule_only" },
-  { label: "Balanced", value: "balanced" },
-  { label: "Full", value: "full" },
+const modes: Array<{ label: string; value: CompileMode; description: string }> = [
+  { label: "Demo", value: "demo", description: "All deterministic, no AI calls" },
+  { label: "Rule", value: "rule_only", description: "Rule-based routing only" },
+  { label: "Balanced", value: "balanced", description: "AI router + deterministic safety" },
+  { label: "Full", value: "full", description: "Full AI agent pipeline" },
 ];
 
 const compileStages: CompileStage[] = [
-  { id: "prepare", label: "Prepare", durationMs: 650, description: "Creating a local compile job." },
-  { id: "signals", label: "Signals", durationMs: 750, description: "Finding trigger, process shape, outputs, and primitives." },
-  { id: "risks", label: "Risk", durationMs: 800, description: "Checking sensitive data, external actions, and execution risk." },
-  { id: "router", label: "Route", durationMs: 800, description: "Choosing compile, clarify, safer workflow, assistant-only, or reject." },
+  { id: "prepare", label: "Prepare", durationMs: 650, description: "Creating compile job" },
+  { id: "signals", label: "Signals", durationMs: 750, description: "Scanning for triggers and primitives" },
+  { id: "risks", label: "Risk", durationMs: 800, description: "Checking sensitive data and execution risk" },
+  { id: "router", label: "Route", durationMs: 800, description: "Choosing the right path" },
   {
     id: "provider",
     label: "Provider",
     durationMs: 900,
-    description: "Selecting AI agent provider strategy.",
-    demoDescription: "AI agents skipped. Deterministic fallbacks are used.",
-    aiDescription: "Trying Groq first. Gemini can be used as fallback for agent calls.",
+    description: "Selecting agent strategy",
+    demoDescription: "Deterministic fallbacks — no AI calls.",
+    aiDescription: "Trying Groq first, Gemini available as fallback.",
   },
-  { id: "blueprint", label: "Blueprint", durationMs: 850, description: "Running Blueprint Architect proposal and deterministic preview builder." },
-  { id: "critic", label: "Critic", durationMs: 700, description: "Running AI critique when available, then deterministic Safety Guard." },
-  { id: "validate", label: "Validate", durationMs: 650, description: "Validating the compile job schema." },
+  { id: "blueprint", label: "Blueprint", durationMs: 850, description: "Building the safe workflow preview" },
+  { id: "critic", label: "Critic", durationMs: 700, description: "Running Safety Critic review" },
+  { id: "validate", label: "Validate", durationMs: 650, description: "Validating final schema" },
 ];
 
 const FINAL_STAGE_HOLD_MS = 500;
@@ -174,7 +182,8 @@ const routerOutputBoundaryCopy =
   "FlowForge validates agent JSON before using it. Agents can propose and critique, but deterministic guardrails decide final safety.";
 
 const processInput = ref("");
-const mode = ref<CompileMode>("demo");
+const mode = ref<CompileMode>("full");
+const showModeInfo = ref(false);
 const job = ref<CompileJob | null>(null);
 const pendingJob = ref<CompileJob | null>(null);
 const isCompiling = ref(false);
@@ -185,6 +194,14 @@ const errorMessage = ref("");
 const inputGuardMessage = ref("");
 const activeDetail = ref<DetailView>(null);
 const activeAgentDetailsId = ref<AiAgentCard["id"] | null>(null);
+const showAgentStrip = ref(false);
+const clarificationSession = ref<ClarificationSession | null>(null);
+const clarificationOriginalInput = ref("");
+const clarificationConversationAnswers = ref<ClarificationSessionAnswer[]>([]);
+const clarificationAnswerDraft = ref("");
+const isClarifying = ref(false);
+const clarificationAnswers = ref<Record<string, string>>({});
+const activeClarificationQuestionIndex = ref(0);
 
 let compileRunToken = 0;
 const compileReplayTimers = new Set<number>();
@@ -196,6 +213,8 @@ const expandedGates = ref<Record<string, boolean>>({});
 const activeExample = computed(() => examples.find((example) => example.value === processInput.value) ?? null);
 const trimmedProcessInput = computed(() => processInput.value.trim());
 const hasProcessInput = computed(() => trimmedProcessInput.value.length > 0);
+const guidedClarificationQuestion = computed(() => clarificationSession.value?.next_question ?? null);
+const guidedClarificationProgress = computed(() => clarificationConversationAnswers.value.length + 1);
 const compiledBlueprint = computed(() => job.value?.result ?? null);
 const clarificationPlan = computed(() => job.value?.clarification_plan ?? null);
 const safetyCritic = computed(() => job.value?.safety_critic ?? null);
@@ -223,7 +242,7 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
   return [
     {
       id: "clarification_agent",
-      label: "Clarification Agent",
+      label: "Clarification",
       provider: clarification?.provider ?? "deterministic",
       usedAi: clarification?.used_ai ?? false,
       status: clarification?.status ?? "skipped",
@@ -232,7 +251,7 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
         ? clarification.used_ai
           ? `Improved ${clarification.questions.length} clarification question(s).`
           : clarification.reason
-        : "No clarification agent output yet.",
+        : "No output.",
       reason: clarification?.reason ?? "No clarification agent output yet.",
       metrics: [
         { label: "Questions", value: String(clarification?.questions.length ?? 0) },
@@ -244,7 +263,7 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
     },
     {
       id: "blueprint_architect_agent",
-      label: "Blueprint Architect Agent",
+      label: "Blueprint Architect",
       provider: blueprintArchitect?.provider ?? "deterministic",
       usedAi: blueprintArchitect?.used_ai ?? false,
       status: blueprintArchitect?.status ?? "skipped",
@@ -253,11 +272,11 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
         ? blueprintArchitect.used_ai
           ? `Proposed ${blueprintArchitect.proposed_steps.length} step(s) and ${blueprintArchitect.proposed_human_approval_gates.length} gate(s).`
           : blueprintArchitect.reason
-        : "No blueprint architect output yet.",
+        : "No output.",
       reason: blueprintArchitect?.reason ?? "No blueprint architect output yet.",
       metrics: [
-        { label: "Proposed steps", value: String(blueprintArchitect?.proposed_steps.length ?? 0) },
-        { label: "Proposed gates", value: String(blueprintArchitect?.proposed_human_approval_gates.length ?? 0) },
+        { label: "Steps", value: String(blueprintArchitect?.proposed_steps.length ?? 0) },
+        { label: "Gates", value: String(blueprintArchitect?.proposed_human_approval_gates.length ?? 0) },
       ],
       acceptedOutput: blueprintArchitect,
       debug: job.value.agent_debug?.blueprint_architect_agent,
@@ -265,7 +284,7 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
     },
     {
       id: "safety_critic_agent",
-      label: "Safety Critic Agent",
+      label: "Safety Critic",
       provider: criticAgent?.provider ?? "deterministic",
       usedAi: criticAgent?.used_ai ?? false,
       status: criticAgent?.status ?? "skipped",
@@ -274,7 +293,7 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
         ? criticAgent.used_ai
           ? `Found ${criticAgent.concerns.length} critique concern(s).`
           : criticAgent.reason
-        : "No safety critic agent output yet.",
+        : "No output.",
       reason: criticAgent?.reason ?? "No safety critic agent output yet.",
       metrics: [
         { label: "Concerns", value: String(criticAgent?.concerns.length ?? 0) },
@@ -316,14 +335,13 @@ const successfulProviderAttempt = computed(() => {
 
 const activeAgentRawResponse = computed(() => {
   return successfulProviderAttempt.value?.raw_response
-    ?? "No raw provider response is available for this agent. It may have been skipped, deterministic, or failed before returning content.";
+    ?? "No raw provider response available. The agent may have been skipped, used a deterministic path, or failed before returning content.";
 });
 
 const activeAgentParsedResponse = computed(() => {
   if (successfulProviderAttempt.value?.parsed_response === undefined) {
-    return "No parsed provider response is available for this agent.";
+    return "No parsed response available for this agent.";
   }
-
   return stringifyDebugValue(successfulProviderAttempt.value.parsed_response);
 });
 
@@ -340,8 +358,8 @@ const compileProgressPercent = computed(() => {
 const selectedInputLabel = computed(() => activeExample.value?.label ?? "Custom process");
 const inputHelperCopy = computed(() => {
   if (inputGuardMessage.value) return inputGuardMessage.value;
-  if (activeExample.value) return `${activeExample.value.label} selected. New compile clears the previous result.`;
-  return "Choose a use case or paste a process. New compile clears the previous result.";
+  if (activeExample.value) return `"${activeExample.value.label}" loaded. Edit or compile directly.`;
+  return "Choose an example or describe your process in plain language.";
 });
 
 const isClarificationNeeded = computed(() => {
@@ -351,10 +369,30 @@ const isClarificationNeeded = computed(() => {
 
 const resultMode = computed<"clarify" | "flow" | "blocked">(() => {
   const criticStatus = safetyCritic.value?.overall_status;
-
   if (criticStatus === "not_safe_to_automate" || routerDecision.value?.route === "reject") return "blocked";
   if (criticStatus === "needs_clarification" || clarificationPlan.value?.needed === true) return "clarify";
   return "flow";
+});
+
+const activeClarificationQuestion = computed(() => {
+  return clarificationPlan.value?.questions[activeClarificationQuestionIndex.value] ?? null;
+});
+
+const activeClarificationAnswer = computed(() => {
+  const question = activeClarificationQuestion.value;
+  if (!question) return "";
+  return clarificationAnswers.value[question.field] ?? "";
+});
+
+const answeredClarificationCount = computed(() => {
+  const questions = clarificationPlan.value?.questions ?? [];
+  return questions.filter((question) => textValue(clarificationAnswers.value[question.field]).length > 0).length;
+});
+
+const clarificationQuestionCount = computed(() => clarificationPlan.value?.questions.length ?? 0);
+
+const clarificationAllAnswered = computed(() => {
+  return clarificationQuestionCount.value > 0 && answeredClarificationCount.value >= clarificationQuestionCount.value;
 });
 
 const compileRunStateLabel = computed(() => {
@@ -363,48 +401,21 @@ const compileRunStateLabel = computed(() => {
 });
 
 const compileRunTitle = computed(() => {
-  if (compileRunState.value === "running") return "Building safe preview";
+  if (compileRunState.value === "running") return "Building safe preview…";
   if (compileRunState.value === "finishing") return "Finalizing";
   if (compileRunState.value === "failed") return "Compile failed";
-  if (compileRunState.value === "complete") return "Compile complete";
+  if (compileRunState.value === "complete") return "Preview ready";
   return "Compile run";
-});
-
-const compileRunStateClass = computed(() => {
-  if (compileRunState.value === "complete") return "status-safe";
-  if (compileRunState.value === "failed") return "status-blocked";
-  return "status-working";
-});
-
-const currentCompileStatus = computed(() => {
-  if (compileRunState.value === "running") {
-    if (compileReplayFinished.value && !pendingJob.value) return "Waiting for compile response...";
-    return currentCompileStageDescription.value;
-  }
-  if (compileRunState.value === "finishing") return "Schema passed. Preparing the main result.";
-  if (compileRunState.value === "failed") return "Compile failed before FlowForge could show a valid preview.";
-  if (job.value && routerDecision.value) return compileCompleteSummary(job.value, routerDecision.value);
-  return "Ready to compile.";
-});
-
-const compactCompileCompleteSummary = computed(() => {
-  const currentJob = job.value;
-  const decision = routerDecision.value;
-  if (!currentJob || !decision) return "Blueprint · Safety critic · No execution";
-  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") return "Deterministic route · Blueprint · Safety critic";
-  if (decision.provider === "groq" && decision.used_ai) return "Groq router · Deterministic blueprint · Safety critic";
-  if (decision.provider === "gemini" && decision.used_ai) return "Gemini fallback · Deterministic blueprint · Safety critic";
-  return "Deterministic fallback · Blueprint · Safety critic";
 });
 
 const outcomeTitle = computed(() => {
   if (!compiledBlueprint.value) return "";
-  if (resultMode.value === "clarify") return "Need details before flow";
-  if (resultMode.value === "blocked") return "Do not automate";
-  if (safetyCritic.value?.overall_status === "needs_human_approval") return "Flow needs human gates";
-  if (safetyCritic.value?.overall_status === "safe_internal_preview") return "Safe internal flow";
-  if (gateCount.value > 0) return "Flow with approval gates";
-  return "Workflow preview ready";
+  if (resultMode.value === "clarify") return "Needs more detail";
+  if (resultMode.value === "blocked") return "Not safe to automate";
+  if (safetyCritic.value?.overall_status === "needs_human_approval") return "Needs human approval";
+  if (safetyCritic.value?.overall_status === "safe_internal_preview") return "Safe internal preview";
+  if (gateCount.value > 0) return "Safe with approval gates";
+  return "Safe preview ready";
 });
 
 const outcomeIcon = computed<Component>(() => {
@@ -412,7 +423,14 @@ const outcomeIcon = computed<Component>(() => {
   if (resultMode.value === "blocked") return XCircle;
   if (safetyCritic.value?.overall_status === "safe_internal_preview") return ShieldCheck;
   if (gateCount.value > 0 || riskLevel.value === "high") return UserCheck;
-  return WorkflowIcon;
+  return ShieldCheck;
+});
+
+const outcomeColorClass = computed(() => {
+  if (resultMode.value === "blocked") return "verdict-blocked";
+  if (resultMode.value === "clarify") return "verdict-clarify";
+  if (safetyCritic.value?.overall_status === "needs_human_approval" || gateCount.value > 0) return "verdict-approval";
+  return "verdict-safe";
 });
 
 const primaryDecision = computed(() => {
@@ -423,53 +441,33 @@ const primaryDecision = computed(() => {
   return "Internal preview";
 });
 
-const primaryDecisionClass = computed(() => {
-  if (resultMode.value === "blocked") return "tone-blocked";
-  if (resultMode.value === "clarify") return "tone-draft";
-  if (safetyCritic.value?.overall_status === "safe_internal_preview") return "tone-safe";
-  if (safetyCritic.value?.overall_status === "needs_human_approval" || gateCount.value > 0) return "tone-approval";
-  return "tone-safe";
-});
-
 const plainEnglishResult = computed(() => {
   if (!compiledBlueprint.value) return "";
   if (safetyCritic.value?.summary) return safetyCritic.value.summary;
-  if (resultMode.value === "clarify") return "FlowForge needs a clearer trigger, input source, output, owner, or approval boundary before this becomes implementation-ready.";
-  if (resultMode.value === "blocked") return "FlowForge blocked automatic execution. Keep this as human-reviewed guidance, not an automation.";
-  return `FlowForge found a safe non-executing preview path that can ${capabilityText.value}.`;
-});
-
-const workflowMapTitle = computed(() => {
-  if (resultMode.value === "clarify") return "Clarify first";
-  if (resultMode.value === "blocked") return "Safe alternative path";
-  return "Main flow";
-});
-
-const workflowMapCopy = computed(() => {
-  if (resultMode.value === "clarify") return "The flow is hidden until the missing details are answered.";
-  if (resultMode.value === "blocked") return "This is a non-executing review path. Do not connect it to real-world actions.";
-  return "The main thing: what the automation blueprint would do without executing anything.";
+  if (resultMode.value === "clarify") return "FlowForge needs a clearer trigger, input source, output, owner, or approval boundary before creating an implementation-ready flow.";
+  if (resultMode.value === "blocked") return "This process includes automatic actions that cannot be safely automated. Keep it as human-reviewed guidance only.";
+  return `FlowForge built a safe, non-executing preview that can ${capabilityText.value}.`;
 });
 
 const nextSafeAction = computed(() => {
   if (safetyCritic.value?.next_safe_action) return safetyCritic.value.next_safe_action;
   if (resultMode.value === "clarify") return "Answer the missing details, then compile again.";
-  if (resultMode.value === "blocked") return "Remove automatic send/update/payment/destructive actions or route them to a human.";
-  if (gateCount.value > 0) return "Review the approval gates before implementation.";
-  return "Review the flow, then inspect details only if needed.";
+  if (resultMode.value === "blocked") return "Remove automatic send, update, payment, or destructive actions — or route them through a human.";
+  if (gateCount.value > 0) return "Review the approval gates before connecting to real systems.";
+  return "Review the flow below, then inspect details only if needed.";
 });
 
 const criticTitle = computed(() => {
   const status = safetyCritic.value?.overall_status;
-  if (status === "safe_internal_preview") return "Critic: safe as preview";
-  if (status === "needs_human_approval") return "Critic: human gate needed";
-  if (status === "needs_clarification") return "Critic: clarify first";
-  if (status === "not_safe_to_automate") return "Critic: do not automate";
-  return "Safety Critic";
+  if (status === "safe_internal_preview") return "Safe as preview";
+  if (status === "needs_human_approval") return "Human gate required";
+  if (status === "needs_clarification") return "Needs clarification first";
+  if (status === "not_safe_to_automate") return "Not safe to automate";
+  return "Safety review";
 });
 
 const criticExplanation =
-  "The Safety Critic reviews the final blueprint after it is generated. It does not call AI. It decides what can be automated, what must stay draft-only, what needs a human gate, and what is blocked.";
+  "The Safety Critic checks the final blueprint deterministically. It decides what can be automated, what stays draft-only, what needs a human gate, and what is blocked entirely. No AI is involved in this decision.";
 
 const criticTopFinding = computed<SafetyCriticFinding | null>(() => {
   const findings = safetyCritic.value?.findings ?? [];
@@ -482,28 +480,21 @@ const criticTopFinding = computed<SafetyCriticFinding | null>(() => {
 const criticCounts = computed(() => {
   const critic = safetyCritic.value;
   return [
-    { label: "Safe", value: String(critic?.safe_to_automate.length ?? 0), className: "tone-safe" },
-    { label: "Draft", value: String(critic?.must_remain_draft_only.length ?? 0), className: "tone-draft" },
-    { label: "Approval", value: String(critic?.requires_human_approval.length ?? 0), className: "tone-approval" },
-    { label: "Blocked", value: String(critic?.blocked_or_not_recommended.length ?? 0), className: "tone-blocked" },
+    { label: "Safe", value: String(critic?.safe_to_automate.length ?? 0), colorClass: "count-safe" },
+    { label: "Draft only", value: String(critic?.must_remain_draft_only.length ?? 0), colorClass: "count-draft" },
+    { label: "Needs approval", value: String(critic?.requires_human_approval.length ?? 0), colorClass: "count-approval" },
+    { label: "Blocked", value: String(critic?.blocked_or_not_recommended.length ?? 0), colorClass: "count-blocked" },
   ];
 });
 
-const mainStats = computed(() => [
-  { label: "Steps", value: String(compiledBlueprint.value?.steps.length ?? 0), detail: "Flow nodes", className: "tone-neutral" },
-  { label: "Risk", value: riskLevel.value, detail: "Scanner result", className: riskToneClass(riskLevel.value) },
-  { label: "Gates", value: String(gateCount.value), detail: "Human approvals", className: gateCount.value > 0 ? "tone-approval" : "tone-safe" },
-  { label: "Execution", value: "Off", detail: "Preview only", className: "tone-safe" },
-]);
-
 const detailTabs = computed<DetailTab[]>(() => [
-  { id: "critic", label: "Critic", icon: ShieldCheck, badge: safetyCritic.value?.overall_status ? sentenceLabel(safetyCritic.value.overall_status) : undefined },
-  { id: "workflow", label: "Workflow", icon: WorkflowIcon, badge: `${visibleWorkflowSteps.value.length} steps` },
-  { id: "risks", label: "Risks", icon: ShieldAlert, badge: `${visibleGates.value.length} gates` },
+  { id: "critic", label: "Safety review", icon: ShieldCheck, badge: safetyCritic.value?.overall_status ? sentenceLabel(safetyCritic.value.overall_status) : undefined },
+  { id: "workflow", label: "Workflow steps", icon: WorkflowIcon, badge: `${visibleWorkflowSteps.value.length}` },
+  { id: "risks", label: "Risks & gates", icon: ShieldAlert, badge: `${visibleGates.value.length} gates` },
   { id: "tests", label: "Dry runs", icon: ClipboardCheck, badge: `${compiledBlueprint.value?.test_cases.length ?? 0}` },
-  { id: "router", label: "Router", icon: Bot, badge: routerDecision.value?.provider ? providerLabel(routerDecision.value.provider) : undefined },
-  { id: "implementation", label: "Before build", icon: FileText, badge: `${compiledBlueprint.value?.open_questions.length ?? 0} questions` },
-  { id: "trace", label: "Trace", icon: LayoutGrid, badge: `${technicalPipelineSteps.value.length} steps` },
+  { id: "router", label: "Router & providers", icon: Bot, badge: routerDecision.value?.provider ? providerLabel(routerDecision.value.provider) : undefined },
+  { id: "implementation", label: "Before building", icon: FileText, badge: `${compiledBlueprint.value?.open_questions.length ?? 0} questions` },
+  { id: "trace", label: "Pipeline trace", icon: LayoutGrid, badge: `${technicalPipelineSteps.value.length} steps` },
 ]);
 
 const capabilityText = computed(() => {
@@ -527,7 +518,6 @@ const capabilityText = computed(() => {
 
 const routerInputItems = computed<TextDisplayItem[]>(() => {
   if (!job.value) return [];
-
   return [
     { label: "Submitted process", value: job.value.input.trimmed },
     { label: "Detected primitives", value: formatList(job.value.signals.workflow_primitives) },
@@ -540,7 +530,6 @@ const routerInputItems = computed<TextDisplayItem[]>(() => {
 const routerOutputItems = computed<TextDisplayItem[]>(() => {
   const decision = routerDecision.value;
   if (!decision) return [];
-
   return [
     { label: "Route", value: routeLabel(decision.route) },
     { label: "Confidence", value: confidenceLabel(decision.confidence) },
@@ -564,6 +553,8 @@ const providerAttemptItems = computed<ProviderAttemptDisplay[]>(() => {
     deterministicAttemptStatus(currentJob, decision),
   ];
 });
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function riskToneClass(level: RiskLevel): string {
   if (level === "high") return "tone-blocked";
@@ -603,22 +594,6 @@ function providerLabel(provider?: RouterDecision["provider"]): string {
   return "Pending";
 }
 
-function compileCompleteSummary(currentJob: CompileJob, decision: RouterDecision): string {
-  if (currentJob.mode === "demo" || currentJob.mode === "rule_only") {
-    return "Compile complete. Routing, blueprint generation, clarification, and Safety Critic review are deterministic.";
-  }
-
-  if (decision.provider === "groq" && decision.used_ai) {
-    return "Compile complete. Groq chose only the route; the blueprint and Safety Critic stayed deterministic.";
-  }
-
-  if (decision.provider === "gemini" && decision.used_ai) {
-    return "Compile complete. Gemini handled fallback routing; the blueprint and Safety Critic stayed deterministic.";
-  }
-
-  return "Compile complete. Deterministic fallback handled routing; the blueprint and Safety Critic stayed deterministic.";
-}
-
 function routeLabel(route?: RouterDecision["route"]): string {
   return route ? sentenceLabel(route) : "Pending";
 }
@@ -634,7 +609,7 @@ function policyLabel(policy: StepAutomationPolicy): string {
     assist_only: "Assist only",
     human_approval: "Human approval",
     not_recommended: "Not recommended",
-    blocked_in_mvp: "Blocked in MVP",
+    blocked_in_mvp: "Blocked",
   };
   return labels[policy] ?? formatEnum(policy);
 }
@@ -643,7 +618,6 @@ function stepIcon(step: WorkflowStep): Component {
   if (step.automation_policy === "blocked_in_mvp" || step.automation_policy === "not_recommended") return XCircle;
   if (step.approval_required || step.automation_policy === "human_approval") return UserCheck;
   if (step.primitive === "risk_detection" && step.risk_level === "high") return ShieldAlert;
-
   const primitiveIcons: Record<WorkflowPrimitive, Component> = {
     intake: Inbox,
     classification: GitBranch,
@@ -661,15 +635,14 @@ function stepIcon(step: WorkflowStep): Component {
     reporting: FileText,
     export: FileText,
   };
-
   return primitiveIcons[step.primitive] ?? WorkflowIcon;
 }
 
-function workflowMapStepClass(step: WorkflowStep): string {
-  if (step.automation_policy === "blocked_in_mvp" || step.automation_policy === "not_recommended") return "is-blocked";
-  if (step.approval_required || step.automation_policy === "human_approval") return "is-approval";
-  if (step.risk_level === "high") return "is-risky";
-  return "is-safe";
+function workflowStepColorClass(step: WorkflowStep): string {
+  if (step.automation_policy === "blocked_in_mvp" || step.automation_policy === "not_recommended") return "step-blocked";
+  if (step.approval_required || step.automation_policy === "human_approval") return "step-approval";
+  if (step.risk_level === "high") return "step-risky";
+  return "step-safe";
 }
 
 function formatList(items: readonly string[], emptyLabel = "None detected"): string {
@@ -708,7 +681,6 @@ function previewText(value?: string | null, limit = PREVIEW_TEXT_LIMIT): string 
 
 function stringifyDebugValue(value: unknown): string {
   if (typeof value === "string") return value;
-
   try {
     return JSON.stringify(value, null, 2);
   } catch {
@@ -770,7 +742,6 @@ function providerAttemptStatus(currentJob: CompileJob, provider: "groq" | "gemin
 
 function deterministicAttemptStatus(currentJob: CompileJob, decision: RouterDecision): ProviderAttemptDisplay {
   const traceEvent = currentJob.agent_trace.find((event) => event.action === "Router attempt: deterministic");
-
   if (decision.provider === "deterministic" || traceEvent?.status === "completed") {
     return {
       provider: "Deterministic",
@@ -778,7 +749,6 @@ function deterministicAttemptStatus(currentJob: CompileJob, decision: RouterDeci
       detail: decision.fallback_used ? "Fallback rules selected the route." : "Deterministic routing was selected by mode.",
     };
   }
-
   return {
     provider: "Deterministic",
     status: "Not used",
@@ -810,13 +780,11 @@ function sleep(ms: number): Promise<void> {
 
 async function runCompileReplay(runToken: number): Promise<void> {
   compileReplayFinished.value = false;
-
   for (let index = 0; index < compileStages.length; index += 1) {
     if (runToken !== compileRunToken || compileRunState.value === "failed") return;
     activeCompileStageIndex.value = index;
     await sleep(compileStages[index]?.durationMs ?? 750);
   }
-
   if (runToken === compileRunToken && compileRunState.value !== "failed") {
     compileReplayFinished.value = true;
   }
@@ -850,13 +818,14 @@ function clearInputGuardMessage(): void {
 
 function resetDetails(): void {
   activeDetail.value = null;
+  showAgentStrip.value = false;
   expandedSteps.value = {};
   expandedRisks.value = {};
   expandedGates.value = {};
 }
 
-function openDetail(view: NonNullable<DetailView>): void {
-  activeDetail.value = activeDetail.value === view ? null : view;
+function openDetail(view: DetailView): void {
+  activeDetail.value = view && activeDetail.value === view ? null : view;
 }
 
 function openAgentDetails(agentId: AiAgentCard["id"]): void {
@@ -887,8 +856,152 @@ function isRiskExpanded(risk: RiskItem): boolean {
   return expandedRisks.value[risk.id] === true;
 }
 
-function isGateExpanded(gate: HumanApprovalGate): boolean {
-  return expandedGates.value[gate.id] === true;
+async function requestClarificationTurn(): Promise<void> {
+  errorMessage.value = "";
+  inputGuardMessage.value = "";
+  isClarifying.value = true;
+
+  try {
+    const response = await $fetch<ClarificationSessionResponse>("/api/clarify", {
+      method: "POST",
+      body: {
+        original_input: clarificationOriginalInput.value,
+        answers: clarificationConversationAnswers.value,
+      },
+    });
+
+    clarificationSession.value = response.session;
+
+    if (response.session.ready_to_compile) {
+      const compilePrompt = response.session.rewritten_compile_prompt || response.session.original_input;
+      clarificationSession.value = null;
+      clarificationAnswerDraft.value = "";
+      processInput.value = compilePrompt;
+      await compilePreview();
+      return;
+    }
+
+    clarificationAnswerDraft.value = "";
+  } catch (error) {
+    errorMessage.value = error instanceof Error
+      ? error.message
+      : "Clarification failed. Please try again.";
+  } finally {
+    isClarifying.value = false;
+  }
+}
+
+async function startGuidedCompile(): Promise<void> {
+  inputGuardMessage.value = "";
+  errorMessage.value = "";
+
+  if (!hasProcessInput.value) {
+    inputGuardMessage.value = "Add a process description or choose an example first.";
+    return;
+  }
+
+  job.value = null;
+  pendingJob.value = null;
+  activeDetail.value = null;
+  showAgentStrip.value = false;
+  clarificationOriginalInput.value = trimmedProcessInput.value;
+  clarificationConversationAnswers.value = [];
+  clarificationSession.value = null;
+  clarificationAnswerDraft.value = "";
+
+  await requestClarificationTurn();
+}
+
+async function submitGuidedClarificationAnswer(): Promise<void> {
+  const question = guidedClarificationQuestion.value;
+  const answer = clarificationAnswerDraft.value.trim();
+
+  if (!question) return;
+
+  if (!answer) {
+    inputGuardMessage.value = "Answer the question first.";
+    return;
+  }
+
+  clarificationConversationAnswers.value = [
+    ...clarificationConversationAnswers.value,
+    {
+      question_id: question.id,
+      question: question.question,
+      answer,
+    },
+  ];
+
+  await requestClarificationTurn();
+}
+
+function cancelGuidedClarification(): void {
+  clarificationSession.value = null;
+  clarificationConversationAnswers.value = [];
+  clarificationAnswerDraft.value = "";
+  inputGuardMessage.value = "";
+}
+
+function updateClarificationAnswer(event: Event): void {
+  const question = activeClarificationQuestion.value;
+  const target = event.target as HTMLTextAreaElement | null;
+  if (!question || !target) return;
+  clarificationAnswers.value = {
+    ...clarificationAnswers.value,
+    [question.field]: target.value,
+  };
+}
+
+function goToPreviousClarificationQuestion(): void {
+  activeClarificationQuestionIndex.value = Math.max(0, activeClarificationQuestionIndex.value - 1);
+}
+
+function goToNextClarificationQuestion(): void {
+  const question = activeClarificationQuestion.value;
+  if (question && textValue(clarificationAnswers.value[question.field]).length === 0) {
+    inputGuardMessage.value = "Answer this question first.";
+    return;
+  }
+
+  inputGuardMessage.value = "";
+  activeClarificationQuestionIndex.value = Math.min(
+    Math.max(0, clarificationQuestionCount.value - 1),
+    activeClarificationQuestionIndex.value + 1,
+  );
+}
+
+async function compileWithClarifications(): Promise<void> {
+  const plan = clarificationPlan.value;
+  if (!plan) return;
+
+  if (!clarificationAllAnswered.value) {
+    inputGuardMessage.value = "Answer the missing details before compiling again.";
+    return;
+  }
+
+  const answers = plan.questions
+    .map((question, index) => `${index + 1}. ${question.question}\nAnswer: ${textValue(clarificationAnswers.value[question.field])}`)
+    .join("\n\n");
+
+  processInput.value = `${trimmedProcessInput.value}\n\nAdditional clarification details:\n${answers}`;
+  inputGuardMessage.value = "";
+  activeClarificationQuestionIndex.value = 0;
+  await compilePreview();
+}
+
+function restartCompile(): void {
+  job.value = null;
+  pendingJob.value = null;
+  activeAgentDetailsId.value = null;
+  compileRunState.value = "idle";
+  isCompiling.value = false;
+  clarificationSession.value = null;
+  clarificationConversationAnswers.value = [];
+  clarificationAnswerDraft.value = "";
+  clarificationOriginalInput.value = "";
+  clarificationAnswers.value = {};
+  activeClarificationQuestionIndex.value = 0;
+  resetDetails();
 }
 
 async function compilePreview(): Promise<void> {
@@ -896,7 +1009,7 @@ async function compilePreview(): Promise<void> {
   errorMessage.value = "";
 
   if (!hasProcessInput.value) {
-    inputGuardMessage.value = "Paste a process or choose an example first.";
+    inputGuardMessage.value = "Add a process description or choose an example first.";
     return;
   }
 
@@ -926,7 +1039,6 @@ async function compilePreview(): Promise<void> {
 
   try {
     const [result] = await Promise.all([requestPromise, runCompileReplay(runToken)]);
-
     if (runToken !== compileRunToken) return;
 
     pendingJob.value = result;
@@ -934,7 +1046,6 @@ async function compilePreview(): Promise<void> {
     activeCompileStageIndex.value = compileStages.length - 1;
 
     await sleep(FINAL_STAGE_HOLD_MS);
-
     if (runToken !== compileRunToken) return;
 
     job.value = result;
@@ -959,1969 +1070,1586 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="compiler-page">
-    <section class="compiler-shell">
-      <header class="hero-panel">
-        <div>
-          <p class="eyebrow">FlowForge Compiler</p>
-          <h1>One safe flow.</h1>
-          <p>Pick a process, compile a non-executing blueprint, then inspect details only when needed.</p>
+  <main class="ff-page">
+    <div class="ff-shell">
+      <header class="ff-topbar">
+        <div class="ff-brand">
+          <span class="ff-brand-mark" aria-hidden="true">
+            <WorkflowIcon class="ff-icon-md" />
+          </span>
+          <div>
+            <p class="ff-kicker">FlowForge</p>
+            <h1>AI-guided automation blueprint</h1>
+          </div>
         </div>
-        <span class="hero-mark" aria-hidden="true">
-          <WorkflowIcon class="icon-lg" />
+
+        <span class="ff-safe-pill">
+          <Lock class="ff-icon-xs" />
+          Preview only
         </span>
       </header>
 
-      <section v-if="!job && !isCompiling" class="input-screen">
-        <article class="panel input-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Use case</p>
-              <h2>Start with a process</h2>
-            </div>
-            <span class="status-pill tone-neutral">{{ selectedInputLabel }}</span>
-          </div>
+      <!-- 1. Guided input -->
+      <section v-if="!job && !isCompiling && !clarificationSession" class="ff-start-screen">
+        <div class="ff-hero-panel">
+          <p class="ff-kicker">Step 1</p>
+          <h2>Describe the workflow. FlowForge will guide the rest.</h2>
+          <p>
+            You are not chatting with an assistant. You are sending a process through a safety compiler.
+            If the process is clear, you get a blueprint. If something is missing, FlowForge asks one question at a time.
+          </p>
+        </div>
 
-          <div class="usecase-list" aria-label="Suggested use cases">
-            <button
-              v-for="example in examples"
-              :key="example.label"
-              type="button"
-              :class="['usecase-card', { 'is-selected': isSelectedExample(example.value) }]"
-              @click="chooseExample(example.value)"
-            >
-              <span>
-                <strong>{{ example.label }}</strong>
-                <small>{{ example.tone }}</small>
-              </span>
-              <CheckCircle2 v-if="isSelectedExample(example.value)" class="icon-sm" aria-hidden="true" />
-            </button>
-          </div>
-        </article>
-
-        <article class="panel editor-panel">
-          <div class="panel-head">
+        <section class="ff-input-panel">
+          <div class="ff-input-header">
             <div>
-              <p class="eyebrow">Process</p>
-              <h2>What should FlowForge understand?</h2>
+              <p class="ff-kicker">Workflow input</p>
+              <h3>{{ selectedInputLabel }}</h3>
             </div>
-            <span :class="['status-pill', hasProcessInput ? 'tone-safe' : 'tone-neutral']">
-              {{ hasProcessInput ? "Ready" : "Empty" }}
+            <span :class="['ff-chip', hasProcessInput ? 'chip-ready' : 'chip-empty']">
+              {{ hasProcessInput ? "Ready to scan" : "Waiting" }}
             </span>
           </div>
 
           <textarea
             v-model="processInput"
-            class="process-textarea"
-            placeholder="When a customer asks for a refund, classify the request, draft a reply, and route risky cases to a human."
+            class="ff-process-input"
+            placeholder="Example: When a new internal support ticket arrives, classify it, extract important fields, prepare a response draft, and route risky cases to a human before anything is sent."
             rows="8"
             @input="clearInputGuardMessage"
           />
 
-          <small :class="['input-helper', { 'is-warning': inputGuardMessage }]">
-            {{ inputHelperCopy }}
-          </small>
+          <p :class="['ff-helper', { 'is-warning': inputGuardMessage }]">{{ inputHelperCopy }}</p>
 
-          <div class="bottom-controls">
-            <fieldset class="mode-switcher">
-              <legend>Mode</legend>
-              <label v-for="item in modes" :key="item.value">
-                <input v-model="mode" type="radio" name="mode" :value="item.value" />
-                <span>{{ item.label }}</span>
-              </label>
-            </fieldset>
-
-            <button class="primary-button" type="button" :disabled="!hasProcessInput" @click="compilePreview">
-              <Sparkles class="icon-sm" />
-              Compile preview
+          <div class="ff-preset-row">
+            <button
+              v-for="example in examples"
+              :key="example.label"
+              type="button"
+              :class="['ff-preset-chip', { 'is-active': isSelectedExample(example.value) }]"
+              @click="chooseExample(example.value)"
+            >
+              <span>{{ example.label }}</span>
+              <small>{{ example.tone }}</small>
             </button>
           </div>
-        </article>
+
+          <details class="ff-advanced">
+            <summary>Advanced compile mode</summary>
+            <div class="ff-mode-grid">
+              <label
+                v-for="item in modes"
+                :key="item.value"
+                :class="['ff-mode', { 'is-active': mode === item.value }]"
+              >
+                <input v-model="mode" type="radio" name="mode" :value="item.value" class="ff-sr-only" />
+                <span>{{ item.label }}</span>
+                <small>{{ item.description }}</small>
+              </label>
+            </div>
+          </details>
+
+          <button class="ff-primary-btn" type="button" :disabled="!hasProcessInput" @click="startGuidedCompile">
+            {{ isClarifying ? "Clarifying…" : "Start guided compile" }}
+            <ArrowRight class="ff-icon-sm" />
+          </button>
+        </section>
       </section>
 
-      <article v-if="errorMessage" class="panel error-panel">
-        <p class="eyebrow">Error</p>
-        <h2>Compile failed</h2>
-        <p>{{ errorMessage }}</p>
-      </article>
 
-      <section v-if="isCompiling" class="focus-screen">
-        <article class="panel compile-panel" :aria-busy="true">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Compile run</p>
-              <h2>{{ compileRunTitle }}</h2>
-              <p>{{ currentCompileStatus }}</p>
-            </div>
-            <span :class="['status-pill', compileRunStateClass]">{{ compileRunStateLabel }}</span>
-          </div>
+      <!-- 1b. AI-guided clarification conversation -->
+      <section v-if="clarificationSession && !job && !isCompiling" class="ff-guided-question">
+        <div class="ff-question-shell">
+          <p class="ff-kicker">Guided clarification · Question {{ guidedClarificationProgress }}</p>
+          <h2>{{ clarificationSession.current_summary }}</h2>
+          <p class="ff-muted">
+            FlowForge is collecting only the next detail needed to build a useful blueprint.
+          </p>
 
-          <div class="progress-track" :style="{ '--compile-progress': compileProgressPercent }" aria-hidden="true">
-            <span
-              v-for="(stage, index) in compileStages"
-              :key="`${stage.id}-segment`"
-              :class="['progress-segment', `is-${compileStageState(index)}`]"
+          <article v-if="guidedClarificationQuestion" class="ff-question-card">
+            <span class="ff-question-field">{{ formatEnum(guidedClarificationQuestion.kind) }}</span>
+            <h3>{{ guidedClarificationQuestion.question }}</h3>
+            <p>{{ guidedClarificationQuestion.why_it_matters }}</p>
+            <small v-if="guidedClarificationQuestion.example_answer">
+              Example: {{ guidedClarificationQuestion.example_answer }}
+            </small>
+
+            <textarea
+              v-model="clarificationAnswerDraft"
+              class="ff-answer-input"
+              rows="4"
+              placeholder="Answer in your own words…"
+              @input="clearInputGuardMessage"
             />
+          </article>
+
+          <p :class="['ff-helper', { 'is-warning': inputGuardMessage }]">{{ inputGuardMessage || "The agent will use your answer to decide the next question or compile the workflow." }}</p>
+
+          <div v-if="clarificationConversationAnswers.length > 0" class="ff-answer-history">
+            <p class="ff-kicker">Already collected</p>
+            <article v-for="answer in clarificationConversationAnswers" :key="answer.question_id">
+              <strong>{{ answer.question }}</strong>
+              <p>{{ answer.answer }}</p>
+            </article>
           </div>
 
-          <ol class="stage-grid">
-            <li
+          <div class="ff-question-actions">
+            <button class="ff-secondary-btn" type="button" :disabled="isClarifying" @click="cancelGuidedClarification">
+              Edit original input
+            </button>
+
+            <button class="ff-primary-btn" type="button" :disabled="isClarifying" @click="submitGuidedClarificationAnswer">
+              {{ isClarifying ? "Thinking…" : "Continue" }}
+              <ChevronRight class="ff-icon-sm" />
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Focused compile sequence -->
+      <section v-if="isCompiling" class="ff-scan-screen">
+        <div class="ff-scan-panel">
+          <p class="ff-kicker">Step 2 · Compile running</p>
+          <h2>{{ currentCompileStage.label }}</h2>
+          <p>{{ currentCompileStageDescription }}</p>
+
+          <div class="ff-scan-rail">
+            <div
               v-for="(stage, index) in compileStages"
               :key="stage.id"
-              :class="['stage-card', `is-${compileStageState(index)}`]"
+              :class="['ff-scan-node', `state-${compileStageState(index)}`]"
             >
-              <span>{{ index + 1 }}</span>
+              <span />
               <strong>{{ stage.label }}</strong>
-              <small>{{ getStageDescription(stage, activeCompileMode) }}</small>
-            </li>
-          </ol>
-        </article>
+            </div>
+          </div>
+
+          <div class="ff-progress-track">
+            <div class="ff-progress-fill" :style="{ width: compileProgressPercent }" />
+          </div>
+        </div>
       </section>
 
-      <section v-if="job && compiledBlueprint && !isCompiling" class="result-screen">
-        <article class="panel result-panel">
-          <div class="result-layout">
-            <span :class="['result-icon', primaryDecisionClass]">
-              <component :is="outcomeIcon" class="icon-lg" aria-hidden="true" />
-            </span>
+      <section v-if="errorMessage" class="ff-error-panel">
+        <XCircle class="ff-icon-md" />
+        <div>
+          <p class="ff-kicker">Compile error</p>
+          <p>{{ errorMessage }}</p>
+        </div>
+      </section>
 
-            <div class="result-copy">
-              <p class="eyebrow">Main result</p>
-              <h2>{{ outcomeTitle }}</h2>
-              <h3>{{ compiledBlueprint.workflow_name }}</h3>
-              <p>{{ plainEnglishResult }}</p>
+      <!-- 3. Result: either one question, one workflow, or one blocked verdict -->
+      <section v-if="job && compiledBlueprint && !isCompiling" class="ff-result-screen">
+        <!-- Clarification: one question at a time -->
+        <section v-if="resultMode === 'clarify' && clarificationPlan" class="ff-guided-question">
+          <div class="ff-question-shell">
+            <p class="ff-kicker">Step 3 · Missing information</p>
+            <h2>FlowForge needs one detail before building the blueprint.</h2>
+            <p class="ff-muted">
+              Question {{ activeClarificationQuestionIndex + 1 }} of {{ clarificationQuestionCount }}.
+              Answer it, then continue.
+            </p>
+
+            <article v-if="activeClarificationQuestion" class="ff-question-card">
+              <span class="ff-question-field">{{ formatEnum(activeClarificationQuestion.field) }}</span>
+              <h3>{{ activeClarificationQuestion.question }}</h3>
+              <p>{{ activeClarificationQuestion.why_it_matters }}</p>
+              <small v-if="activeClarificationQuestion.example_answer">
+                Example: {{ activeClarificationQuestion.example_answer }}
+              </small>
+
+              <textarea
+                class="ff-answer-input"
+                rows="4"
+                :value="activeClarificationAnswer"
+                placeholder="Type the missing detail here…"
+                @input="updateClarificationAnswer"
+              />
+            </article>
+
+            <div class="ff-question-actions">
+              <button
+                class="ff-secondary-btn"
+                type="button"
+                :disabled="activeClarificationQuestionIndex === 0"
+                @click="goToPreviousClarificationQuestion"
+              >
+                Back
+              </button>
+
+              <button
+                v-if="!clarificationAllAnswered"
+                class="ff-primary-btn"
+                type="button"
+                @click="goToNextClarificationQuestion"
+              >
+                Next question
+                <ChevronRight class="ff-icon-sm" />
+              </button>
+
+              <button
+                v-else
+                class="ff-primary-btn"
+                type="button"
+                @click="compileWithClarifications"
+              >
+                Compile with answers
+                <Sparkles class="ff-icon-sm" />
+              </button>
+            </div>
+
+            <button class="ff-text-btn" type="button" @click="openDetail('trace')">
+              Show technical details
+            </button>
+          </div>
+        </section>
+
+        <!-- Blocked: clear outcome only -->
+        <section v-else-if="resultMode === 'blocked'" class="ff-blocked-screen">
+          <div class="ff-blocked-card">
+            <span class="ff-verdict-icon danger">
+              <XCircle class="ff-icon-lg" />
+            </span>
+            <p class="ff-kicker">Step 3 · Safety verdict</p>
+            <h2>Not safe to automate as described</h2>
+            <p>{{ plainEnglishResult }}</p>
+
+            <div class="ff-next-move">
+              <p class="ff-kicker">Next safe move</p>
+              <strong>{{ nextSafeAction }}</strong>
+            </div>
+
+            <div class="ff-result-actions">
+              <button class="ff-secondary-btn" type="button" @click="openDetail('risks')">
+                See why
+              </button>
+              <button class="ff-primary-btn" type="button" @click="restartCompile">
+                Revise workflow
+              </button>
             </div>
           </div>
+        </section>
 
-          <div class="result-pills">
-            <span :class="['status-pill', primaryDecisionClass]">{{ primaryDecision }}</span>
-            <span :class="['status-pill', riskToneClass(riskLevel)]">{{ riskLevel }} risk</span>
-            <span :class="['status-pill', gateCount > 0 ? 'tone-approval' : 'tone-safe']">{{ gateCount }} gates</span>
-            <span class="status-pill tone-safe">No execution</span>
-          </div>
-        </article>
-
-        <article v-if="aiAgentCards.length > 0" class="panel ai-agent-layer-panel">
-          <div class="panel-head">
+        <!-- Workflow: show the workflow first, not the report -->
+        <section v-else class="ff-workflow-screen">
+          <div class="ff-workflow-header">
             <div>
-              <p class="eyebrow">M12 multi-agent layer</p>
-              <h2>AI Agents</h2>
-              <p>Agents can clarify, propose, and critique. Deterministic guardrails still make the final safety decision.</p>
+              <p class="ff-kicker">Step 3 · Blueprint ready</p>
+              <h2>{{ compiledBlueprint.workflow_name }}</h2>
+              <p>Preview-only workflow. Nothing is sent, changed, refunded, deleted, or executed.</p>
             </div>
-            <span :class="['status-pill', llmCallsUsed > 0 ? 'tone-ai' : 'tone-neutral']">
-              {{ llmCallsUsed > 0 ? `${llmCallsUsed} AI call${llmCallsUsed === 1 ? '' : 's'}` : 'Fallback mode' }}
-            </span>
+
+            <div class="ff-compact-verdict">
+              <span :class="['ff-chip', riskToneClass(riskLevel)]">{{ riskLevel }} risk</span>
+              <span v-if="gateCount > 0" class="ff-chip chip-approval">{{ gateCount }} gates</span>
+              <span class="ff-chip chip-safe">Execution off</span>
+            </div>
           </div>
 
-          <div class="agent-card-grid">
-            <article v-for="agent in aiAgentCards" :key="agent.label" class="agent-card">
-              <div class="agent-card-top">
-                <div>
-                  <p class="agent-provider-pill">{{ sentenceLabel(agent.provider) }}</p>
-                  <h3>{{ agent.label }}</h3>
+          <ol class="ff-node-canvas">
+            <li
+              v-for="(step, index) in visibleWorkflowSteps"
+              :key="step.id"
+              :class="['ff-node', workflowStepColorClass(step)]"
+            >
+              <div class="ff-node-port">
+                <span>{{ index + 1 }}</span>
+              </div>
+
+              <div class="ff-node-card">
+                <div class="ff-node-head">
+                  <component :is="stepIcon(step)" class="ff-icon-sm" />
+                  <strong>{{ step.label }}</strong>
                 </div>
-                <span :class="['agent-status-pill', agent.usedAi ? 'is-ai' : agent.status === 'skipped' ? 'is-skipped' : 'is-fallback']">
-                  {{ agent.usedAi ? 'AI used' : agent.status === 'skipped' ? 'Skipped' : 'Fallback' }}
+                <p>{{ step.description }}</p>
+                <div class="ff-node-tags">
+                  <span :class="['ff-tag', policyToneClass(step.automation_policy)]">
+                    {{ policyLabel(step.automation_policy) }}
+                  </span>
+                  <span v-if="step.approval_required" class="ff-tag tone-approval">Human gate</span>
+                </div>
+              </div>
+            </li>
+          </ol>
+
+          <div class="ff-workflow-actions">
+            <button class="ff-secondary-btn" type="button" @click="showAgentStrip = !showAgentStrip">
+              {{ showAgentStrip ? "Hide" : "Show" }} agent workbench
+            </button>
+            <button v-if="!activeDetail" class="ff-secondary-btn" type="button" @click="openDetail('critic')">
+              Open details
+            </button>
+            <button v-else class="ff-secondary-btn" type="button" @click="openDetail(null)">
+              Hide details
+            </button>
+            <button class="ff-primary-btn" type="button" @click="restartCompile">
+              New compile
+            </button>
+          </div>
+        </section>
+
+        <!-- Agent workbench, hidden by default -->
+        <section v-if="showAgentStrip" class="ff-agent-workbench">
+          <div class="ff-section-head">
+            <div>
+              <p class="ff-kicker">Agent workbench</p>
+              <h3>How the blueprint was produced</h3>
+            </div>
+            <span class="ff-chip chip-neutral">{{ llmCallsUsed }} AI calls</span>
+          </div>
+
+          <div class="ff-agent-grid">
+            <article v-for="agent in aiAgentCards" :key="agent.id" class="ff-agent-card">
+              <div class="ff-agent-top">
+                <span>{{ sentenceLabel(agent.provider) }}</span>
+                <span :class="['ff-agent-state', agent.usedAi ? 'is-ai' : agent.status === 'skipped' ? 'is-skipped' : 'is-fallback']">
+                  {{ agent.usedAi ? 'AI active' : agent.status === 'skipped' ? 'Skipped' : 'Fallback' }}
                 </span>
               </div>
-
-              <p class="agent-summary">{{ agent.summary }}</p>
-
-              <p v-if="agent.reason && agent.reason !== agent.summary" class="agent-reason">
-                {{ agent.reason }}
-              </p>
-
-              <dl class="agent-meta-grid">
-                <div>
-                  <dt>Status</dt>
-                  <dd>{{ sentenceLabel(agent.status) }}</dd>
-                </div>
-                <div>
-                  <dt>Confidence</dt>
-                  <dd>{{ sentenceLabel(agent.confidence) }}</dd>
-                </div>
-                <div v-for="metric in agent.metrics" :key="`${agent.label}-${metric.label}`">
-                  <dt>{{ metric.label }}</dt>
-                  <dd>{{ metric.value }}</dd>
-                </div>
-              </dl>
-
-              <button class="agent-details-button" type="button" @click="openAgentDetails(agent.id)">
-                {{ agent.debugAvailable ? "View AI details" : "View output" }}
+              <h4>{{ agent.label }}</h4>
+              <p>{{ agent.summary }}</p>
+              <button class="ff-mini-btn" type="button" @click="openAgentDetails(agent.id)">
+                {{ agent.debugAvailable ? "Open debug" : "View output" }}
               </button>
             </article>
           </div>
-        </article>
+        </section>
 
-        <Teleport to="body">
-          <div v-if="activeAgentDetails" class="agent-modal-backdrop" @click.self="closeAgentDetails">
-            <section class="agent-modal" role="dialog" aria-modal="true" :aria-label="`${activeAgentDetails.label} details`">
-              <header class="agent-modal-header">
-                <div>
-                  <p class="eyebrow">AI usage details</p>
-                  <h2>{{ activeAgentDetails.label }}</h2>
-                  <p>
-                    Current UI data is shown now. Prompt/raw response fields will populate after the backend debug payload is added.
-                  </p>
-                </div>
-                <button class="agent-modal-close" type="button" aria-label="Close AI details" @click="closeAgentDetails">
-                  <X class="icon" aria-hidden="true" />
-                </button>
-              </header>
-
-              <div class="agent-modal-grid">
-                <article class="agent-modal-card">
-                  <h3>Usage summary</h3>
-                  <dl class="mini-dl">
-                    <div><dt>Provider</dt><dd>{{ sentenceLabel(activeAgentDetails.provider) }}</dd></div>
-                    <div><dt>AI used</dt><dd>{{ yesNo(activeAgentDetails.usedAi) }}</dd></div>
-                    <div><dt>Status</dt><dd>{{ sentenceLabel(activeAgentDetails.status) }}</dd></div>
-                    <div><dt>Confidence</dt><dd>{{ sentenceLabel(activeAgentDetails.confidence) }}</dd></div>
-                    <div><dt>LLM calls</dt><dd>{{ activeAgentDebug?.llm_calls_made ?? 0 }}</dd></div>
-                    <div v-for="metric in activeAgentDetails.metrics" :key="`modal-${metric.label}`">
-                      <dt>{{ metric.label }}</dt>
-                      <dd>{{ metric.value }}</dd>
-                    </div>
-                  </dl>
-                </article>
-
-                <article class="agent-modal-card">
-                  <h3>Outcome</h3>
-                  <p>{{ activeAgentDetails.summary }}</p>
-                  <p v-if="activeAgentDetails.reason" class="agent-modal-note">{{ activeAgentDetails.reason }}</p>
-                  <p class="agent-modal-note">
-                    Token detail currently shows call count only. Exact provider token totals need usage metadata from Groq/Gemini providers.
-                  </p>
-                </article>
-
-                <article class="agent-modal-card is-wide">
-                  <h3>Provider attempts</h3>
-                  <ul class="agent-attempt-list">
-                    <li v-for="attempt in activeAgentProviderAttempts" :key="`${activeAgentDetails.id}-${attempt.provider}-${attempt.attempted}-${attempt.success}`">
-                      <div>
-                        <strong>{{ sentenceLabel(attempt.provider) }}</strong>
-                        <span :class="['status-pill', attempt.success ? 'tone-safe' : attempt.attempted ? 'tone-blocked' : 'tone-neutral']">
-                          {{ attempt.success ? "Success" : attempt.attempted ? "Failed" : "Not attempted" }}
-                        </span>
-                      </div>
-                      <small v-if="attempt.error_summary">{{ attempt.error_summary }}</small>
-                      <small v-else-if="attempt.raw_response">Raw response captured.</small>
-                      <small v-else>No raw provider response captured.</small>
-                    </li>
-                  </ul>
-                </article>
-
-                <article class="agent-modal-card is-wide">
-                  <h3>System prompt</h3>
-                  <pre class="agent-code-block">{{ activeAgentDebug?.system_prompt || "No system prompt available. The agent was likely skipped before prompting." }}</pre>
-                </article>
-
-                <article class="agent-modal-card is-wide">
-                  <h3>User prompt sent to agent</h3>
-                  <pre class="agent-code-block">{{ activeAgentDebug?.user_prompt || "No user prompt available. The agent was likely skipped before prompting." }}</pre>
-                </article>
-
-                <article class="agent-modal-card is-wide">
-                  <h3>Raw provider response</h3>
-                  <pre class="agent-code-block">{{ activeAgentRawResponse }}</pre>
-                </article>
-
-                <article class="agent-modal-card is-wide">
-                  <h3>Parsed provider response</h3>
-                  <pre class="agent-code-block">{{ activeAgentParsedResponse }}</pre>
-                </article>
-
-                <article class="agent-modal-card is-wide">
-                  <h3>Final accepted output</h3>
-                  <pre class="agent-code-block">{{ activeAgentDebugFinalOutputJson }}</pre>
-                </article>
-              </div>
-            </section>
-          </div>
-        </Teleport>
-
-        <article v-if="resultMode === 'clarify' && clarificationPlan" class="panel clarify-focus-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Missing details</p>
-              <h2>Answer these before the flow matters</h2>
-              <p>{{ clarificationPlan.reason || "FlowForge needs a clearer process before implementation." }}</p>
-            </div>
-            <HelpCircle class="icon-lg" aria-hidden="true" />
-          </div>
-
-          <div class="missing-chip-row">
-            <span v-for="field in clarificationPlan.missing_fields" :key="field" class="missing-chip">
-              {{ formatEnum(field) }}
-            </span>
-          </div>
-
-          <div class="question-stack">
-            <article v-for="question in clarificationPlan.questions" :key="question.field" class="question-card">
-              <strong>{{ question.question }}</strong>
-              <span>{{ question.why_it_matters }}</span>
-              <small v-if="question.example_answer">Example: {{ question.example_answer }}</small>
-            </article>
-          </div>
-
-          <div class="starter-box">
-            <p class="eyebrow">Suggested starter</p>
-            <blockquote>{{ clarificationPlan.improved_prompt_starter || clarificationPlan.suggested_template }}</blockquote>
-            <div class="starter-actions">
-              <button class="primary-button small" type="button" @click="applyStarter">
-                <PencilLine class="icon-sm" />
-                Replace input
-              </button>
-              <button class="secondary-button small" type="button" @click="copyStarter">
-                <Copy class="icon-sm" />
-                Copy text
-              </button>
-            </div>
-            <small>Replace input only updates the text box. You still choose when to compile again.</small>
-          </div>
-        </article>
-
-        <template v-else>
-          <section class="stats-grid" aria-label="Result summary">
-            <article v-for="stat in mainStats" :key="stat.label" class="stat-card">
-              <span :class="['stat-dot', stat.className]" />
-              <p class="eyebrow">{{ stat.label }}</p>
-              <h3>{{ stat.value }}</h3>
-              <small>{{ stat.detail }}</small>
-            </article>
-          </section>
-
-          <section class="flow-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">{{ resultMode === 'blocked' ? 'Safe alternative' : 'Flow' }}</p>
-                <h2>{{ workflowMapTitle }}</h2>
-                <p>{{ workflowMapCopy }}</p>
-              </div>
-              <span class="status-pill tone-neutral">{{ visibleWorkflowSteps.length }} steps</span>
-            </div>
-
-            <ol class="flow-list">
-              <li
-                v-for="(step, index) in visibleWorkflowSteps"
-                :key="step.id"
-                :class="['flow-item', workflowMapStepClass(step)]"
-              >
-                <article class="flow-card">
-                  <div class="flow-card-top">
-                    <span class="flow-index">{{ index + 1 }}</span>
-                    <component :is="stepIcon(step)" class="icon" aria-hidden="true" />
-                  </div>
-                  <strong>{{ step.label }}</strong>
-                  <p>{{ step.description }}</p>
-                  <div class="flow-badges">
-                    <span :class="['status-pill', policyToneClass(step.automation_policy)]">
-                      {{ policyLabel(step.automation_policy) }}
-                    </span>
-                    <span v-if="step.approval_required" class="status-pill tone-approval">Approval</span>
-                  </div>
-                </article>
-              </li>
-            </ol>
-          </section>
-        </template>
-
-        <article v-if="safetyCritic" class="panel critic-summary-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Safety Critic</p>
-              <h2>{{ criticTitle }}</h2>
-              <p>{{ criticExplanation }}</p>
-            </div>
-            <span :class="['status-pill', primaryDecisionClass]">
-              {{ sentenceLabel(safetyCritic.overall_status) }}
-            </span>
-          </div>
-
-          <div class="critic-count-grid">
-            <article v-for="item in criticCounts" :key="item.label" class="critic-count-card">
-              <span :class="['stat-dot', item.className]" />
-              <strong>{{ item.value }}</strong>
-              <small>{{ item.label }}</small>
-            </article>
-          </div>
-
-          <article v-if="criticTopFinding" class="top-finding-card">
-            <span :class="['status-pill', severityToneClass(criticTopFinding.severity)]">
-              {{ criticTopFinding.severity }}
-            </span>
-            <h3>{{ criticTopFinding.title }}</h3>
-            <p>{{ criticTopFinding.recommendation }}</p>
-          </article>
-        </article>
-
-        <article class="panel next-action-panel">
-          <span class="next-icon">
-            <ArrowRight class="icon" aria-hidden="true" />
-          </span>
-          <div>
-            <p class="eyebrow">Next safe action</p>
-            <h2>{{ nextSafeAction }}</h2>
-          </div>
-        </article>
-
-        <section class="details-launcher">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Details on demand</p>
-              <h2>Open only what you need</h2>
-            </div>
-            <span class="status-pill tone-neutral">Hidden by default</span>
-          </div>
-
-          <div class="detail-tab-grid">
+        <!-- Details, hidden by default -->
+        <section v-if="activeDetail" class="ff-details-panel">
+          <div class="ff-details-nav">
             <button
               v-for="tab in detailTabs"
               :key="tab.id"
               type="button"
-              :class="['detail-tab', { 'is-active': activeDetail === tab.id }]"
+              :class="['ff-detail-tab', { 'is-active': activeDetail === tab.id }]"
               @click="openDetail(tab.id)"
             >
-              <component :is="tab.icon" class="icon" aria-hidden="true" />
-              <span>
-                <strong>{{ tab.label }}</strong>
-                <small v-if="tab.badge">{{ tab.badge }}</small>
-              </span>
-              <ChevronRight class="icon-sm" aria-hidden="true" />
+              <component :is="tab.icon" class="ff-icon-xs" />
+              {{ tab.label }}
+            </button>
+            <button class="ff-detail-tab close" type="button" @click="activeDetail = null">
+              Close
             </button>
           </div>
-        </section>
 
-        <section v-if="activeDetail" class="detail-view-panel">
-          <div class="detail-view-head">
-            <div>
-              <p class="eyebrow">Details</p>
-              <h2>{{ detailTabs.find((tab) => tab.id === activeDetail)?.label }}</h2>
+          <div class="ff-detail-content">
+            <div v-if="activeDetail === 'critic' && safetyCritic" class="ff-detail-stack">
+              <article v-for="finding in safetyCritic.findings" :key="finding.id" class="ff-detail-card">
+                <span :class="['ff-tag', severityToneClass(finding.severity)]">{{ finding.severity }}</span>
+                <h4>{{ finding.title }}</h4>
+                <p>{{ finding.explanation }}</p>
+                <p><b>Recommendation:</b> {{ finding.recommendation }}</p>
+              </article>
             </div>
-            <button class="secondary-button small" type="button" @click="activeDetail = null">Close details</button>
-          </div>
 
-          <div v-if="activeDetail === 'critic' && safetyCritic" class="detail-stack">
-            <article
-              v-for="finding in safetyCritic.findings"
-              :key="finding.id"
-              :class="['detail-card', severityToneClass(finding.severity)]"
-            >
-              <span class="eyebrow">{{ formatEnum(finding.type) }}</span>
-              <h3>{{ finding.title }}</h3>
-              <p>{{ finding.explanation }}</p>
-              <strong>Recommendation</strong>
-              <p>{{ finding.recommendation }}</p>
-            </article>
-          </div>
+            <div v-else-if="activeDetail === 'workflow'" class="ff-detail-stack">
+              <article v-for="step in visibleWorkflowSteps" :key="step.id" class="ff-detail-card">
+                <button class="ff-expand-btn" type="button" @click="toggleStep(step.id)">
+                  <span>
+                    <strong>{{ step.label }}</strong>
+                    <small>{{ policyLabel(step.automation_policy) }} · {{ step.risk_level }} risk</small>
+                  </span>
+                  <component :is="isStepExpanded(step) ? ChevronUp : ChevronDown" class="ff-icon-xs" />
+                </button>
 
-          <div v-else-if="activeDetail === 'workflow'" class="detail-stack">
-            <article v-for="step in visibleWorkflowSteps" :key="step.id" class="detail-card">
-              <button class="detail-card-toggle" type="button" @click="toggleStep(step.id)">
-                <span>
-                  <strong>{{ step.label }}</strong>
-                  <small>{{ policyLabel(step.automation_policy) }} · {{ step.risk_level }} risk</small>
-                </span>
-                <span>{{ isStepExpanded(step) ? "Hide" : "Show" }}</span>
-              </button>
+                <dl v-if="isStepExpanded(step)" class="ff-meta-grid">
+                  <div><dt>Primitive</dt><dd>{{ formatEnum(step.primitive) }}</dd></div>
+                  <div><dt>Actor</dt><dd>{{ formatEnum(step.actor) }}</dd></div>
+                  <div><dt>Execution</dt><dd>{{ formatEnum(step.real_world_execution) }}</dd></div>
+                  <div><dt>Input</dt><dd>{{ step.input }}</dd></div>
+                  <div><dt>Output</dt><dd>{{ step.output }}</dd></div>
+                  <div><dt>Approval</dt><dd>{{ yesNo(step.approval_required) }}</dd></div>
+                </dl>
+              </article>
+            </div>
 
-              <dl v-if="isStepExpanded(step)" class="meta-grid">
-                <div><dt>Primitive</dt><dd>{{ formatEnum(step.primitive) }}</dd></div>
-                <div><dt>Actor</dt><dd>{{ formatEnum(step.actor) }}</dd></div>
-                <div><dt>Execution</dt><dd>{{ formatEnum(step.real_world_execution) }}</dd></div>
-                <div><dt>Input</dt><dd>{{ step.input }}</dd></div>
-                <div><dt>Output</dt><dd>{{ step.output }}</dd></div>
-                <div><dt>Approval</dt><dd>{{ yesNo(step.approval_required) }}</dd></div>
-              </dl>
-            </article>
-          </div>
-
-          <div v-else-if="activeDetail === 'router'" class="two-column-details">
-            <article class="detail-card">
-              <h3>Router role</h3>
-              <p>{{ routerRoleCopy }}</p>
-              <p>{{ deterministicBoundaryCopy }}</p>
-            </article>
-
-            <article class="detail-card">
-              <h3>Provider path</h3>
-              <ul class="plain-list">
-                <li v-for="item in providerAttemptItems" :key="item.provider">
-                  <strong>{{ item.provider }}</strong>
-                  <span :class="['status-pill', providerAttemptClass(item.status)]">{{ item.status }}</span>
-                  <small>{{ item.detail }}</small>
-                </li>
-              </ul>
-            </article>
-
-            <article class="detail-card">
-              <h3>Router inputs</h3>
-              <p>{{ routerPromptContextSummary }}</p>
-              <dl class="mini-dl">
-                <div v-for="item in routerInputItems" :key="item.label">
-                  <dt>{{ item.label }}</dt>
-                  <dd>{{ previewText(item.value) }}</dd>
-                </div>
-              </dl>
-            </article>
-
-            <article class="detail-card">
-              <h3>Router output</h3>
-              <p>{{ routerOutputBoundaryCopy }}</p>
-              <dl class="mini-dl">
-                <div v-for="item in routerOutputItems" :key="item.label">
-                  <dt>{{ item.label }}</dt>
-                  <dd>{{ previewText(item.value) }}</dd>
-                </div>
-              </dl>
-            </article>
-          </div>
-
-          <div v-else-if="activeDetail === 'risks'" class="two-column-details">
-            <article class="detail-card">
-              <h3>Human gates</h3>
-              <p v-if="visibleGates.length === 0">No gate-worthy risk detected. Preview still does not execute external actions.</p>
-              <div v-for="gate in visibleGates" :key="gate.id" class="stacked-detail">
-                <button class="detail-card-toggle" type="button" @click="toggleGate(gate.id)">
+            <div v-else-if="activeDetail === 'risks'" class="ff-detail-grid">
+              <article class="ff-detail-card">
+                <h4>Human approval gates</h4>
+                <p v-if="visibleGates.length === 0">No gate-worthy risk detected.</p>
+                <div v-for="gate in visibleGates" :key="gate.id" class="ff-mini-section">
                   <strong>{{ gate.label }}</strong>
-                  <span>{{ isGateExpanded(gate) ? "Hide" : "Show" }}</span>
-                </button>
-                <p>{{ gate.reason }}</p>
-                <ul v-if="isGateExpanded(gate)" class="checklist">
-                  <li v-for="item in gate.review_checklist" :key="item">{{ item }}</li>
-                </ul>
-              </div>
-            </article>
-
-            <article class="detail-card">
-              <h3>Risk reasons</h3>
-              <p v-if="visibleRisks.length === 0">No obvious risk flags detected. Preview stays non-executing.</p>
-              <div v-for="risk in visibleRisks" :key="risk.id" class="stacked-detail">
-                <button class="detail-card-toggle" type="button" @click="toggleRisk(risk.id)">
-                  <strong>{{ risk.label }}</strong>
-                  <span :class="['status-pill', riskToneClass(risk.risk_level)]">{{ risk.risk_level }}</span>
-                </button>
-                <div v-if="isRiskExpanded(risk)">
-                  <p><strong>Reason:</strong> {{ risk.reason }}</p>
-                  <p><strong>Recommendation:</strong> {{ risk.recommendation }}</p>
+                  <p>{{ gate.reason }}</p>
                 </div>
-              </div>
-            </article>
-          </div>
+              </article>
 
-          <div v-else-if="activeDetail === 'tests'" class="two-column-details">
-            <article v-for="testCase in compiledBlueprint.test_cases" :key="testCase.id" class="detail-card">
-              <div class="inline-head">
-                <h3>{{ testCase.name }}</h3>
-                <span :class="['status-pill', testCase.expected_human_gate ? 'tone-approval' : 'tone-safe']">
-                  {{ testCase.expected_human_gate ? "Human gate" : "No gate" }}
+              <article class="ff-detail-card">
+                <h4>Risk reasons</h4>
+                <p v-if="visibleRisks.length === 0">No obvious risk flags detected.</p>
+                <div v-for="risk in visibleRisks" :key="risk.id" class="ff-mini-section">
+                  <strong>{{ risk.label }}</strong>
+                  <span :class="['ff-tag', riskToneClass(risk.risk_level)]">{{ risk.risk_level }}</span>
+                  <p>{{ risk.reason }}</p>
+                </div>
+              </article>
+            </div>
+
+            <div v-else-if="activeDetail === 'router'" class="ff-detail-grid">
+              <article class="ff-detail-card">
+                <h4>AI role</h4>
+                <p>{{ routerRoleCopy }}</p>
+                <p>{{ deterministicBoundaryCopy }}</p>
+              </article>
+
+              <article class="ff-detail-card">
+                <h4>Provider path</h4>
+                <div v-for="item in providerAttemptItems" :key="item.provider" class="ff-mini-section">
+                  <strong>{{ item.provider }}</strong>
+                  <span :class="['ff-tag', providerAttemptClass(item.status)]">{{ item.status }}</span>
+                  <p>{{ item.detail }}</p>
+                </div>
+              </article>
+            </div>
+
+            <div v-else-if="activeDetail === 'tests'" class="ff-detail-grid">
+              <article v-for="testCase in compiledBlueprint.test_cases" :key="testCase.id" class="ff-detail-card">
+                <span :class="['ff-tag', testCase.expected_human_gate ? 'tone-approval' : 'tone-safe']">
+                  {{ testCase.expected_human_gate ? 'Human gate' : 'No gate' }}
                 </span>
-              </div>
-              <p><strong>Input:</strong> {{ testCase.input_event }}</p>
-              <p><strong>Expected:</strong> {{ formatEnum(testCase.expected_route) }}</p>
-              <p>{{ testCase.reason }}</p>
-            </article>
-          </div>
+                <h4>{{ testCase.name }}</h4>
+                <p><b>Input:</b> {{ testCase.input_event }}</p>
+                <p><b>Expected:</b> {{ formatEnum(testCase.expected_route) }}</p>
+                <p>{{ testCase.reason }}</p>
+              </article>
+            </div>
 
-          <div v-else-if="activeDetail === 'implementation'" class="two-column-details">
-            <article class="detail-card">
-              <h3>Assumptions</h3>
-              <ul class="checklist">
-                <li v-for="assumption in compiledBlueprint.assumptions" :key="assumption">{{ assumption }}</li>
-              </ul>
-            </article>
+            <div v-else-if="activeDetail === 'implementation'" class="ff-detail-grid">
+              <article class="ff-detail-card">
+                <h4>Assumptions</h4>
+                <ul>
+                  <li v-for="assumption in compiledBlueprint.assumptions" :key="assumption">{{ assumption }}</li>
+                </ul>
+              </article>
+              <article class="ff-detail-card">
+                <h4>Open questions</h4>
+                <ul>
+                  <li v-for="question in compiledBlueprint.open_questions" :key="question">{{ question }}</li>
+                </ul>
+              </article>
+            </div>
 
-            <article class="detail-card">
-              <h3>Open questions</h3>
-              <ul class="checklist">
-                <li v-for="question in compiledBlueprint.open_questions" :key="question">{{ question }}</li>
-              </ul>
-            </article>
-          </div>
-
-          <div v-else-if="activeDetail === 'trace'" class="two-column-details">
-            <article class="detail-card">
-              <h3>Pipeline</h3>
-              <ol class="plain-list">
-                <li v-for="step in technicalPipelineSteps" :key="step.id">
+            <div v-else-if="activeDetail === 'trace'" class="ff-detail-grid">
+              <article class="ff-detail-card">
+                <h4>Pipeline steps</h4>
+                <div v-for="step in technicalPipelineSteps" :key="step.id" class="ff-mini-section">
                   <strong>{{ step.label }}</strong>
-                  <span>{{ previewText(step.output_summary) }}</span>
-                </li>
-              </ol>
-            </article>
+                  <p>{{ previewText(step.output_summary) }}</p>
+                </div>
+              </article>
 
-            <article v-if="technicalTokenUsage" class="detail-card">
-              <h3>Token usage</h3>
-              <dl class="mini-dl">
-                <div><dt>Mode</dt><dd>{{ technicalTokenUsage.mode }}</dd></div>
-                <div><dt>LLM calls</dt><dd>{{ technicalTokenUsage.llm_calls_used }} / {{ technicalTokenUsage.llm_calls_limit }}</dd></div>
-                <div><dt>Rule checks</dt><dd>{{ technicalTokenUsage.rule_based_checks }}</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-card">
-              <h3>Agent trace</h3>
-              <ul class="plain-list">
-                <li v-for="event in technicalAgentTrace" :key="event.id">
-                  <strong>{{ event.action }}</strong>
-                  <span>{{ event.status }}</span>
-                  <small v-if="event.output_summary">{{ previewText(event.output_summary) }}</small>
-                </li>
-              </ul>
-            </article>
+              <article class="ff-detail-card">
+                <h4>Token usage</h4>
+                <p v-if="technicalTokenUsage">
+                  Mode: {{ technicalTokenUsage.mode }} · LLM calls:
+                  {{ technicalTokenUsage.llm_calls_used }} / {{ technicalTokenUsage.llm_calls_limit }}
+                </p>
+              </article>
+            </div>
           </div>
         </section>
 
-        <button class="new-compile-button" type="button" @click="job = null; activeAgentDetailsId = null; compileRunState = 'idle'; resetDetails()">
-          Compile another process
-        </button>
+        <!-- Agent debug modal -->
+        <Teleport to="body">
+          <div v-if="activeAgentDetails" class="ff-modal-backdrop" @click.self="closeAgentDetails">
+            <section class="ff-modal" role="dialog" aria-modal="true" :aria-label="`${activeAgentDetails.label} agent details`">
+              <header class="ff-modal-header">
+                <div>
+                  <p class="ff-kicker">Agent inspector</p>
+                  <h2>{{ activeAgentDetails.label }}</h2>
+                </div>
+                <button class="ff-modal-close" type="button" aria-label="Close" @click="closeAgentDetails">
+                  <X class="ff-icon-sm" />
+                </button>
+              </header>
+
+              <div class="ff-modal-body">
+                <div class="ff-modal-stats">
+                  <div><span>Provider</span><strong>{{ sentenceLabel(activeAgentDetails.provider) }}</strong></div>
+                  <div><span>AI used</span><strong>{{ yesNo(activeAgentDetails.usedAi) }}</strong></div>
+                  <div><span>Status</span><strong>{{ sentenceLabel(activeAgentDetails.status) }}</strong></div>
+                  <div><span>Confidence</span><strong>{{ sentenceLabel(activeAgentDetails.confidence) }}</strong></div>
+                  <div><span>LLM calls</span><strong>{{ activeAgentDebug?.llm_calls_made ?? 0 }}</strong></div>
+                  <div v-for="metric in activeAgentDetails.metrics" :key="`modal-${metric.label}`">
+                    <span>{{ metric.label }}</span>
+                    <strong>{{ metric.value }}</strong>
+                  </div>
+                </div>
+
+                <section class="ff-modal-section">
+                  <h3>Outcome</h3>
+                  <p>{{ activeAgentDetails.summary }}</p>
+                  <p v-if="activeAgentDetails.reason">{{ activeAgentDetails.reason }}</p>
+                </section>
+
+                <section class="ff-modal-section">
+                  <h3>Provider attempts</h3>
+                  <article
+                    v-for="attempt in activeAgentProviderAttempts"
+                    :key="`${activeAgentDetails.id}-${attempt.provider}-${attempt.attempted}`"
+                    class="ff-attempt"
+                  >
+                    <div>
+                      <strong>{{ sentenceLabel(attempt.provider) }}</strong>
+                      <span :class="['ff-tag', attempt.success ? 'tone-safe' : attempt.attempted ? 'tone-blocked' : 'tone-neutral']">
+                        {{ attempt.success ? 'Success' : attempt.attempted ? 'Failed' : 'Not attempted' }}
+                      </span>
+                    </div>
+                    <p v-if="attempt.error_summary">{{ attempt.error_summary }}</p>
+                    <p v-else-if="attempt.raw_response">Raw response captured.</p>
+                    <p v-else>No raw provider response captured.</p>
+                  </article>
+                </section>
+
+                <section class="ff-modal-section">
+                  <h3>System prompt</h3>
+                  <pre class="ff-code">{{ activeAgentDebug?.system_prompt || "No system prompt available. The agent was likely skipped before prompting." }}</pre>
+                </section>
+
+                <section class="ff-modal-section">
+                  <h3>User prompt sent to agent</h3>
+                  <pre class="ff-code">{{ activeAgentDebug?.user_prompt || "No user prompt available. The agent was likely skipped before prompting." }}</pre>
+                </section>
+
+                <section class="ff-modal-section">
+                  <h3>Raw provider response</h3>
+                  <pre class="ff-code">{{ activeAgentRawResponse }}</pre>
+                </section>
+
+                <section class="ff-modal-section">
+                  <h3>Parsed provider response</h3>
+                  <pre class="ff-code">{{ activeAgentParsedResponse }}</pre>
+                </section>
+
+                <section class="ff-modal-section">
+                  <h3>Final accepted output</h3>
+                  <pre class="ff-code">{{ activeAgentDebugFinalOutputJson }}</pre>
+                </section>
+              </div>
+            </section>
+          </div>
+        </Teleport>
       </section>
-    </section>
+    </div>
   </main>
 </template>
 
 <style scoped>
-.compiler-page {
+.ff-page {
+  --bg: #0f1720;
+  --panel: #f4efe3;
+  --panel-2: #e9dfcc;
+  --paper: #fffaf0;
+  --ink: #101114;
+  --muted: #5f6673;
+  --line: #161719;
+  --soft-line: rgba(22, 23, 25, 0.15);
+  --blue: #2868a8;
+  --blue-soft: #dbe9f6;
+  --green: #2f8c57;
+  --green-soft: #dcefe2;
+  --amber: #c9851d;
+  --amber-soft: #fff0c9;
+  --red: #c84635;
+  --red-soft: #f9d8d2;
+  --violet: #6250a4;
+  --violet-soft: #e8e2f7;
   min-height: 100vh;
-  padding: 28px 14px 72px;
+  padding: 28px 16px 88px;
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background:
-    radial-gradient(circle at 0% 0%, rgba(0, 124, 120, 0.12), transparent 34%),
-    linear-gradient(180deg, #f8faf7 0%, #eef2ee 100%);
+    radial-gradient(circle at 8% 0%, rgba(40, 104, 168, 0.22), transparent 28%),
+    radial-gradient(circle at 100% 12%, rgba(201, 133, 29, 0.16), transparent 24%),
+    linear-gradient(135deg, #17202b, #0f1720);
 }
 
-.compiler-shell {
+.ff-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.28;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.055) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+.ff-shell {
+  position: relative;
+  z-index: 1;
   width: min(100%, 1120px);
   margin: 0 auto;
   display: grid;
-  gap: 16px;
-}
-
-.hero-panel,
-.panel,
-.flow-panel,
-.details-launcher,
-.detail-view-panel {
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow:
-    0 20px 56px rgba(15, 32, 29, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(18px);
-}
-
-.hero-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
+}
+
+.ff-topbar,
+.ff-brand,
+.ff-input-header,
+.ff-section-head,
+.ff-workflow-header,
+.ff-question-actions,
+.ff-workflow-actions,
+.ff-result-actions {
+  display: flex;
   align-items: center;
-  padding: clamp(24px, 4vw, 42px);
+  gap: 14px;
 }
 
-.hero-panel h1 {
-  margin: 0;
-  color: var(--ff-ink);
-  font-size: clamp(2.4rem, 7vw, 5.6rem);
-  letter-spacing: -0.075em;
-  line-height: 0.92;
+.ff-topbar,
+.ff-input-header,
+.ff-section-head,
+.ff-workflow-header {
+  justify-content: space-between;
+  align-items: flex-start;
 }
 
-.hero-panel p {
-  max-width: 650px;
-  margin: 12px 0 0;
-  color: var(--ff-muted);
-  font-size: 1rem;
-  line-height: 1.55;
-}
-
-.hero-mark {
+.ff-brand-mark {
   display: grid;
-  width: 76px;
-  height: 76px;
   place-items: center;
-  border-radius: 26px;
-  background: #101d1a;
-  color: #ffffff;
-  box-shadow: 0 18px 42px rgba(16, 29, 26, 0.23);
+  width: 46px;
+  height: 46px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-radius: 14px;
+  background: #243142;
+  color: #f8fafc;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.24);
 }
 
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--ff-primary-strong);
+.ff-kicker {
+  margin: 0 0 4px;
+  color: #aeb8c6;
   font-size: 0.72rem;
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
-.input-screen {
+.ff-topbar h1,
+.ff-hero-panel h2,
+.ff-scan-panel h2,
+.ff-workflow-header h2,
+.ff-question-shell h2,
+.ff-blocked-card h2 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: clamp(1.35rem, 4vw, 2.45rem);
+  line-height: 1.04;
+  letter-spacing: -0.055em;
+}
+
+.ff-brand h1 {
+  font-size: 1.25rem;
+}
+
+.ff-safe-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  color: #dfe7ef;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.ff-start-screen {
   display: grid;
-  grid-template-columns: 0.84fr 1.16fr;
-  gap: 14px;
+  gap: 18px;
 }
 
-.panel,
-.flow-panel,
-.details-launcher,
-.detail-view-panel {
-  padding: clamp(16px, 2.5vw, 24px);
+.ff-hero-panel,
+.ff-input-panel,
+.ff-scan-panel,
+.ff-question-shell,
+.ff-blocked-card,
+.ff-workflow-screen,
+.ff-agent-workbench,
+.ff-details-panel,
+.ff-error-panel {
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 28px;
+  background: rgba(244, 239, 227, 0.96);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.22);
+  padding: 26px;
 }
 
-.panel-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+.ff-hero-panel {
+  background:
+    linear-gradient(135deg, rgba(40,104,168,0.20), transparent 46%),
+    rgba(244, 239, 227, 0.96);
+}
+
+.ff-hero-panel h2,
+.ff-input-header h3,
+.ff-section-head h2,
+.ff-blocked-card h2 {
+  color: var(--ink);
+}
+
+.ff-hero-panel p,
+.ff-helper,
+.ff-muted,
+.ff-workflow-header p,
+.ff-question-card p,
+.ff-blocked-card p,
+.ff-detail-card p,
+.ff-mini-section p,
+.ff-agent-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.ff-input-panel {
+  display: grid;
   gap: 16px;
 }
 
-.panel-head h2,
-.flow-panel h2,
-.details-launcher h2,
-.detail-view-panel h2 {
-  margin: 0;
-  color: var(--ff-ink);
-  font-size: clamp(1.15rem, 2.2vw, 1.55rem);
-  letter-spacing: -0.035em;
-  line-height: 1.08;
-}
-
-.panel-head p,
-.panel p,
-.flow-panel p,
-.details-launcher p,
-.detail-view-panel p {
-  margin: 6px 0 0;
-  color: var(--ff-muted);
-  line-height: 1.45;
-}
-
-.usecase-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.usecase-card {
-  display: flex;
-  min-height: 72px;
+.ff-chip,
+.ff-tag {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 13px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 22px;
-  background: #fbfcfb;
-  color: var(--ff-ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
-}
-
-.usecase-card:hover {
-  transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--ff-primary) 35%, var(--ff-border));
-}
-
-.usecase-card.is-selected {
-  border-color: var(--ff-primary);
-  background: var(--ff-primary-soft);
-  color: var(--ff-primary-strong);
-  box-shadow: 0 0 0 4px rgba(0, 124, 120, 0.12);
-}
-
-.usecase-card span {
-  display: grid;
-  gap: 5px;
-}
-
-.usecase-card strong {
-  font-size: 0.95rem;
-}
-
-.usecase-card small {
-  color: currentColor;
-  opacity: 0.7;
-  font-size: 0.76rem;
+  gap: 6px;
+  border-radius: 999px;
   font-weight: 850;
-}
-
-.process-textarea {
-  width: 100%;
-  min-height: 210px;
-  margin-top: 16px;
-  padding: 16px;
-  border: 1px solid rgba(24, 43, 38, 0.12);
-  border-radius: 24px;
-  background: #fbfcfb;
-  color: var(--ff-ink);
-  font: inherit;
-  line-height: 1.55;
-  resize: vertical;
-  outline: none;
-  box-sizing: border-box;
-}
-
-.process-textarea:focus {
-  border-color: var(--ff-primary);
-  box-shadow: 0 0 0 4px rgba(0, 124, 120, 0.12);
-}
-
-.input-helper {
-  display: block;
-  margin-top: 9px;
-  color: var(--ff-muted);
-  font-size: 0.84rem;
-  font-weight: 800;
-  line-height: 1.35;
-}
-
-.input-helper.is-warning {
-  color: var(--ff-blocked);
-}
-
-.bottom-controls {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 16px;
-}
-
-.mode-switcher {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.mode-switcher legend {
-  width: 100%;
-  color: var(--ff-muted);
-  font-size: 0.72rem;
-  font-weight: 950;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.mode-switcher label {
-  position: relative;
-}
-
-.mode-switcher input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.mode-switcher span {
-  display: inline-flex;
-  min-height: 36px;
-  align-items: center;
-  padding: 0 12px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 999px;
-  background: #fbfcfb;
-  color: var(--ff-muted);
-  font-size: 0.82rem;
-  font-weight: 900;
-  cursor: pointer;
-}
-
-.mode-switcher input:checked + span {
-  border-color: var(--ff-primary);
-  background: var(--ff-primary-soft);
-  color: var(--ff-primary-strong);
-}
-
-.primary-button,
-.secondary-button,
-.new-compile-button {
-  display: inline-flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 999px;
-  font: inherit;
-  font-weight: 950;
-  cursor: pointer;
-}
-
-.primary-button {
-  background: #101d1a;
-  color: #ffffff;
-  box-shadow: 0 16px 34px rgba(16, 29, 26, 0.18);
-}
-
-.primary-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
-}
-
-.secondary-button,
-.new-compile-button {
-  border: 1px solid rgba(24, 43, 38, 0.12);
-  background: #ffffff;
-  color: var(--ff-ink);
-}
-
-.primary-button.small,
-.secondary-button.small {
-  min-height: 38px;
-  padding: 0 13px;
-  font-size: 0.84rem;
-}
-
-.status-pill {
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 999px;
-  background: #f6f8f5;
-  color: var(--ff-muted);
-  font-size: 0.76rem;
-  font-weight: 950;
-  text-transform: capitalize;
   white-space: nowrap;
 }
 
-.focus-screen {
-  display: grid;
-}
-
-.compile-panel {
-  border-color: color-mix(in srgb, var(--ff-primary) 35%, rgba(24, 43, 38, 0.1));
-}
-
-.progress-track {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: 5px;
-  margin-top: 16px;
-}
-
-.progress-track::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: var(--compile-progress);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ff-primary) 16%, transparent);
-  content: "";
-}
-
-.progress-segment {
-  position: relative;
-  z-index: 1;
-  height: 8px;
-  border-radius: 999px;
-  background: #e7ece8;
-}
-
-.progress-segment.is-active {
-  background: var(--ff-primary);
-}
-
-.progress-segment.is-complete {
-  background: var(--ff-safe);
-}
-
-.stage-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.stage-card {
-  display: grid;
-  gap: 5px;
-  padding: 12px;
-  border: 1px solid rgba(24, 43, 38, 0.08);
-  border-radius: 18px;
-  background: #fbfcfb;
-  color: var(--ff-muted);
-}
-
-.stage-card span {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border-radius: 999px;
-  background: #ffffff;
-  font-size: 0.78rem;
-  font-weight: 950;
-}
-
-.stage-card strong {
-  color: var(--ff-ink);
-  font-size: 0.88rem;
-}
-
-.stage-card small {
+.ff-chip {
+  min-height: 30px;
+  padding: 4px 11px;
+  border: 1px solid var(--soft-line);
   font-size: 0.76rem;
-  line-height: 1.3;
 }
 
-.stage-card.is-active {
-  border-color: var(--ff-primary);
-  background: var(--ff-primary-soft);
-  color: var(--ff-primary-strong);
+.ff-tag {
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  border: 1px solid var(--soft-line);
 }
 
-.stage-card.is-complete {
-  border-color: #b7ebcb;
-  background: var(--ff-safe-soft);
+.chip-ready,
+.chip-safe,
+.tone-safe {
+  background: var(--green-soft);
+  color: var(--green);
+  border-color: rgba(47,140,87,0.28);
 }
 
-.result-screen {
-  display: grid;
-  gap: 14px;
+.chip-empty,
+.chip-neutral,
+.tone-neutral {
+  background: rgba(16,17,20,0.06);
+  color: var(--muted);
 }
 
-.result-layout {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
+.chip-approval,
+.tone-approval {
+  background: var(--amber-soft);
+  color: #8b5d00;
+  border-color: rgba(201,133,29,0.34);
 }
 
-.result-icon,
-.next-icon {
-  display: grid;
-  width: 62px;
-  height: 62px;
-  place-items: center;
-  border-radius: 22px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  background: #f6f8f5;
+.chip-working,
+.tone-draft {
+  background: var(--blue-soft);
+  color: var(--blue);
+  border-color: rgba(40,104,168,0.30);
 }
 
-.result-copy h2 {
-  margin: 0;
-  color: var(--ff-ink);
-  font-size: clamp(2rem, 5vw, 4.1rem);
-  letter-spacing: -0.07em;
-  line-height: 0.96;
+.tone-blocked {
+  background: var(--red-soft);
+  color: var(--red);
+  border-color: rgba(200,70,53,0.30);
 }
 
-.result-copy h3 {
-  margin: 7px 0 0;
-  color: var(--ff-muted);
-  font-size: 1.08rem;
+.tone-clarify {
+  background: var(--violet-soft);
+  color: var(--violet);
 }
 
-.result-copy p {
-  max-width: 800px;
-  margin: 12px 0 0;
-  color: var(--ff-muted);
-  line-height: 1.5;
+.ff-process-input,
+.ff-answer-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(16,17,20,0.18);
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(255,250,240,0.88), rgba(255,250,240,0.88)),
+    linear-gradient(rgba(40,104,168,0.13) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(40,104,168,0.13) 1px, transparent 1px);
+  background-size: auto, 22px 22px, 22px 22px;
+  color: var(--ink);
+  padding: 16px;
+  font: inherit;
+  line-height: 1.6;
+  outline: none;
 }
 
-.result-pills {
+.ff-process-input:focus,
+.ff-answer-input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 4px rgba(40,104,168,0.14);
+}
+
+.ff-helper.is-warning {
+  color: var(--red);
+  font-weight: 800;
+}
+
+.ff-preset-row,
+.ff-mode-grid,
+.ff-node-tags,
+.ff-token-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 18px;
 }
 
-.stats-grid,
-.critic-count-grid {
-  display: grid;
-  gap: 12px;
-}
-
-.stats-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.stat-card,
-.critic-count-card {
-  padding: 15px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 14px 36px rgba(15, 32, 29, 0.06);
-}
-
-.stat-card h3,
-.critic-count-card strong {
-  display: block;
-  margin: 4px 0;
-  color: var(--ff-ink);
-  font-size: 1.7rem;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  text-transform: capitalize;
-}
-
-.stat-card small,
-.critic-count-card small {
-  color: var(--ff-muted);
-  font-size: 0.82rem;
-  font-weight: 850;
-}
-
-.stat-dot {
-  display: block;
-  width: 9px;
-  height: 9px;
-  margin-bottom: 10px;
-  border-radius: 999px;
-}
-
-.flow-panel {
-  padding: clamp(16px, 2.5vw, 24px);
-}
-
-.flow-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin: 18px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.flow-card {
-  display: grid;
-  min-height: 100%;
-  gap: 10px;
-  padding: 15px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 24px;
-  background: #ffffff;
-}
-
-.flow-item.is-safe .flow-card {
-  border-color: #b7ebcb;
-}
-
-.flow-item.is-approval .flow-card,
-.flow-item.is-risky .flow-card,
-.flow-item.is-blocked .flow-card {
-  border-color: #f2b8b5;
-  background: #fff8f7;
-}
-
-.flow-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.flow-index {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 999px;
-  background: #101d1a;
-  color: white;
-  font-weight: 950;
-}
-
-.flow-card strong {
-  color: var(--ff-ink);
-  line-height: 1.2;
-}
-
-.flow-card p {
-  margin: 0;
-  color: var(--ff-muted);
-  font-size: 0.9rem;
-  line-height: 1.35;
-}
-
-.flow-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: auto;
-}
-
-.critic-summary-panel {
-  display: grid;
-  gap: 14px;
-}
-
-.critic-count-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.top-finding-card,
-.question-card,
-.starter-box,
-.detail-card {
-  padding: 14px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 22px;
-  background: #ffffff;
-}
-
-.top-finding-card h3,
-.detail-card h3 {
-  margin: 8px 0 0;
-  color: var(--ff-ink);
-}
-
-.top-finding-card p,
-.detail-card p {
-  color: var(--ff-muted);
-  line-height: 1.42;
-}
-
-.next-action-panel {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 14px;
-  align-items: center;
-  border-color: color-mix(in srgb, var(--ff-primary) 32%, rgba(24, 43, 38, 0.1));
-}
-
-.next-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 18px;
-  background: #101d1a;
-  color: white;
-}
-
-.next-action-panel h2 {
-  margin: 0;
-  color: var(--ff-ink);
-  font-size: 1.18rem;
-  line-height: 1.22;
-}
-
-.details-launcher {
-  padding: clamp(16px, 2.5vw, 24px);
-}
-
-.detail-tab-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.detail-tab {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 62px;
-  padding: 12px;
-  border: 1px solid rgba(24, 43, 38, 0.1);
-  border-radius: 20px;
-  background: #ffffff;
-  color: inherit;
+.ff-preset-chip,
+.ff-mode,
+.ff-primary-btn,
+.ff-secondary-btn,
+.ff-ghost-btn,
+.ff-text-btn,
+.ff-mini-btn,
+.ff-detail-tab {
+  border: 1px solid rgba(16,17,20,0.18);
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--ink);
   font: inherit;
-  text-align: left;
+  font-weight: 850;
   cursor: pointer;
 }
 
-.detail-tab.is-active {
-  border-color: var(--ff-primary);
-  background: var(--ff-primary-soft);
+.ff-preset-chip {
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  text-align: left;
 }
 
-.detail-tab strong {
-  display: block;
-  color: var(--ff-ink);
-  font-size: 0.9rem;
+.ff-preset-chip small,
+.ff-mode small {
+  color: var(--muted);
+  font-size: 0.72rem;
 }
 
-.detail-tab small {
-  color: var(--ff-muted);
-  font-size: 0.76rem;
+.ff-preset-chip.is-active,
+.ff-mode.is-active {
+  background: var(--blue-soft);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.ff-advanced {
+  border-top: 1px dashed rgba(16,17,20,0.18);
+  padding-top: 12px;
+}
+
+.ff-advanced summary {
+  color: var(--muted);
   font-weight: 850;
+  cursor: pointer;
 }
 
-.detail-view-panel {
-  padding: clamp(16px, 2.5vw, 24px);
+.ff-mode-grid {
+  margin-top: 10px;
 }
 
-.detail-view-head,
-.inline-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.detail-stack,
-.plain-list,
-.checklist {
+.ff-mode {
   display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  gap: 3px;
+  max-width: 220px;
+  padding: 10px 12px;
 }
 
-.detail-stack {
-  margin-top: 16px;
+.ff-primary-btn,
+.ff-secondary-btn,
+.ff-ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 16px;
 }
 
-.two-column-details {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 16px;
+.ff-primary-btn {
+  background: var(--blue);
+  color: white;
+  border-color: rgba(255,255,255,0.15);
 }
 
-.detail-card strong {
-  color: var(--ff-ink);
+.ff-primary-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-.detail-card-toggle {
-  display: flex;
-  width: 100%;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+.ff-secondary-btn {
+  background: var(--paper);
+}
+
+.ff-ghost-btn {
+  background: transparent;
+}
+
+.ff-text-btn {
+  justify-self: start;
   padding: 0;
   border: 0;
   background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  color: var(--blue);
 }
 
-.detail-card-toggle strong {
-  display: block;
+.ff-mini-btn {
+  justify-self: start;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.78rem;
 }
 
-.detail-card-toggle small {
-  display: block;
-  margin-top: 3px;
-  color: var(--ff-muted);
+.ff-icon-xs { width: 14px; height: 14px; flex: 0 0 auto; }
+.ff-icon-sm { width: 18px; height: 18px; flex: 0 0 auto; }
+.ff-icon-md { width: 24px; height: 24px; flex: 0 0 auto; }
+.ff-icon-lg { width: 38px; height: 38px; flex: 0 0 auto; }
+
+.ff-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
 }
 
-.meta-grid,
-.mini-dl {
+/* Scan */
+.ff-scan-screen {
+  min-height: 64vh;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  place-items: center;
+}
+
+.ff-scan-panel {
+  width: min(100%, 900px);
+  background: rgba(244,239,227,0.97);
+}
+
+.ff-scan-panel h2 {
+  color: var(--ink);
+}
+
+.ff-scan-panel > p {
+  color: var(--muted);
+}
+
+.ff-scan-rail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin: 12px 0 0;
+  margin: 24px 0;
 }
 
-.meta-grid div,
-.mini-dl div {
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid rgba(24, 43, 38, 0.08);
-  border-radius: 16px;
-  background: #f8faf7;
+.ff-scan-node {
+  display: grid;
+  gap: 7px;
+  min-height: 82px;
+  padding: 13px;
+  border-radius: 18px;
+  background: rgba(16,17,20,0.06);
+  color: var(--muted);
 }
 
-.meta-grid dt,
-.mini-dl dt {
-  color: var(--ff-muted);
-  font-size: 0.7rem;
-  font-weight: 950;
-  text-transform: uppercase;
+.ff-scan-node span {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #aeb6bd;
 }
 
-.meta-grid dd,
-.mini-dl dd {
-  margin: 3px 0 0;
-  color: var(--ff-ink);
-  font-size: 0.9rem;
-  font-weight: 850;
-  overflow-wrap: anywhere;
+.ff-scan-node strong {
+  color: inherit;
 }
 
-.plain-list li {
+.ff-scan-node.state-active {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.ff-scan-node.state-active span {
+  background: var(--blue);
+}
+
+.ff-scan-node.state-complete {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.ff-scan-node.state-complete span {
+  background: var(--green);
+}
+
+.ff-progress-track {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(16,17,20,0.10);
+  overflow: hidden;
+}
+
+.ff-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+  transition: width 450ms ease;
+}
+
+
+.ff-answer-history {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+  padding: 12px;
+  border-radius: 18px;
+  background: rgba(16, 17, 20, 0.05);
+}
+
+.ff-answer-history article {
   display: grid;
   gap: 4px;
   padding: 10px;
-  border-radius: 16px;
-  background: #f8faf7;
+  border-radius: 14px;
+  background: var(--paper);
 }
 
-.plain-list strong {
-  color: var(--ff-ink);
+.ff-answer-history strong {
+  font-size: 0.86rem;
 }
 
-.plain-list span,
-.plain-list small {
-  color: var(--ff-muted);
-  line-height: 1.35;
-}
-
-.stacked-detail {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(24, 43, 38, 0.08);
-}
-
-.checklist li {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  color: var(--ff-muted);
-  line-height: 1.35;
-}
-
-.checklist li::before {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  margin-top: 8px;
-  border-radius: 999px;
-  background: var(--ff-primary);
-  content: "";
-}
-
-.clarify-focus-panel {
-  border-color: #f2d78c;
-  background: #fffdf8;
-}
-
-.missing-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin-top: 14px;
-}
-
-.missing-chip {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #f5e7a0;
-  color: #6b4a00;
-  font-size: 0.78rem;
-  font-weight: 900;
-}
-
-.question-stack {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.question-card {
-  display: grid;
-  gap: 5px;
-}
-
-.question-card strong {
-  color: var(--ff-ink);
-}
-
-.question-card span,
-.question-card small {
-  color: var(--ff-muted);
-}
-
-.starter-box {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.starter-box blockquote {
+.ff-answer-history p {
   margin: 0;
-  padding: 12px 14px;
-  border-left: 3px solid var(--ff-primary);
-  border-radius: 0 14px 14px 0;
-  background: var(--ff-primary-soft);
-  color: var(--ff-ink);
-  line-height: 1.55;
+  color: var(--muted);
+  line-height: 1.45;
 }
 
-.starter-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.starter-box small {
-  color: var(--ff-muted);
-  font-weight: 800;
-}
-
-.new-compile-button {
-  justify-self: center;
-  margin-top: 4px;
-}
-
-.icon,
-.icon-sm,
-.icon-lg {
-  display: block;
-  flex: 0 0 auto;
-  stroke-width: 2.2;
-}
-
-.icon {
-  width: 20px;
-  height: 20px;
-}
-
-.icon-sm {
-  width: 15px;
-  height: 15px;
-}
-
-.icon-lg {
-  width: 30px;
-  height: 30px;
-}
-
-.tone-neutral {
-  border-color: rgba(24, 43, 38, 0.1);
-  background: #f6f8f5;
-  color: var(--ff-muted);
-}
-
-.tone-safe,
-.status-safe {
-  border-color: #b7ebcb;
-  background: var(--ff-safe-soft);
-  color: var(--ff-safe);
-}
-
-.tone-draft,
-.status-working {
-  border-color: #f2d78c;
-  background: var(--ff-approval-soft);
-  color: var(--ff-approval);
-}
-
-.tone-approval {
-  border-color: #f2d78c;
-  background: var(--ff-approval-soft);
-  color: var(--ff-approval);
-}
-
-.tone-blocked,
-.status-blocked {
-  border-color: #f2b8b5;
-  background: var(--ff-blocked-soft);
-  color: var(--ff-blocked);
-}
-
-
-.ai-agent-layer-panel {
+/* Result states */
+.ff-result-screen {
   display: grid;
   gap: 18px;
 }
 
-.agent-card-grid {
+.ff-guided-question,
+.ff-blocked-screen {
   display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  place-items: center;
+  min-height: 62vh;
 }
 
-.agent-card {
+.ff-question-shell,
+.ff-blocked-card {
+  width: min(100%, 760px);
+}
+
+.ff-question-shell h2,
+.ff-question-card h3,
+.ff-blocked-card h2 {
+  color: var(--ink);
+}
+
+.ff-question-card,
+.ff-next-move {
   display: grid;
-  min-width: 0;
-  gap: 14px;
-  overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid rgba(16,17,20,0.14);
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.94);
-  padding: 16px;
-  color: var(--ff-ink);
-  box-shadow: 0 14px 36px rgba(15, 32, 29, 0.06);
+  background: var(--paper);
+  margin: 22px 0;
 }
 
-.agent-card * {
-  min-width: 0;
+.ff-question-field {
+  justify-self: start;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--violet-soft);
+  color: var(--violet);
+  font-size: 0.75rem;
+  font-weight: 900;
 }
 
-.agent-card-top {
+.ff-question-card small {
+  color: var(--violet);
+  font-weight: 750;
+}
+
+.ff-blocked-card {
+  text-align: center;
+}
+
+.ff-verdict-icon {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 18px;
+  border-radius: 22px;
+}
+
+.ff-verdict-icon.danger {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.ff-next-move {
+  text-align: left;
+  background: var(--red-soft);
+}
+
+.ff-result-actions,
+.ff-question-actions,
+.ff-workflow-actions {
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Workflow result */
+.ff-workflow-screen,
+.ff-agent-workbench,
+.ff-details-panel {
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 28px;
+  background: rgba(244,239,227,0.97);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.22);
+  padding: 26px;
+}
+
+.ff-workflow-header h2 {
+  color: var(--ink);
+}
+
+.ff-workflow-header p {
+  color: var(--muted);
+}
+
+.ff-compact-verdict {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.ff-node-canvas {
+  display: grid;
+  gap: 18px;
+  margin: 24px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ff-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.ff-node:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 21px;
+  top: 48px;
+  bottom: -18px;
+  width: 2px;
+  background: rgba(16,17,20,0.18);
+}
+
+.ff-node-port {
+  position: relative;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: var(--bg);
+  color: white;
+  font-weight: 900;
+}
+
+.ff-node-card {
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  border: 1px solid rgba(16,17,20,0.14);
+  border-radius: 20px;
+  background: var(--paper);
+}
+
+.ff-node.step-safe .ff-node-card { background: var(--green-soft); }
+.ff-node.step-approval .ff-node-card,
+.ff-node.step-risky .ff-node-card { background: var(--amber-soft); }
+.ff-node.step-blocked .ff-node-card { background: var(--red-soft); }
+
+.ff-node-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ff-node-head strong {
+  font-size: 1rem;
+}
+
+.ff-node-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.ff-workflow-actions {
+  justify-content: flex-start;
+}
+
+/* Agents + details */
+.ff-agent-workbench,
+.ff-details-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.ff-agent-workbench h3,
+.ff-details-panel h2,
+.ff-detail-card h4 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.ff-agent-grid,
+.ff-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
 }
 
-.agent-provider-pill {
-  display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
-  margin: 0;
-  border-radius: 999px;
-  padding: 0.22rem 0.6rem;
-  background: rgba(15, 23, 42, 0.06);
-  color: #334155;
-  font-size: 0.72rem;
-  font-weight: 900;
-  line-height: 1.2;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.agent-card h3 {
-  margin: 8px 0 0;
-  color: var(--ff-ink);
-  font-size: 1rem;
-  line-height: 1.22;
-}
-
-.agent-summary {
-  margin: 0;
-  color: #475569;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.agent-reason {
-  max-height: 8rem;
-  margin: -4px 0 0;
-  overflow: auto;
-  border-radius: 16px;
-  background: #f8fafc;
-  padding: 10px;
-  color: #475569;
-  font-size: 0.84rem;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  white-space: normal;
-}
-
-.agent-status-pill {
-  display: inline-flex;
-  flex: 0 0 auto;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  padding: 0 10px;
-  font-size: 0.76rem;
-  font-weight: 950;
-  white-space: nowrap;
-}
-
-.agent-status-pill.is-ai {
-  background: rgba(34, 197, 94, 0.14);
-  color: #166534;
-}
-
-.agent-status-pill.is-fallback {
-  background: rgba(245, 158, 11, 0.15);
-  color: #92400e;
-}
-
-.agent-status-pill.is-skipped {
-  background: rgba(100, 116, 139, 0.14);
-  color: #475569;
-}
-
-.agent-meta-grid {
+.ff-agent-card,
+.ff-detail-card,
+.ff-mini-section {
   display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin: 0;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid rgba(16,17,20,0.14);
+  border-radius: 18px;
+  background: var(--paper);
 }
 
-.agent-meta-grid div {
-  min-width: 0;
-  border-radius: 16px;
-  background: #f8fafc;
-  padding: 10px;
+.ff-agent-top,
+.ff-detail-tabs,
+.ff-details-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.agent-meta-grid dt {
-  color: #64748b;
-  font-size: 0.72rem;
+.ff-agent-top > span:first-child {
+  color: var(--muted);
+  font-size: 0.75rem;
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.agent-meta-grid dd {
-  margin: 4px 0 0;
-  color: #0f172a;
-  font-weight: 800;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+.ff-agent-state {
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 900;
 }
 
-.agent-details-button {
-  justify-self: end;
-  min-height: 36px;
-  border: 1px solid rgba(0, 124, 120, 0.22);
-  border-radius: 999px;
-  background: rgba(0, 124, 120, 0.08);
-  color: var(--ff-primary-strong);
-  padding: 0 12px;
+.ff-agent-state.is-ai { background: var(--green-soft); color: var(--green); }
+.ff-agent-state.is-skipped { background: rgba(16,17,20,0.08); color: var(--muted); }
+.ff-agent-state.is-fallback { background: var(--amber-soft); color: #8b5d00; }
+
+.ff-drawer-tabs,
+.ff-details-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ff-detail-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.ff-detail-tab.is-active {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.ff-detail-tab.close {
+  margin-left: auto;
+}
+
+.ff-detail-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.ff-detail-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.ff-expand-btn {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
   font: inherit;
-  font-size: 0.82rem;
-  font-weight: 950;
+  text-align: left;
   cursor: pointer;
 }
 
-.agent-details-button:hover {
-  background: rgba(0, 124, 120, 0.14);
+.ff-expand-btn small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
 }
 
-.agent-modal-backdrop {
+.ff-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ff-meta-grid div {
+  padding: 9px;
+  border-radius: 12px;
+  background: rgba(16,17,20,0.05);
+}
+
+.ff-meta-grid dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ff-meta-grid dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.ff-detail-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+/* Modal */
+.ff-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 100;
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(15, 23, 42, 0.58);
-  backdrop-filter: blur(10px);
+  background: rgba(15,23,32,0.62);
+  backdrop-filter: blur(6px);
 }
 
-.agent-modal {
-  width: min(980px, 100%);
-  max-height: min(86vh, 860px);
+.ff-modal {
+  width: min(960px, 100%);
+  max-height: min(90vh, 920px);
   overflow: auto;
-  border: 1px solid rgba(226, 232, 240, 0.82);
   border-radius: 28px;
-  background: #ffffff;
-  box-shadow: 0 30px 90px rgba(15, 23, 42, 0.32);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 32px 100px rgba(0,0,0,0.36);
 }
 
-.agent-modal-header {
+.ff-modal-header {
   position: sticky;
   top: 0;
   z-index: 1;
   display: flex;
-  align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.96);
-  padding: 22px;
-  backdrop-filter: blur(12px);
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(16,17,20,0.14);
+  background: rgba(244,239,227,0.96);
+  backdrop-filter: blur(8px);
 }
 
-.agent-modal-header h2 {
+.ff-modal-header h2 {
   margin: 0;
-  color: var(--ff-ink);
-  font-size: clamp(1.35rem, 3vw, 2rem);
-  letter-spacing: -0.04em;
 }
 
-.agent-modal-header p {
-  margin: 8px 0 0;
-  color: var(--ff-muted);
-  line-height: 1.45;
-}
-
-.agent-modal-close {
+.ff-modal-close {
+  width: 38px;
+  height: 38px;
   display: grid;
-  flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
   place-items: center;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #0f172a;
+  border: 0;
+  border-radius: 12px;
+  background: var(--red-soft);
+  color: var(--red);
   cursor: pointer;
 }
 
-.agent-modal-grid {
+.ff-modal-body {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  padding: 22px;
+  gap: 20px;
+  padding: 24px;
 }
 
-.agent-modal-card {
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 22px;
-  background: #ffffff;
-  padding: 16px;
-}
-
-.agent-modal-card.is-wide {
-  grid-column: 1 / -1;
-}
-
-.agent-modal-card h3 {
-  margin: 0 0 10px;
-  color: var(--ff-ink);
-  font-size: 1rem;
-}
-
-.agent-modal-card p {
-  margin: 0;
-  color: var(--ff-muted);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.agent-modal-note {
-  margin-top: 10px !important;
-  border-radius: 16px;
-  background: #f8fafc;
-  padding: 10px;
-  font-size: 0.86rem;
-}
-
-.agent-attempt-list {
+.ff-modal-stats {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
-.agent-attempt-list li {
+.ff-modal-stats > div,
+.ff-attempt {
   display: grid;
-  gap: 6px;
+  gap: 4px;
+  padding: 12px;
   border-radius: 16px;
-  background: #f8fafc;
-  padding: 10px;
+  background: var(--paper);
 }
 
-.agent-attempt-list li > div {
+.ff-modal-stats span,
+.ff-modal-section h3 {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ff-modal-section {
+  display: grid;
+  gap: 8px;
+}
+
+.ff-modal-section h3 {
+  margin: 0;
+}
+
+.ff-modal-section p,
+.ff-attempt p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.ff-attempt-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ff-attempt div {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.agent-attempt-list strong {
-  color: var(--ff-ink);
-}
-
-.agent-attempt-list small {
-  color: var(--ff-muted);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.agent-code-block {
-  max-height: 280px;
-  overflow: auto;
+.ff-code {
+  max-height: 320px;
   margin: 0;
-  border-radius: 16px;
-  background: #0f172a;
-  color: #e2e8f0;
   padding: 14px;
-  font-size: 0.82rem;
-  line-height: 1.45;
+  overflow: auto;
+  border-radius: 16px;
+  background: #101114;
+  color: #f8fafc;
+  font-family: "SF Mono", "Fira Code", "Roboto Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
-.tone-ai {
-  border-color: rgba(34, 197, 94, 0.26);
-  background: rgba(34, 197, 94, 0.12);
-  color: #166534;
+/* Error */
+.ff-error-panel {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: var(--red-soft);
 }
 
-@media (max-width: 980px) {
-  .input-screen,
-  .stats-grid,
-  .critic-count-grid,
-  .two-column-details,
-  .meta-grid,
-  .mini-dl {
+.ff-error-panel p:last-child {
+  margin: 0;
+  color: var(--red);
+}
+
+@media (max-width: 860px) {
+  .ff-agent-grid,
+  .ff-detail-grid,
+  .ff-scan-rail {
     grid-template-columns: 1fr;
   }
 
-  .usecase-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .stage-grid,
-  .agent-card-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .hero-panel,
-  .result-layout,
-  .next-action-panel {
+  .ff-meta-grid {
     grid-template-columns: 1fr;
-  }
-
-  .hero-mark {
-    width: 58px;
-    height: 58px;
-    border-radius: 20px;
   }
 }
 
-@media (max-width: 640px) {
-  .compiler-page {
-    padding: 12px 10px 48px;
+@media (max-width: 560px) {
+  .ff-page {
+    padding: 18px 10px 60px;
   }
 
-  .compiler-shell {
-    gap: 12px;
-  }
-
-  .hero-panel,
-  .panel,
-  .flow-panel,
-  .details-launcher,
-  .detail-view-panel {
+  .ff-hero-panel,
+  .ff-input-panel,
+  .ff-scan-panel,
+  .ff-question-shell,
+  .ff-blocked-card,
+  .ff-workflow-screen,
+  .ff-agent-workbench,
+  .ff-details-panel {
+    padding: 18px;
     border-radius: 22px;
-    padding: 14px;
   }
 
-  .usecase-list,
-  .flow-list,
-  .detail-tab-grid,
-  .agent-card-grid,
-  .agent-modal-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .bottom-controls,
-  .panel-head,
-  .detail-view-head,
-  .inline-head,
-  .detail-card-toggle {
+  .ff-topbar,
+  .ff-input-header,
+  .ff-section-head,
+  .ff-workflow-header,
+  .ff-question-actions,
+  .ff-workflow-actions,
+  .ff-result-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .mode-switcher {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .mode-switcher label,
-  .mode-switcher span,
-  .primary-button,
-  .secondary-button,
-  .new-compile-button {
+  .ff-primary-btn,
+  .ff-secondary-btn,
+  .ff-ghost-btn {
     width: 100%;
   }
 
-  .flow-list {
-    margin-top: 12px;
+  .ff-modal-backdrop {
+    padding: 10px;
   }
 
-  .starter-actions {
-    display: grid;
-    grid-template-columns: 1fr;
+  .ff-modal-body {
+    padding: 16px;
   }
 }
 </style>

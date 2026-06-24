@@ -13,7 +13,7 @@ This keeps the MVP small while still allowing:
 - API endpoints
 - server-only provider keys
 - deterministic scanner services
-- LLM router calls
+- LLM-assisted agents
 - schema validation
 - safe blueprint generation
 - fixture validation
@@ -27,10 +27,13 @@ A separate FastAPI or worker backend can be added later, but the MVP does not ne
 
 ```text
 Frontend UI
-  Nuxt app/pages/compiler.vue
-  Shows input, compile modes, main result, Safety Critic, and details on demand
+  app/pages/compiler.vue
+  Guides the user from input → clarification → workflow/blocked result
 
 Nuxt Server API
+  server/api/clarify.post.ts
+  Runs one guided clarification turn
+
   server/api/compile.post.ts
   Orchestrates one compile request and returns a validated CompileJob
 
@@ -43,9 +46,12 @@ Deterministic Services
   safetyCritic
   schemaValidator
 
-AI Router Layer
+AI Agent Layer
+  clarificationConversationAgent
   routerAgent
-  Uses Groq/Gemini/fallback only to choose a route
+  clarificationAgent
+  blueprintArchitectAgent
+  safetyCriticAgent
 
 Shared Contract
   shared/types
@@ -57,20 +63,81 @@ Shared Contract
 
 ## Important safety boundary
 
-AI is **not** allowed to generate the final blueprint.
+FlowForge may use AI to reason, route, clarify, propose, and critique, but AI does not execute anything.
 
-AI may help route the request in Balanced or Full mode, but these parts stay deterministic:
+The MVP safety rules are:
 
-- signal scan
-- risk scan
-- readiness score
-- clarification plan
-- safe blueprint generation
-- Safety Critic review
-- schema validation
-- UI main safety state
+- no real email or message sending
+- no account updates
+- no refunds or payments
+- no deletion or cancellation
+- no production connectors
+- no high-stakes automatic decisions
+- no n8n workflow execution
 
-This prevents a provider response from accidentally turning a risky workflow into an executable automation.
+Deterministic checks still enforce final safety boundaries before a compile job is returned.
+
+---
+
+## Guided clarification architecture
+
+M12 adds a new guided clarification path before compile.
+
+Endpoint:
+
+```text
+POST /api/clarify
+```
+
+Purpose:
+
+```text
+messy input
+  ↓
+Clarification Conversation Agent
+  ↓
+known facts + one next question
+  ↓
+user answer
+  ↓
+repeat until ready
+  ↓
+rewritten_compile_prompt
+  ↓
+POST /api/compile
+```
+
+The clarification conversation is represented by:
+
+```text
+shared/types/clarificationSession.ts
+server/schemas/clarificationSession.schema.ts
+```
+
+The agent implementation is:
+
+```text
+server/prompts/clarificationConversationPrompt.ts
+server/services/clarificationConversationAgent.ts
+server/api/clarify.post.ts
+```
+
+The Clarification Conversation Agent must:
+
+- ask one question at a time
+- ask contextual questions based on the user’s actual input
+- avoid generic missing-field questions when the input is messy but understandable
+- use previous answers
+- stop once enough core facts are collected
+- return `ready_to_compile=true` and `rewritten_compile_prompt`
+- avoid endless clarification loops
+- fall back deterministically when providers fail
+
+Hard stop behavior:
+
+- a small maximum question count prevents infinite questioning
+- repeated-question detection forces compile-readiness with best available facts
+- deterministic readiness inference checks whether enough facts were collected
 
 ---
 
@@ -84,20 +151,20 @@ Rule-only
   No AI calls. Same safety shape as Demo, useful for proving deterministic behavior.
 
 Balanced
-  Uses AI router if available, then deterministic blueprint + Safety Critic.
-  Best normal development mode.
+  Uses AI where allowed, then keeps deterministic safety validation.
 
 Full
-  Allows the most router/provider usage, but still does not execute actions.
-  Blueprint and Safety Critic remain deterministic.
+  Allows the most provider usage, but still does not execute actions.
 ```
+
+The guided clarification endpoint can use providers when configured. It also has deterministic fallback behavior.
 
 ---
 
-## Current compile pipeline
+## Compile pipeline
 
 ```text
-User input
+User input or rewritten_compile_prompt
   ↓
 Validate request body
   ↓
@@ -114,20 +181,22 @@ Router Agent
   ↓
 Clarification planner
   ↓
-Blueprint builder
+Clarification Agent
   ↓
-Safety Critic
+Blueprint Architect Agent or skipped clarification-safe fallback
+  ↓
+Safety Critic Agent or skipped clarification-safe fallback
+  ↓
+Deterministic Safety Critic / Safety Guard
   ↓
 Schema validation
   ↓
 CompileJob response
   ↓
-Compiler UI
+Focused compiler UI
 ```
 
-In `server/api/compile.post.ts`, the pipeline is intentionally linear and auditable.
-
-The Safety Critic runs **after** the blueprint is built because it reviews the final proposed workflow, not only the raw input.
+The compile endpoint remains auditable and schema-validated.
 
 ---
 
@@ -171,7 +240,63 @@ The returned job includes:
 
 ---
 
+## Clarification API
+
+Endpoint:
+
+```text
+POST /api/clarify
+```
+
+Request shape:
+
+```ts
+{
+  original_input: string;
+  answers?: Array<{
+    question_id: string;
+    question: string;
+    answer: string;
+  }>;
+}
+```
+
+Response shape:
+
+```ts
+ClarificationSessionResponse
+```
+
+A session contains:
+
+- original input
+- known facts
+- collected answers
+- current summary
+- one next question, or
+- `ready_to_compile=true`
+- rewritten compile prompt
+
+---
+
 ## Main services
+
+### `clarificationConversationAgent`
+
+Runs the new guided clarification session.
+
+Responsibilities:
+
+- infer known facts from messy input and previous answers
+- call Groq/Gemini when configured
+- validate structured JSON
+- ask one contextual question at a time
+- avoid repeated questions
+- stop at the question limit
+- return `rewritten_compile_prompt` when ready
+- provide deterministic fallback
+
+This is different from `clarificationPlanner`. The planner detects deterministic missing-field state inside `/api/compile`; the conversation agent guides the user before compile.
 
 ### `signalScanner`
 
@@ -187,18 +312,6 @@ Responsibilities:
 - clear output detection
 - missing critical information summary
 
-Examples of primitives:
-
-- classification
-- extraction
-- summarization
-- routing
-- drafting
-- approval
-- notification
-- record creation
-- risk detection
-
 ### `riskScanner`
 
 Turns signal risk flags into a structured risk summary.
@@ -210,30 +323,9 @@ Responsibilities:
 - human review requirement
 - safe handling notes
 
-Examples of risk categories:
-
-- external communication
-- refund or payment
-- financial
-- visa or immigration
-- medical
-- legal
-- employment
-- account access
-- personal data
-- real-world execution
-- delete or destructive action
-
 ### `readinessScorer`
 
 Scores whether the input is detailed enough to compile safely.
-
-Responsibilities:
-
-- numeric readiness score
-- strengths
-- weaknesses
-- implementation warnings
 
 Readiness does not decide safety alone. It supports clarification and UI explanation.
 
@@ -249,35 +341,13 @@ Routes include:
 - assistant-only
 - reject
 
-Provider strategy:
-
-```text
-Groq primary
-Gemini fallback
-Deterministic fallback
-```
-
-The router can influence the compile path, but it cannot directly create the blueprint or override deterministic safety.
+The router can influence the compile path, but it cannot directly execute the workflow or override final safety boundaries.
 
 ### `clarificationPlanner`
 
-Decides whether the process needs more detail before the flow should be treated as implementation-ready.
+Decides whether the compile request still needs more detail before the flow should be treated as implementation-ready.
 
-It checks:
-
-- missing trigger
-- missing data source
-- missing input data
-- missing output
-- missing decision rules
-- missing human owner
-- missing approval boundary
-- missing external action boundary
-- missing success criteria
-
-For vague input, the UI should show **Need details before flow**.
-
-For specific input, even if Groq is cautious, deterministic clarification should allow the flow to continue.
+In M12, this remains useful for compile-time validation but should no longer be the primary user-facing question generator.
 
 ### `blueprintBuilder`
 
@@ -306,8 +376,6 @@ The builder never creates an executable automation.
 
 Reviews the final blueprint after it is generated.
 
-It is deterministic and uses no LLM call.
-
 Possible statuses:
 
 ```text
@@ -326,102 +394,11 @@ Responsibilities:
 - decide the final main safety status
 - produce findings and next safe action
 
-Safety Critic rules:
-
-- clean internal workflows can be safe previews
-- external replies require human approval
-- refunds/payments require human approval, not blanket blocking
-- medical, visa/immigration, account access, legal, and destructive actions are not safe to automate
-- router false positives must not override deterministic Safety Critic status
-
 ### `schemaValidator`
 
 Validates the final `CompileJob` before returning it to the frontend.
 
 If validation fails, the API should return a server error rather than rendering unsafe or malformed UI data.
-
----
-
-## Safety Critic status meanings
-
-### `safe_internal_preview`
-
-The workflow is safe to preview internally.
-
-Typical example:
-
-```text
-Every morning, collect job application emails, extract fields,
-classify priority, and create an internal review task.
-```
-
-Expected UI:
-
-```text
-Safe internal flow
-Safe internal preview
-low risk
-0 gates
-```
-
-### `needs_human_approval`
-
-The workflow can be previewed, but one or more actions must stay gated or draft-only.
-
-Typical examples:
-
-- draft a support reply before a human sends it
-- prepare a refund case for finance review
-- route sensitive cases to a team lead
-
-Expected UI:
-
-```text
-Flow needs human gates
-Needs human approval
-medium risk
-1+ gates
-```
-
-### `needs_clarification`
-
-The input is too vague or missing important process structure.
-
-Typical example:
-
-```text
-Automate my customer messages.
-```
-
-Expected UI:
-
-```text
-Need details before flow
-Needs clarification
-```
-
-### `not_safe_to_automate`
-
-The request asks for something the MVP must not automate.
-
-Typical examples:
-
-- medical diagnosis or advice
-- visa eligibility decisions
-- legal decisions
-- account access changes
-- deleting records
-- cancelling subscriptions
-- sending high-stakes answers automatically
-
-Expected UI:
-
-```text
-Do not automate
-Not safe to automate
-high risk
-blocker
-```
 
 ---
 
@@ -433,41 +410,31 @@ Main page:
 app/pages/compiler.vue
 ```
 
-Responsibilities:
-
-- process input
-- compile mode selection
-- suggested use cases
-- loading state
-- main result panel
-- Safety Critic panel
-- flow preview
-- clarification view
-- safe alternative view
-- details on demand
-
-The UI should make one thing primary:
+M12 focused flow:
 
 ```text
-safe flow
-human-gated flow
-missing details
-do not automate
+Input screen
+  ↓
+Guided clarification if needed
+  ↓
+Compile sequence
+  ↓
+One focused result:
+  - workflow blueprint
+  - one clarification question
+  - not-safe verdict
+  ↓
+Optional details
 ```
 
-Details should remain hidden until the user asks for them.
+The first result screen should not be a technical report.
 
-Detail sections:
+Primary result rules:
 
-- Critic
-- Workflow
-- Risks
-- Dry runs
-- Router
-- Before build
-- Trace
-
-Main state should be driven by `safety_critic.overall_status`, not directly by router output.
+- If workflow is possible, show the workflow first.
+- If more data is needed, show one clarification question.
+- If not safe, show the verdict and next safe move.
+- Hide diagnostics, risks, gates, trace, providers, and Safety Critic details by default.
 
 ---
 
@@ -481,8 +448,10 @@ Important trace events:
 - router provider attempts
 - router decision selected
 - clarification planner
-- blueprint builder
-- safety critic
+- clarification agent
+- blueprint architect
+- safety critic agent
+- deterministic safety review
 - schema validation
 
 The trace is not the main UI; it belongs in details.
@@ -504,44 +473,7 @@ Expected:
 - app types compile
 - no stale schema/type mismatch
 - Safety Critic is included in the validated compile job
-
----
-
-## Demo reliability
-
-The final demo should not depend on provider availability.
-
-Demo mode should work with:
-
-```text
-0 LLM calls
-deterministic route
-deterministic blueprint
-deterministic Safety Critic
-```
-
-Balanced and Full mode can show Groq/Gemini routing when configured, but safety outcomes must remain consistent with deterministic logic.
-
----
-
-## Known architecture limits
-
-Current MVP does not include:
-
-- database persistence
-- user accounts
-- auth
-- n8n export execution
-- real automation execution
-- real email sending
-- real account updates
-- real refund/payment actions
-- production tool connectors
-- streaming backend jobs
-
-These are intentionally out of scope.
-
----
+- guided clarification endpoint compiles
 
 ## Future architecture direction
 
