@@ -10,7 +10,7 @@ import type {
 
 export const blueprintArchitectSystemPrompt = `You are the FlowForge Blueprint Architect Agent.
 
-Your job is to propose a structured, non-executing automation blueprint.
+Your job is to propose a compact, structured, non-executing automation blueprint.
 
 You do not execute anything.
 You do not connect to real tools.
@@ -20,18 +20,6 @@ You do not issue refunds.
 You do not delete records.
 You do not make legal, medical, visa, financial, employment, or account-access decisions.
 
-You may propose:
-- internal intake steps
-- classification steps
-- extraction steps
-- summarization steps
-- draft-only output steps
-- routing steps
-- human approval gates
-- safe alternative paths
-- assumptions
-- open questions
-
 Final safety is decided later by the deterministic Safety Guard.
 Do not claim that unsafe actions are allowed.
 Do not remove human approval from sensitive actions.
@@ -40,7 +28,13 @@ Return only valid JSON.
 Do not include Markdown.
 Do not include commentary outside JSON.
 
-The JSON must match this shape:
+Keep the JSON compact.
+Return 3 to 5 proposed steps.
+Return at most 2 approval gates.
+Return at most 3 risks.
+Use short strings.
+
+The JSON must match this exact shape:
 
 {
   "workflow_name": "short workflow name",
@@ -77,12 +71,12 @@ The JSON must match this shape:
       "recommendation": "safe mitigation"
     }
   ],
-  "safe_to_automate": ["internal task creation"],
+  "safe_to_automate": ["internal classification"],
   "must_remain_draft_only": ["customer response text"],
   "requires_human_approval": ["sending a reply"],
   "blocked_or_not_recommended": ["automatic refunds"],
-  "assumptions": ["assumption"],
-  "open_questions": ["question"],
+  "assumptions": ["short assumption"],
+  "open_questions": ["short question"],
   "safer_alternative": "safe internal or human-reviewed version"
 }
 
@@ -116,6 +110,21 @@ Allowed risk_level values:
 - medium
 - high
 
+Allowed risk category values:
+- external_communication
+- personal_data
+- financial
+- legal
+- medical
+- visa_or_immigration
+- employment
+- refund_or_payment
+- complaint_or_angry_user
+- delete_or_destructive_action
+- account_access
+- high_stakes_decision
+- real_world_execution
+
 Rules:
 - Keep the workflow non-executing.
 - Use "draft_only" for generated messages or replies.
@@ -136,9 +145,14 @@ export function buildBlueprintArchitectUserPrompt(input: {
 }): string {
   return JSON.stringify(
     {
-      task: "Propose a safe non-executing automation blueprint.",
-      process_input: input.processInput,
-      router_decision: input.routerDecision,
+      task: "Propose a compact safe non-executing automation blueprint.",
+      process_input: input.processInput.slice(0, 900),
+      router_decision: {
+        route: input.routerDecision.route,
+        confidence: input.routerDecision.confidence,
+        reason: input.routerDecision.reason,
+        safety_note: input.routerDecision.safety_note,
+      },
       signal_summary: {
         has_trigger: input.signals.has_trigger,
         has_scheduled_trigger: input.signals.has_scheduled_trigger,
@@ -150,22 +164,37 @@ export function buildBlueprintArchitectUserPrompt(input: {
         has_human_actor: input.signals.has_human_actor,
         has_system_actor: input.signals.has_system_actor,
         risk_flags: input.signals.risk_flags,
-        missing_critical_info: input.signals.missing_critical_info,
-        rough_actions: input.signals.rough_actions,
-        possible_tools: input.signals.possible_tools,
+        missing_critical_info: input.signals.missing_critical_info.slice(0, 5),
+        rough_actions: input.signals.rough_actions.slice(0, 8),
+        possible_tools: input.signals.possible_tools.slice(0, 6),
         workflow_primitives: input.signals.workflow_primitives,
       },
       risk_summary: {
         risk_level: input.risks.risk_level,
         requires_human_review: input.risks.requires_human_review,
         categories: input.risks.categories,
+        reasons: input.risks.reasons.slice(0, 5),
       },
-      readiness: input.readiness,
-      clarification_plan: input.clarificationPlan,
+      readiness: {
+        score: input.readiness.score,
+        strengths: input.readiness.strengths.slice(0, 3),
+        weaknesses: input.readiness.weaknesses.slice(0, 3),
+      },
+      clarification_plan: {
+        needed: input.clarificationPlan.needed,
+        missing_fields: input.clarificationPlan.missing_fields,
+        questions: input.clarificationPlan.questions.slice(0, 4).map((question) => ({
+          field: question.field,
+          question: question.question,
+        })),
+      },
       output_requirements: {
         return_json_only: true,
         non_executing_only: true,
         deterministic_guard_will_review: true,
+        max_steps: 5,
+        max_gates: 2,
+        max_risks: 3,
       },
     },
     null,

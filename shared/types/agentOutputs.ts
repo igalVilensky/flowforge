@@ -29,6 +29,36 @@ export type AgentOutputMeta = {
     reason: string;
 };
 
+export type AgentProviderDebugAttempt = {
+    provider: AgentOutputProvider;
+    attempted: boolean;
+    success: boolean;
+    error_summary?: string;
+    raw_response?: string;
+    parsed_response?: unknown;
+};
+
+export type AgentDebugInfo = {
+    agent_id: "clarification_agent" | "blueprint_architect_agent" | "safety_critic_agent";
+    agent_label: string;
+    mode: string;
+    system_prompt: string;
+    user_prompt: string;
+    provider_attempts: AgentProviderDebugAttempt[];
+    selected_provider: AgentOutputProvider;
+    used_ai: boolean;
+    fallback_used: boolean;
+    status: AgentOutputStatus;
+    llm_calls_made: number;
+    final_output: unknown;
+};
+
+export type AgentDebugBundle = {
+    clarification_agent?: AgentDebugInfo;
+    blueprint_architect_agent?: AgentDebugInfo;
+    safety_critic_agent?: AgentDebugInfo;
+};
+
 export type ClarificationAgentQuestion = {
     field: ClarificationField;
     question: string;

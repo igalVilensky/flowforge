@@ -22,9 +22,14 @@ import {
   Sparkles,
   UserCheck,
   Workflow as WorkflowIcon,
+  X,
   XCircle,
 } from "lucide-vue-next";
 
+import type {
+  AgentDebugInfo,
+  AgentProviderDebugAttempt,
+} from "../../shared/types/agentOutputs";
 import type {
   CompileJob,
   CompileMode,
@@ -88,13 +93,18 @@ type TextDisplayItem = {
 };
 
 type AiAgentCard = {
+  id: "clarification_agent" | "blueprint_architect_agent" | "safety_critic_agent";
   label: string;
   provider: string;
   usedAi: boolean;
   status: string;
   confidence: string;
   summary: string;
+  reason: string;
   metrics: TextDisplayItem[];
+  acceptedOutput: unknown;
+  debug?: AgentDebugInfo;
+  debugAvailable: boolean;
 };
 
 const examples: ExampleProcess[] = [
@@ -174,6 +184,7 @@ const compileReplayFinished = ref(false);
 const errorMessage = ref("");
 const inputGuardMessage = ref("");
 const activeDetail = ref<DetailView>(null);
+const activeAgentDetailsId = ref<AiAgentCard["id"] | null>(null);
 
 let compileRunToken = 0;
 const compileReplayTimers = new Set<number>();
@@ -211,6 +222,7 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
 
   return [
     {
+      id: "clarification_agent",
       label: "Clarification Agent",
       provider: clarification?.provider ?? "deterministic",
       usedAi: clarification?.used_ai ?? false,
@@ -221,12 +233,17 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
           ? `Improved ${clarification.questions.length} clarification question(s).`
           : clarification.reason
         : "No clarification agent output yet.",
+      reason: clarification?.reason ?? "No clarification agent output yet.",
       metrics: [
         { label: "Questions", value: String(clarification?.questions.length ?? 0) },
         { label: "Mode", value: job.value.mode },
       ],
+      acceptedOutput: clarification,
+      debug: job.value.agent_debug?.clarification_agent,
+      debugAvailable: Boolean(job.value.agent_debug?.clarification_agent),
     },
     {
+      id: "blueprint_architect_agent",
       label: "Blueprint Architect Agent",
       provider: blueprintArchitect?.provider ?? "deterministic",
       usedAi: blueprintArchitect?.used_ai ?? false,
@@ -237,12 +254,17 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
           ? `Proposed ${blueprintArchitect.proposed_steps.length} step(s) and ${blueprintArchitect.proposed_human_approval_gates.length} gate(s).`
           : blueprintArchitect.reason
         : "No blueprint architect output yet.",
+      reason: blueprintArchitect?.reason ?? "No blueprint architect output yet.",
       metrics: [
         { label: "Proposed steps", value: String(blueprintArchitect?.proposed_steps.length ?? 0) },
         { label: "Proposed gates", value: String(blueprintArchitect?.proposed_human_approval_gates.length ?? 0) },
       ],
+      acceptedOutput: blueprintArchitect,
+      debug: job.value.agent_debug?.blueprint_architect_agent,
+      debugAvailable: Boolean(job.value.agent_debug?.blueprint_architect_agent),
     },
     {
+      id: "safety_critic_agent",
       label: "Safety Critic Agent",
       provider: criticAgent?.provider ?? "deterministic",
       usedAi: criticAgent?.used_ai ?? false,
@@ -253,12 +275,56 @@ const aiAgentCards = computed<AiAgentCard[]>(() => {
           ? `Found ${criticAgent.concerns.length} critique concern(s).`
           : criticAgent.reason
         : "No safety critic agent output yet.",
+      reason: criticAgent?.reason ?? "No safety critic agent output yet.",
       metrics: [
         { label: "Concerns", value: String(criticAgent?.concerns.length ?? 0) },
         { label: "Final authority", value: "Safety Guard" },
       ],
+      acceptedOutput: criticAgent,
+      debug: job.value.agent_debug?.safety_critic_agent,
+      debugAvailable: Boolean(job.value.agent_debug?.safety_critic_agent),
     },
   ];
+});
+
+const activeAgentDetails = computed(() => {
+  if (!activeAgentDetailsId.value) return null;
+  return aiAgentCards.value.find((agent) => agent.id === activeAgentDetailsId.value) ?? null;
+});
+
+const activeAgentDetailsJson = computed(() => {
+  if (!activeAgentDetails.value?.acceptedOutput) return "{}";
+  return stringifyDebugValue(activeAgentDetails.value.acceptedOutput);
+});
+
+const activeAgentDebug = computed(() => activeAgentDetails.value?.debug ?? null);
+
+const activeAgentDebugFinalOutputJson = computed(() => {
+  if (!activeAgentDebug.value?.final_output) return activeAgentDetailsJson.value;
+  return stringifyDebugValue(activeAgentDebug.value.final_output);
+});
+
+const activeAgentProviderAttempts = computed<AgentProviderDebugAttempt[]>(() => {
+  return activeAgentDebug.value?.provider_attempts ?? [];
+});
+
+const successfulProviderAttempt = computed(() => {
+  return activeAgentProviderAttempts.value.find((attempt) => attempt.success && attempt.raw_response)
+    ?? activeAgentProviderAttempts.value.find((attempt) => attempt.raw_response)
+    ?? null;
+});
+
+const activeAgentRawResponse = computed(() => {
+  return successfulProviderAttempt.value?.raw_response
+    ?? "No raw provider response is available for this agent. It may have been skipped, deterministic, or failed before returning content.";
+});
+
+const activeAgentParsedResponse = computed(() => {
+  if (successfulProviderAttempt.value?.parsed_response === undefined) {
+    return "No parsed provider response is available for this agent.";
+  }
+
+  return stringifyDebugValue(successfulProviderAttempt.value.parsed_response);
 });
 
 const compileRunComplete = computed(() => compileRunState.value === "complete" && Boolean(job.value));
@@ -640,6 +706,16 @@ function previewText(value?: string | null, limit = PREVIEW_TEXT_LIMIT): string 
   return `${text.slice(0, limit - 3)}...`;
 }
 
+function stringifyDebugValue(value: unknown): string {
+  if (typeof value === "string") return value;
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function usesAiRouter(selectedMode: CompileMode): boolean {
   return selectedMode === "balanced" || selectedMode === "full";
 }
@@ -781,6 +857,14 @@ function resetDetails(): void {
 
 function openDetail(view: NonNullable<DetailView>): void {
   activeDetail.value = activeDetail.value === view ? null : view;
+}
+
+function openAgentDetails(agentId: AiAgentCard["id"]): void {
+  activeAgentDetailsId.value = agentId;
+}
+
+function closeAgentDetails(): void {
+  activeAgentDetailsId.value = null;
 }
 
 function toggleStep(stepId: string): void {
@@ -1033,15 +1117,19 @@ onBeforeUnmount(() => {
             <article v-for="agent in aiAgentCards" :key="agent.label" class="agent-card">
               <div class="agent-card-top">
                 <div>
-                  <p class="eyebrow">{{ sentenceLabel(agent.provider) }}</p>
+                  <p class="agent-provider-pill">{{ sentenceLabel(agent.provider) }}</p>
                   <h3>{{ agent.label }}</h3>
                 </div>
-                <span :class="['status-pill', agent.usedAi ? 'tone-ai' : 'tone-neutral']">
-                  {{ agent.usedAi ? 'AI used' : 'Fallback' }}
+                <span :class="['agent-status-pill', agent.usedAi ? 'is-ai' : agent.status === 'skipped' ? 'is-skipped' : 'is-fallback']">
+                  {{ agent.usedAi ? 'AI used' : agent.status === 'skipped' ? 'Skipped' : 'Fallback' }}
                 </span>
               </div>
 
-              <p>{{ agent.summary }}</p>
+              <p class="agent-summary">{{ agent.summary }}</p>
+
+              <p v-if="agent.reason && agent.reason !== agent.summary" class="agent-reason">
+                {{ agent.reason }}
+              </p>
 
               <dl class="agent-meta-grid">
                 <div>
@@ -1057,9 +1145,100 @@ onBeforeUnmount(() => {
                   <dd>{{ metric.value }}</dd>
                 </div>
               </dl>
+
+              <button class="agent-details-button" type="button" @click="openAgentDetails(agent.id)">
+                {{ agent.debugAvailable ? "View AI details" : "View output" }}
+              </button>
             </article>
           </div>
         </article>
+
+        <Teleport to="body">
+          <div v-if="activeAgentDetails" class="agent-modal-backdrop" @click.self="closeAgentDetails">
+            <section class="agent-modal" role="dialog" aria-modal="true" :aria-label="`${activeAgentDetails.label} details`">
+              <header class="agent-modal-header">
+                <div>
+                  <p class="eyebrow">AI usage details</p>
+                  <h2>{{ activeAgentDetails.label }}</h2>
+                  <p>
+                    Current UI data is shown now. Prompt/raw response fields will populate after the backend debug payload is added.
+                  </p>
+                </div>
+                <button class="agent-modal-close" type="button" aria-label="Close AI details" @click="closeAgentDetails">
+                  <X class="icon" aria-hidden="true" />
+                </button>
+              </header>
+
+              <div class="agent-modal-grid">
+                <article class="agent-modal-card">
+                  <h3>Usage summary</h3>
+                  <dl class="mini-dl">
+                    <div><dt>Provider</dt><dd>{{ sentenceLabel(activeAgentDetails.provider) }}</dd></div>
+                    <div><dt>AI used</dt><dd>{{ yesNo(activeAgentDetails.usedAi) }}</dd></div>
+                    <div><dt>Status</dt><dd>{{ sentenceLabel(activeAgentDetails.status) }}</dd></div>
+                    <div><dt>Confidence</dt><dd>{{ sentenceLabel(activeAgentDetails.confidence) }}</dd></div>
+                    <div><dt>LLM calls</dt><dd>{{ activeAgentDebug?.llm_calls_made ?? 0 }}</dd></div>
+                    <div v-for="metric in activeAgentDetails.metrics" :key="`modal-${metric.label}`">
+                      <dt>{{ metric.label }}</dt>
+                      <dd>{{ metric.value }}</dd>
+                    </div>
+                  </dl>
+                </article>
+
+                <article class="agent-modal-card">
+                  <h3>Outcome</h3>
+                  <p>{{ activeAgentDetails.summary }}</p>
+                  <p v-if="activeAgentDetails.reason" class="agent-modal-note">{{ activeAgentDetails.reason }}</p>
+                  <p class="agent-modal-note">
+                    Token detail currently shows call count only. Exact provider token totals need usage metadata from Groq/Gemini providers.
+                  </p>
+                </article>
+
+                <article class="agent-modal-card is-wide">
+                  <h3>Provider attempts</h3>
+                  <ul class="agent-attempt-list">
+                    <li v-for="attempt in activeAgentProviderAttempts" :key="`${activeAgentDetails.id}-${attempt.provider}-${attempt.attempted}-${attempt.success}`">
+                      <div>
+                        <strong>{{ sentenceLabel(attempt.provider) }}</strong>
+                        <span :class="['status-pill', attempt.success ? 'tone-safe' : attempt.attempted ? 'tone-blocked' : 'tone-neutral']">
+                          {{ attempt.success ? "Success" : attempt.attempted ? "Failed" : "Not attempted" }}
+                        </span>
+                      </div>
+                      <small v-if="attempt.error_summary">{{ attempt.error_summary }}</small>
+                      <small v-else-if="attempt.raw_response">Raw response captured.</small>
+                      <small v-else>No raw provider response captured.</small>
+                    </li>
+                  </ul>
+                </article>
+
+                <article class="agent-modal-card is-wide">
+                  <h3>System prompt</h3>
+                  <pre class="agent-code-block">{{ activeAgentDebug?.system_prompt || "No system prompt available. The agent was likely skipped before prompting." }}</pre>
+                </article>
+
+                <article class="agent-modal-card is-wide">
+                  <h3>User prompt sent to agent</h3>
+                  <pre class="agent-code-block">{{ activeAgentDebug?.user_prompt || "No user prompt available. The agent was likely skipped before prompting." }}</pre>
+                </article>
+
+                <article class="agent-modal-card is-wide">
+                  <h3>Raw provider response</h3>
+                  <pre class="agent-code-block">{{ activeAgentRawResponse }}</pre>
+                </article>
+
+                <article class="agent-modal-card is-wide">
+                  <h3>Parsed provider response</h3>
+                  <pre class="agent-code-block">{{ activeAgentParsedResponse }}</pre>
+                </article>
+
+                <article class="agent-modal-card is-wide">
+                  <h3>Final accepted output</h3>
+                  <pre class="agent-code-block">{{ activeAgentDebugFinalOutputJson }}</pre>
+                </article>
+              </div>
+            </section>
+          </div>
+        </Teleport>
 
         <article v-if="resultMode === 'clarify' && clarificationPlan" class="panel clarify-focus-panel">
           <div class="panel-head">
@@ -1393,7 +1572,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <button class="new-compile-button" type="button" @click="job = null; compileRunState = 'idle'; resetDetails()">
+        <button class="new-compile-button" type="button" @click="job = null; activeAgentDetailsId = null; compileRunState = 'idle'; resetDetails()">
           Compile another process
         </button>
       </section>
@@ -2354,11 +2533,19 @@ onBeforeUnmount(() => {
 
 .agent-card {
   display: grid;
+  min-width: 0;
   gap: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 22px;
-  background: rgba(15, 23, 42, 0.52);
+  background: rgba(255, 255, 255, 0.94);
   padding: 16px;
+  color: var(--ff-ink);
+  box-shadow: 0 14px 36px rgba(15, 32, 29, 0.06);
+}
+
+.agent-card * {
+  min-width: 0;
 }
 
 .agent-card-top {
@@ -2368,15 +2555,79 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
-.agent-card h3 {
-  margin: 4px 0 0;
-  color: var(--text);
-  font-size: 1rem;
+.agent-provider-pill {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  border-radius: 999px;
+  padding: 0.22rem 0.6rem;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1.2;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.agent-card p {
+.agent-card h3 {
+  margin: 8px 0 0;
+  color: var(--ff-ink);
+  font-size: 1rem;
+  line-height: 1.22;
+}
+
+.agent-summary {
   margin: 0;
-  color: var(--muted);
+  color: #475569;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-reason {
+  max-height: 8rem;
+  margin: -4px 0 0;
+  overflow: auto;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 10px;
+  color: #475569;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.agent-status-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.agent-status-pill.is-ai {
+  background: rgba(34, 197, 94, 0.14);
+  color: #166534;
+}
+
+.agent-status-pill.is-fallback {
+  background: rgba(245, 158, 11, 0.15);
+  color: #92400e;
+}
+
+.agent-status-pill.is-skipped {
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
 }
 
 .agent-meta-grid {
@@ -2387,27 +2638,201 @@ onBeforeUnmount(() => {
 }
 
 .agent-meta-grid div {
+  min-width: 0;
   border-radius: 16px;
-  background: rgba(15, 23, 42, 0.7);
+  background: #f8fafc;
   padding: 10px;
 }
 
 .agent-meta-grid dt {
-  color: var(--muted);
+  color: #64748b;
   font-size: 0.72rem;
+  font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .agent-meta-grid dd {
   margin: 4px 0 0;
-  color: var(--text);
-  font-weight: 700;
+  color: #0f172a;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-details-button {
+  justify-self: end;
+  min-height: 36px;
+  border: 1px solid rgba(0, 124, 120, 0.22);
+  border-radius: 999px;
+  background: rgba(0, 124, 120, 0.08);
+  color: var(--ff-primary-strong);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.agent-details-button:hover {
+  background: rgba(0, 124, 120, 0.14);
+}
+
+.agent-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(10px);
+}
+
+.agent-modal {
+  width: min(980px, 100%);
+  max-height: min(86vh, 860px);
+  overflow: auto;
+  border: 1px solid rgba(226, 232, 240, 0.82);
+  border-radius: 28px;
+  background: #ffffff;
+  box-shadow: 0 30px 90px rgba(15, 23, 42, 0.32);
+}
+
+.agent-modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.96);
+  padding: 22px;
+  backdrop-filter: blur(12px);
+}
+
+.agent-modal-header h2 {
+  margin: 0;
+  color: var(--ff-ink);
+  font-size: clamp(1.35rem, 3vw, 2rem);
+  letter-spacing: -0.04em;
+}
+
+.agent-modal-header p {
+  margin: 8px 0 0;
+  color: var(--ff-muted);
+  line-height: 1.45;
+}
+
+.agent-modal-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.agent-modal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 22px;
+}
+
+.agent-modal-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 22px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.agent-modal-card.is-wide {
+  grid-column: 1 / -1;
+}
+
+.agent-modal-card h3 {
+  margin: 0 0 10px;
+  color: var(--ff-ink);
+  font-size: 1rem;
+}
+
+.agent-modal-card p {
+  margin: 0;
+  color: var(--ff-muted);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.agent-modal-note {
+  margin-top: 10px !important;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 10px;
+  font-size: 0.86rem;
+}
+
+.agent-attempt-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-attempt-list li {
+  display: grid;
+  gap: 6px;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.agent-attempt-list li > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-attempt-list strong {
+  color: var(--ff-ink);
+}
+
+.agent-attempt-list small {
+  color: var(--ff-muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-code-block {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  border-radius: 16px;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .tone-ai {
-  background: rgba(129, 140, 248, 0.16);
-  color: #c7d2fe;
+  border-color: rgba(34, 197, 94, 0.26);
+  background: rgba(34, 197, 94, 0.12);
+  color: #166534;
 }
 
 @media (max-width: 980px) {
@@ -2463,7 +2888,8 @@ onBeforeUnmount(() => {
   .usecase-list,
   .flow-list,
   .detail-tab-grid,
-  .agent-card-grid {
+  .agent-card-grid,
+  .agent-modal-grid {
     grid-template-columns: 1fr;
   }
 

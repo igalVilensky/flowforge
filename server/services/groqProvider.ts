@@ -6,13 +6,14 @@ export async function callGroq(
 ): Promise<string> {
   const apiKey = process.env.GROQ_API_KEY;
   const model = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+  const maxTokens = Number(process.env.GROQ_MAX_TOKENS || 900);
 
   if (!apiKey) {
     throw new Error("GROQ_API_KEY is not set.");
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
 
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -29,23 +30,48 @@ export async function callGroq(
         ],
         temperature: 0,
         response_format: { type: "json_object" },
-        max_tokens: 500,
+        max_tokens: maxTokens,
       }),
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      throw new Error(`Groq API error: ${response.statusText}`);
+      const errorBody = await response.text().catch(() => "");
+
+      throw new Error(
+        [
+          `Groq API error: ${response.status} ${response.statusText}`,
+          errorBody ? `Response body: ${errorBody.slice(0, 800)}` : "",
+        ]
+          .filter(Boolean)
+          .join(" | "),
+      );
     }
 
-    const data = await response.json() as any;
-    const content = data.choices?.[0]?.message?.content;
+    const data = await response.json() as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+        };
+        finish_reason?: string;
+      }>;
+    };
+
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content;
+    const finishReason = choice?.finish_reason;
 
     if (!content) {
       throw new Error("Groq API returned empty content.");
     }
 
-    return content as string;
+    if (finishReason === "length") {
+      throw new Error(
+        `Groq response was truncated because max_tokens=${maxTokens} was too low.`,
+      );
+    }
+
+    return content;
   } finally {
     clearTimeout(timeoutId);
   }

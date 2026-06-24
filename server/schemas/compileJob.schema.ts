@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type {
+  AgentDebugBundle,
+  AgentDebugInfo,
+  AgentOutputProvider,
+  AgentOutputStatus,
   BlueprintArchitectOutput,
   ClarificationAgentOutput,
   SafetyCriticAgentOutput,
@@ -200,13 +204,26 @@ export const safetyCriticReviewSchema = z
   })
   .strict() satisfies z.ZodType<SafetyCriticReview>;
 
+const agentOutputProviderSchema = z.enum([
+  "groq",
+  "gemini",
+  "deterministic",
+]) satisfies z.ZodType<AgentOutputProvider>;
+
+const agentOutputStatusSchema = z.enum([
+  "used_ai",
+  "fallback_used",
+  "skipped",
+  "failed_validation",
+]) satisfies z.ZodType<AgentOutputStatus>;
+
 const agentOutputMetaSchema = z
   .object({
-    provider: z.enum(["groq", "gemini", "deterministic"]),
+    provider: agentOutputProviderSchema,
     used_ai: z.boolean(),
     fallback_used: z.boolean(),
     confidence: z.enum(["low", "medium", "high"]),
-    status: z.enum(["used_ai", "fallback_used", "skipped", "failed_validation"]),
+    status: agentOutputStatusSchema,
     reason: requiredString,
   })
   .strict();
@@ -306,6 +323,46 @@ export const safetyCriticAgentOutputSchema = agentOutputMetaSchema
   })
   .strict() satisfies z.ZodType<SafetyCriticAgentOutput>;
 
+const agentProviderDebugAttemptSchema = z
+  .object({
+    provider: agentOutputProviderSchema,
+    attempted: z.boolean(),
+    success: z.boolean(),
+    error_summary: z.string().optional(),
+    raw_response: z.string().optional(),
+    parsed_response: z.unknown().optional(),
+  })
+  .strict();
+
+const agentDebugInfoSchema = z
+  .object({
+    agent_id: z.enum([
+      "clarification_agent",
+      "blueprint_architect_agent",
+      "safety_critic_agent",
+    ]),
+    agent_label: requiredString,
+    mode: requiredString,
+    system_prompt: z.string(),
+    user_prompt: z.string(),
+    provider_attempts: z.array(agentProviderDebugAttemptSchema),
+    selected_provider: agentOutputProviderSchema,
+    used_ai: z.boolean(),
+    fallback_used: z.boolean(),
+    status: agentOutputStatusSchema,
+    llm_calls_made: z.number().int().nonnegative(),
+    final_output: z.unknown(),
+  })
+  .strict() satisfies z.ZodType<AgentDebugInfo>;
+
+const agentDebugBundleSchema = z
+  .object({
+    clarification_agent: agentDebugInfoSchema.optional(),
+    blueprint_architect_agent: agentDebugInfoSchema.optional(),
+    safety_critic_agent: agentDebugInfoSchema.optional(),
+  })
+  .strict() satisfies z.ZodType<AgentDebugBundle>;
+
 export const compileJobSchema = z
   .object({
     id: requiredString,
@@ -323,6 +380,7 @@ export const compileJobSchema = z
     clarification_agent: clarificationAgentOutputSchema.optional(),
     blueprint_architect_agent: blueprintArchitectOutputSchema.optional(),
     safety_critic_agent: safetyCriticAgentOutputSchema.optional(),
+    agent_debug: agentDebugBundleSchema.optional(),
     safety_critic: safetyCriticReviewSchema.optional(),
     result: safeAutomationBlueprintSchema,
     agent_trace: z.array(agentTraceEventSchema),

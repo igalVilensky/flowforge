@@ -4,6 +4,7 @@ import type {
   PipelineStep,
   TokenUsage,
 } from "../../shared/types/compileJob";
+import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
 import { buildBlueprint } from "../services/blueprintBuilder";
 import { buildClarificationPlan } from "../services/clarificationPlanner";
 import { runBlueprintArchitectAgent } from "../services/blueprintArchitectAgent";
@@ -58,6 +59,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
   const routerResult = await routeCompileRequest(trimmedInput, signals, risks, readiness, mode);
+
   const clarificationPlan = buildClarificationPlan({
     processInput: trimmedInput,
     signals,
@@ -74,15 +76,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     clarificationPlan,
   });
 
-  const blueprintArchitectAgentResult = await runBlueprintArchitectAgent({
-    processInput: trimmedInput,
-    mode,
-    signals,
-    risks,
-    readiness,
-    routerDecision: routerResult.decision,
-    clarificationPlan,
-  });
+  const shouldSkipDesignAgents = clarificationPlan.needed || routerResult.decision.route === "needs_clarification";
 
   const displayedPrimitives = signals.workflow_primitives.filter((primitive) => {
     if (primitive === "approval" && !risks.requires_human_review) {
@@ -109,12 +103,9 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     ? `Clarification Agent improved ${clarificationAgentResult.output.questions.length} question(s).`
     : `Clarification Agent fallback: ${clarificationAgentResult.output.reason}`;
 
-  const blueprintArchitectSummary = blueprintArchitectAgentResult.output.used_ai
-    ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
-    : `Blueprint Architect fallback: ${blueprintArchitectAgentResult.output.reason}`;
-
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
+
   const result = buildBlueprint({
     jobId,
     processInput: trimmedInput,
@@ -123,6 +114,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     readiness,
     mode,
   });
+
   const safetyCriticReview = buildSafetyCriticReview({
     signals,
     risks,
@@ -132,17 +124,193 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     blueprint: result,
   });
 
-  const safetyCriticAgentResult = await runSafetyCriticAgent({
-    processInput: trimmedInput,
+  const skippedBlueprintArchitectOutput = {
+    provider: "deterministic" as const,
+    used_ai: false,
+    fallback_used: true,
+    confidence: "high" as const,
+    status: "skipped" as const,
+    reason: "Blueprint Architect Agent skipped because clarification is needed before proposing an implementation-ready blueprint.",
+    workflow_name: "Clarification-first blueprint proposal",
+    summary: "The request needs more detail before the AI Blueprint Architect should propose a workflow.",
+    proposed_steps: [
+      {
+        id: "collect_missing_details",
+        label: "Collect missing details",
+        primitive: "intake" as const,
+        description: "Ask the missing clarification questions before designing the workflow.",
+        input: "User process description and clarification plan",
+        output: "Clarified workflow requirements",
+        automation_policy: "assist_only" as const,
+        risk_level: risks.risk_level,
+        approval_required: true,
+      },
+      {
+        id: "review_safe_boundaries",
+        label: "Review safe boundaries",
+        primitive: "risk_detection" as const,
+        description: "Confirm what must remain draft-only, human-approved, or blocked.",
+        input: "Clarified requirements",
+        output: "Safe automation boundary",
+        automation_policy: "human_approval" as const,
+        risk_level: risks.risk_level,
+        approval_required: true,
+      },
+      {
+        id: "recompile_after_clarification",
+        label: "Recompile after clarification",
+        primitive: "reporting" as const,
+        description: "Run FlowForge again after the missing details are answered.",
+        input: "Clarified process description",
+        output: "Updated non-executing blueprint preview",
+        automation_policy: "blocked_in_mvp" as const,
+        risk_level: "low" as const,
+        approval_required: false,
+      },
+    ],
+    proposed_human_approval_gates: [
+      {
+        id: "review_before_design",
+        label: "Review before design",
+        reason: "Clarification is required before a safe implementation-ready workflow can be proposed.",
+        applies_to_step_ids: ["collect_missing_details", "review_safe_boundaries"],
+        required: true,
+      },
+    ],
+    proposed_risks: risks.categories.map((category) => ({
+      id: `risk_${category}`,
+      category,
+      label: category.replaceAll("_", " "),
+      risk_level: risks.risk_level,
+      reason: "Detected before clarification was complete.",
+      recommendation: "Answer missing details and keep sensitive or external actions human-reviewed.",
+    })),
+    safe_to_automate: ["Collect clarification answers for review."],
+    must_remain_draft_only: signals.has_external_action
+      ? ["Any external message or action must remain draft-only until reviewed."]
+      : [],
+    requires_human_approval: risks.requires_human_review
+      ? ["A human owner must approve the clarified workflow boundary."]
+      : [],
+    blocked_or_not_recommended: [],
+    assumptions: ["FlowForge should not spend blueprint-design AI calls until clarification is complete."],
+    open_questions: clarificationPlan.questions.map((question) => question.question),
+    safer_alternative: "Ask the clarification questions first, then recompile the workflow.",
+  };
+
+  const skippedBlueprintArchitectDebug: AgentDebugInfo = {
+    agent_id: "blueprint_architect_agent",
+    agent_label: "Blueprint Architect Agent",
     mode,
-    signals,
-    risks,
-    readiness,
-    routerDecision: routerResult.decision,
-    clarificationPlan,
-    deterministicBlueprint: result,
-    blueprintArchitectOutput: blueprintArchitectAgentResult.output,
-  });
+    system_prompt: "",
+    user_prompt: "Skipped before prompting because clarification is needed.",
+    provider_attempts: [
+      {
+        provider: "deterministic",
+        attempted: true,
+        success: true,
+        parsed_response: skippedBlueprintArchitectOutput,
+      },
+    ],
+    selected_provider: "deterministic",
+    used_ai: false,
+    fallback_used: true,
+    status: "skipped",
+    llm_calls_made: 0,
+    final_output: skippedBlueprintArchitectOutput,
+  };
+
+  const blueprintArchitectAgentResult = shouldSkipDesignAgents
+    ? {
+      output: skippedBlueprintArchitectOutput,
+      llm_calls_made: 0,
+      debug: skippedBlueprintArchitectDebug,
+    }
+    : await runBlueprintArchitectAgent({
+      processInput: trimmedInput,
+      mode,
+      signals,
+      risks,
+      readiness,
+      routerDecision: routerResult.decision,
+      clarificationPlan,
+    });
+
+  const blueprintArchitectSummary = blueprintArchitectAgentResult.output.used_ai
+    ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
+    : `Blueprint Architect fallback: ${blueprintArchitectAgentResult.output.reason}`;
+
+  const skippedSafetyCriticAgentOutput = {
+    provider: "deterministic" as const,
+    used_ai: false,
+    fallback_used: true,
+    confidence: "high" as const,
+    status: "skipped" as const,
+    reason: "Safety Critic Agent skipped because clarification is needed before critiquing an implementation-ready blueprint.",
+    critic_summary: "Clarify the workflow before asking the AI Safety Critic to critique the proposed automation.",
+    concerns: [
+      {
+        id: "needs_clarification_before_critique",
+        type: "needs_clarification" as const,
+        severity: "warning" as const,
+        title: "Clarification needed before AI critique",
+        explanation: "The workflow is missing required details, so the AI critic would be reviewing an unstable blueprint.",
+        recommendation: "Answer the clarification questions and recompile before requesting AI critique.",
+        related_step_ids: result.steps.map((step) => step.id),
+        related_risk_ids: result.risks.map((risk) => risk.id),
+        related_gate_ids: result.human_approval_gates.map((gate) => gate.id),
+      },
+    ],
+    recommended_human_gates: result.human_approval_gates.map((gate) => gate.label),
+    draft_only_warnings: signals.has_external_action
+      ? ["Any generated external message, reply, notification, or email must remain draft-only."]
+      : [],
+    blocked_or_not_recommended: result.not_safe_to_automate.length > 0
+      ? result.not_safe_to_automate
+      : result.not_recommended,
+    safer_alternative: "Answer the clarification questions, revise the process description, and recompile.",
+    final_advice: "Do not treat this as implementation-ready until the missing details are answered.",
+  };
+
+  const skippedSafetyCriticDebug: AgentDebugInfo = {
+    agent_id: "safety_critic_agent",
+    agent_label: "Safety Critic Agent",
+    mode,
+    system_prompt: "",
+    user_prompt: "Skipped before prompting because clarification is needed.",
+    provider_attempts: [
+      {
+        provider: "deterministic",
+        attempted: true,
+        success: true,
+        parsed_response: skippedSafetyCriticAgentOutput,
+      },
+    ],
+    selected_provider: "deterministic",
+    used_ai: false,
+    fallback_used: true,
+    status: "skipped",
+    llm_calls_made: 0,
+    final_output: skippedSafetyCriticAgentOutput,
+  };
+
+  const safetyCriticAgentResult = shouldSkipDesignAgents
+    ? {
+      output: skippedSafetyCriticAgentOutput,
+      llm_calls_made: 0,
+      debug: skippedSafetyCriticDebug,
+    }
+    : await runSafetyCriticAgent({
+      processInput: trimmedInput,
+      mode,
+      signals,
+      risks,
+      readiness,
+      routerDecision: routerResult.decision,
+      clarificationPlan,
+      deterministicBlueprint: result,
+      blueprintArchitectOutput: blueprintArchitectAgentResult.output,
+    });
 
   const safetyCriticAgentSummary = safetyCriticAgentResult.output.used_ai
     ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
@@ -171,8 +339,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       description: "Summarize risk level and review requirements with deterministic rules.",
       status: "done",
       tool_name: "riskScanner",
-      output_summary: `Risk level is ${risks.risk_level}; human review ${risks.requires_human_review ? "is required" : "is not required"
-        }.`,
+      output_summary: `Risk level is ${risks.risk_level}; human review ${risks.requires_human_review ? "is required" : "is not required"}.`,
     },
     {
       id: "clarification_planner",
@@ -194,8 +361,10 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     {
       id: "blueprint_architect_agent",
       label: "Blueprint Architect Agent",
-      description: "Use an AI agent, when available, to propose a structured non-executing blueprint.",
-      status: "done",
+      description: shouldSkipDesignAgents
+        ? "Skipped AI blueprint design because clarification is needed first."
+        : "Use an AI agent, when available, to propose a structured non-executing blueprint.",
+      status: shouldSkipDesignAgents ? "skipped" : "done",
       tool_name: "blueprintArchitectAgent",
       output_summary: blueprintArchitectSummary,
       token_cost: blueprintArchitectAgentResult.llm_calls_made,
@@ -219,8 +388,10 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     {
       id: "safety_critic_agent",
       label: "Safety Critic Agent",
-      description: "Use an AI agent, when available, to critique the proposed automation blueprint.",
-      status: "done",
+      description: shouldSkipDesignAgents
+        ? "Skipped AI critique because clarification is needed first."
+        : "Use an AI agent, when available, to critique the proposed automation blueprint.",
+      status: shouldSkipDesignAgents ? "skipped" : "done",
       tool_name: "safetyCriticAgent",
       output_summary: safetyCriticAgentSummary,
       token_cost: safetyCriticAgentResult.llm_calls_made,
@@ -264,6 +435,11 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     clarification_agent: clarificationAgentResult.output,
     blueprint_architect_agent: blueprintArchitectAgentResult.output,
     safety_critic_agent: safetyCriticAgentResult.output,
+    agent_debug: {
+      clarification_agent: clarificationAgentResult.debug,
+      blueprint_architect_agent: blueprintArchitectAgentResult.debug,
+      safety_critic_agent: safetyCriticAgentResult.debug,
+    },
     safety_critic: safetyCriticReview,
     agent_trace: [
       {
@@ -334,8 +510,8 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         id: "trace_blueprint_architect_agent",
         timestamp: now,
         actor: blueprintArchitectAgentResult.output.used_ai ? "llm" : "system",
-        action: "Ran Blueprint Architect Agent",
-        status: "completed",
+        action: shouldSkipDesignAgents ? "Skipped Blueprint Architect Agent" : "Ran Blueprint Architect Agent",
+        status: shouldSkipDesignAgents ? "skipped" : "completed",
         tool_name: "blueprintArchitectAgent",
         output_summary: blueprintArchitectSummary,
         metadata: {
@@ -343,6 +519,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
           fallback_used: blueprintArchitectAgentResult.output.fallback_used,
           provider: blueprintArchitectAgentResult.output.provider,
           proposed_step_count: blueprintArchitectAgentResult.output.proposed_steps.length,
+          skipped_because_clarification_needed: shouldSkipDesignAgents,
         },
       },
       {
@@ -375,8 +552,8 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
         id: "trace_safety_critic_agent",
         timestamp: now,
         actor: safetyCriticAgentResult.output.used_ai ? "llm" : "system",
-        action: "Ran Safety Critic Agent",
-        status: "completed",
+        action: shouldSkipDesignAgents ? "Skipped Safety Critic Agent" : "Ran Safety Critic Agent",
+        status: shouldSkipDesignAgents ? "skipped" : "completed",
         tool_name: "safetyCriticAgent",
         output_summary: safetyCriticAgentSummary,
         metadata: {
@@ -384,6 +561,7 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
           fallback_used: safetyCriticAgentResult.output.fallback_used,
           provider: safetyCriticAgentResult.output.provider,
           concern_count: safetyCriticAgentResult.output.concerns.length,
+          skipped_because_clarification_needed: shouldSkipDesignAgents,
         },
       },
     ],
@@ -404,3 +582,4 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
 
   return validation.data;
 });
+

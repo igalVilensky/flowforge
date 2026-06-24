@@ -1,4 +1,7 @@
+import { ZodError } from "zod";
 import type {
+    AgentDebugInfo,
+    AgentProviderDebugAttempt,
     AgentOutputProvider,
     BlueprintArchitectOutput,
 } from "../../shared/types/agentOutputs";
@@ -33,7 +36,26 @@ export type RunBlueprintArchitectAgentInput = {
 export type BlueprintArchitectAgentResult = {
     output: BlueprintArchitectOutput;
     llm_calls_made: number;
+    debug: AgentDebugInfo;
 };
+
+function summarizeError(error: unknown): string {
+    if (error instanceof ZodError) {
+        return error.issues
+            .slice(0, 5)
+            .map((issue) => {
+                const path = issue.path.length > 0 ? issue.path.join(".") : "root";
+                return `${path}: ${issue.message}`;
+            })
+            .join("; ");
+    }
+
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return "Unknown error.";
+}
 
 function safeParseJSON(rawText: string): unknown {
     try {
@@ -153,14 +175,16 @@ function buildFallbackOutput(input: RunBlueprintArchitectAgentInput, provider: A
 }
 
 function normalizeAgentOutput(parsed: unknown, provider: AgentOutputProvider): BlueprintArchitectOutput {
+    const raw = parsed as Record<string, unknown>;
+
     return blueprintArchitectOutputSchema.parse({
-        ...(parsed as Record<string, unknown>),
+        ...raw,
         provider,
         used_ai: true,
         fallback_used: false,
         status: "used_ai",
-        confidence: "medium",
-        reason: "AI generated a structured blueprint proposal.",
+        confidence: raw.confidence ?? "medium",
+        reason: raw.reason ?? "AI generated a structured blueprint proposal.",
     });
 }
 
@@ -168,14 +192,30 @@ function shouldUseAi(mode: CompileMode): boolean {
     return mode === "balanced" || mode === "full";
 }
 
-export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAgentInput): Promise<BlueprintArchitectAgentResult> {
-    if (!shouldUseAi(input.mode)) {
-        return {
-            output: buildFallbackOutput(input, "deterministic", `Blueprint Architect Agent skipped in ${input.mode} mode.`),
-            llm_calls_made: 0,
-        };
-    }
+function buildDebugInfo(input: {
+    mode: CompileMode;
+    userPrompt: string;
+    providerAttempts: AgentProviderDebugAttempt[];
+    output: BlueprintArchitectOutput;
+    llmCallsMade: number;
+}): AgentDebugInfo {
+    return {
+        agent_id: "blueprint_architect_agent",
+        agent_label: "Blueprint Architect Agent",
+        mode: input.mode,
+        system_prompt: blueprintArchitectSystemPrompt,
+        user_prompt: input.userPrompt,
+        provider_attempts: input.providerAttempts,
+        selected_provider: input.output.provider,
+        used_ai: input.output.used_ai,
+        fallback_used: input.output.fallback_used,
+        status: input.output.status,
+        llm_calls_made: input.llmCallsMade,
+        final_output: input.output,
+    };
+}
 
+export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAgentInput): Promise<BlueprintArchitectAgentResult> {
     const prompt = buildBlueprintArchitectUserPrompt({
         processInput: input.processInput,
         signals: input.signals,
@@ -185,46 +225,156 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
         clarificationPlan: input.clarificationPlan,
     });
 
+    if (!shouldUseAi(input.mode)) {
+        const output = buildFallbackOutput(input, "deterministic", `Blueprint Architect Agent skipped in ${input.mode} mode.`);
+        const providerAttempts: AgentProviderDebugAttempt[] = [
+            {
+                provider: "deterministic",
+                attempted: true,
+                success: true,
+                parsed_response: output,
+            },
+        ];
+
+        return {
+            output,
+            llm_calls_made: 0,
+            debug: buildDebugInfo({
+                mode: input.mode,
+                userPrompt: prompt,
+                providerAttempts,
+                output,
+                llmCallsMade: 0,
+            }),
+        };
+    }
+
     let llmCallsMade = 0;
+    const providerAttempts: AgentProviderDebugAttempt[] = [];
 
     if (process.env.GROQ_API_KEY) {
+        let rawResponse: string | undefined;
+        let parsedResponse: unknown;
+
         try {
             llmCallsMade += 1;
-            const raw = await callGroq(prompt, blueprintArchitectSystemPrompt);
-            const parsed = safeParseJSON(raw);
+            rawResponse = await callGroq(prompt, blueprintArchitectSystemPrompt);
+            parsedResponse = safeParseJSON(rawResponse);
+            const output = normalizeAgentOutput(parsedResponse, "groq");
+
+            providerAttempts.push({
+                provider: "groq",
+                attempted: true,
+                success: true,
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
 
             return {
-                output: normalizeAgentOutput(parsed, "groq"),
+                output,
                 llm_calls_made: llmCallsMade,
+                debug: buildDebugInfo({
+                    mode: input.mode,
+                    userPrompt: prompt,
+                    providerAttempts,
+                    output,
+                    llmCallsMade,
+                }),
             };
-        } catch {
-            // Try Gemini fallback below.
+        } catch (error) {
+            providerAttempts.push({
+                provider: "groq",
+                attempted: true,
+                success: false,
+                error_summary: summarizeError(error),
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
         }
+    } else {
+        providerAttempts.push({
+            provider: "groq",
+            attempted: false,
+            success: false,
+            error_summary: "GROQ_API_KEY is not configured.",
+        });
     }
 
     if (process.env.GEMINI_API_KEY) {
+        let rawResponse: string | undefined;
+        let parsedResponse: unknown;
+
         try {
             llmCallsMade += 1;
-            const raw = await callGemini(prompt, blueprintArchitectSystemPrompt);
-            const parsed = safeParseJSON(raw);
+            rawResponse = await callGemini(prompt, blueprintArchitectSystemPrompt);
+            parsedResponse = safeParseJSON(rawResponse);
+            const output = normalizeAgentOutput(parsedResponse, "gemini");
+
+            providerAttempts.push({
+                provider: "gemini",
+                attempted: true,
+                success: true,
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
 
             return {
-                output: normalizeAgentOutput(parsed, "gemini"),
+                output,
                 llm_calls_made: llmCallsMade,
+                debug: buildDebugInfo({
+                    mode: input.mode,
+                    userPrompt: prompt,
+                    providerAttempts,
+                    output,
+                    llmCallsMade,
+                }),
             };
-        } catch {
-            // Deterministic fallback below.
+        } catch (error) {
+            providerAttempts.push({
+                provider: "gemini",
+                attempted: true,
+                success: false,
+                error_summary: summarizeError(error),
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
         }
+    } else {
+        providerAttempts.push({
+            provider: "gemini",
+            attempted: false,
+            success: false,
+            error_summary: "GEMINI_API_KEY is not configured.",
+        });
     }
 
+    const providerErrors = providerAttempts
+        .filter((attempt) => attempt.error_summary)
+        .map((attempt) => `${attempt.provider}: ${attempt.error_summary}`);
+
+    const reason =
+        llmCallsMade > 0
+            ? `Blueprint Architect Agent provider output failed validation or parsing. ${providerErrors.join(" | ")}`
+            : "No Blueprint Architect Agent provider key was configured. Deterministic fallback was used.";
+
+    const output = buildFallbackOutput(input, "deterministic", reason);
+
+    providerAttempts.push({
+        provider: "deterministic",
+        attempted: true,
+        success: true,
+        parsed_response: output,
+    });
+
     return {
-        output: buildFallbackOutput(
-            input,
-            "deterministic",
-            llmCallsMade > 0
-                ? "Blueprint Architect Agent provider output failed validation or parsing. Deterministic fallback was used."
-                : "No Blueprint Architect Agent provider key was configured. Deterministic fallback was used.",
-        ),
+        output,
         llm_calls_made: llmCallsMade,
+        debug: buildDebugInfo({
+            mode: input.mode,
+            userPrompt: prompt,
+            providerAttempts,
+            output,
+            llmCallsMade,
+        }),
     };
 }

@@ -1,5 +1,6 @@
 import type { AgentTraceEvent } from "./agentTrace";
 import type {
+  AgentDebugBundle,
   BlueprintArchitectOutput,
   ClarificationAgentOutput,
   SafetyCriticAgentOutput,
@@ -137,6 +138,7 @@ export type CompileJob = {
   clarification_agent?: ClarificationAgentOutput;
   blueprint_architect_agent?: BlueprintArchitectOutput;
   safety_critic_agent?: SafetyCriticAgentOutput;
+  agent_debug?: AgentDebugBundle;
   safety_critic?: SafetyCriticReview;
   result: SafeAutomationBlueprint;
   agent_trace: AgentTraceEvent[];

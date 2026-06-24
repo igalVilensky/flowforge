@@ -1,4 +1,7 @@
+import { ZodError } from "zod";
 import type {
+    AgentDebugInfo,
+    AgentProviderDebugAttempt,
     AgentOutputProvider,
     BlueprintArchitectOutput,
     SafetyCriticAgentOutput,
@@ -37,7 +40,26 @@ export type RunSafetyCriticAgentInput = {
 export type SafetyCriticAgentResult = {
     output: SafetyCriticAgentOutput;
     llm_calls_made: number;
+    debug: AgentDebugInfo;
 };
+
+function summarizeError(error: unknown): string {
+    if (error instanceof ZodError) {
+        return error.issues
+            .slice(0, 5)
+            .map((issue) => {
+                const path = issue.path.length > 0 ? issue.path.join(".") : "root";
+                return `${path}: ${issue.message}`;
+            })
+            .join("; ");
+    }
+
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return "Unknown error.";
+}
 
 function safeParseJSON(rawText: string): unknown {
     try {
@@ -143,14 +165,16 @@ function buildFallbackOutput(input: RunSafetyCriticAgentInput, provider: AgentOu
 }
 
 function normalizeAgentOutput(parsed: unknown, provider: AgentOutputProvider): SafetyCriticAgentOutput {
+    const raw = parsed as Record<string, unknown>;
+
     return safetyCriticAgentOutputSchema.parse({
-        ...(parsed as Record<string, unknown>),
+        ...raw,
         provider,
         used_ai: true,
         fallback_used: false,
         status: "used_ai",
-        confidence: "medium",
-        reason: "AI generated a structured safety critique.",
+        confidence: raw.confidence ?? "medium",
+        reason: raw.reason ?? "AI generated a structured safety critique.",
     });
 }
 
@@ -158,14 +182,30 @@ function shouldUseAi(mode: CompileMode): boolean {
     return mode === "full";
 }
 
-export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Promise<SafetyCriticAgentResult> {
-    if (!shouldUseAi(input.mode)) {
-        return {
-            output: buildFallbackOutput(input, "deterministic", `Safety Critic Agent skipped in ${input.mode} mode.`),
-            llm_calls_made: 0,
-        };
-    }
+function buildDebugInfo(input: {
+    mode: CompileMode;
+    userPrompt: string;
+    providerAttempts: AgentProviderDebugAttempt[];
+    output: SafetyCriticAgentOutput;
+    llmCallsMade: number;
+}): AgentDebugInfo {
+    return {
+        agent_id: "safety_critic_agent",
+        agent_label: "Safety Critic Agent",
+        mode: input.mode,
+        system_prompt: safetyCriticAgentSystemPrompt,
+        user_prompt: input.userPrompt,
+        provider_attempts: input.providerAttempts,
+        selected_provider: input.output.provider,
+        used_ai: input.output.used_ai,
+        fallback_used: input.output.fallback_used,
+        status: input.output.status,
+        llm_calls_made: input.llmCallsMade,
+        final_output: input.output,
+    };
+}
 
+export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Promise<SafetyCriticAgentResult> {
     const prompt = buildSafetyCriticAgentUserPrompt({
         processInput: input.processInput,
         signals: input.signals,
@@ -177,46 +217,156 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
         blueprintArchitectOutput: input.blueprintArchitectOutput,
     });
 
+    if (!shouldUseAi(input.mode)) {
+        const output = buildFallbackOutput(input, "deterministic", `Safety Critic Agent skipped in ${input.mode} mode.`);
+        const providerAttempts: AgentProviderDebugAttempt[] = [
+            {
+                provider: "deterministic",
+                attempted: true,
+                success: true,
+                parsed_response: output,
+            },
+        ];
+
+        return {
+            output,
+            llm_calls_made: 0,
+            debug: buildDebugInfo({
+                mode: input.mode,
+                userPrompt: prompt,
+                providerAttempts,
+                output,
+                llmCallsMade: 0,
+            }),
+        };
+    }
+
     let llmCallsMade = 0;
+    const providerAttempts: AgentProviderDebugAttempt[] = [];
 
     if (process.env.GROQ_API_KEY) {
+        let rawResponse: string | undefined;
+        let parsedResponse: unknown;
+
         try {
             llmCallsMade += 1;
-            const raw = await callGroq(prompt, safetyCriticAgentSystemPrompt);
-            const parsed = safeParseJSON(raw);
+            rawResponse = await callGroq(prompt, safetyCriticAgentSystemPrompt);
+            parsedResponse = safeParseJSON(rawResponse);
+            const output = normalizeAgentOutput(parsedResponse, "groq");
+
+            providerAttempts.push({
+                provider: "groq",
+                attempted: true,
+                success: true,
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
 
             return {
-                output: normalizeAgentOutput(parsed, "groq"),
+                output,
                 llm_calls_made: llmCallsMade,
+                debug: buildDebugInfo({
+                    mode: input.mode,
+                    userPrompt: prompt,
+                    providerAttempts,
+                    output,
+                    llmCallsMade,
+                }),
             };
-        } catch {
-            // Try Gemini fallback below.
+        } catch (error) {
+            providerAttempts.push({
+                provider: "groq",
+                attempted: true,
+                success: false,
+                error_summary: summarizeError(error),
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
         }
+    } else {
+        providerAttempts.push({
+            provider: "groq",
+            attempted: false,
+            success: false,
+            error_summary: "GROQ_API_KEY is not configured.",
+        });
     }
 
     if (process.env.GEMINI_API_KEY) {
+        let rawResponse: string | undefined;
+        let parsedResponse: unknown;
+
         try {
             llmCallsMade += 1;
-            const raw = await callGemini(prompt, safetyCriticAgentSystemPrompt);
-            const parsed = safeParseJSON(raw);
+            rawResponse = await callGemini(prompt, safetyCriticAgentSystemPrompt);
+            parsedResponse = safeParseJSON(rawResponse);
+            const output = normalizeAgentOutput(parsedResponse, "gemini");
+
+            providerAttempts.push({
+                provider: "gemini",
+                attempted: true,
+                success: true,
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
 
             return {
-                output: normalizeAgentOutput(parsed, "gemini"),
+                output,
                 llm_calls_made: llmCallsMade,
+                debug: buildDebugInfo({
+                    mode: input.mode,
+                    userPrompt: prompt,
+                    providerAttempts,
+                    output,
+                    llmCallsMade,
+                }),
             };
-        } catch {
-            // Deterministic fallback below.
+        } catch (error) {
+            providerAttempts.push({
+                provider: "gemini",
+                attempted: true,
+                success: false,
+                error_summary: summarizeError(error),
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
         }
+    } else {
+        providerAttempts.push({
+            provider: "gemini",
+            attempted: false,
+            success: false,
+            error_summary: "GEMINI_API_KEY is not configured.",
+        });
     }
 
+    const providerErrors = providerAttempts
+        .filter((attempt) => attempt.error_summary)
+        .map((attempt) => `${attempt.provider}: ${attempt.error_summary}`);
+
+    const reason =
+        llmCallsMade > 0
+            ? `Safety Critic Agent provider output failed validation or parsing. ${providerErrors.join(" | ")}`
+            : "No Safety Critic Agent provider key was configured. Deterministic fallback was used.";
+
+    const output = buildFallbackOutput(input, "deterministic", reason);
+
+    providerAttempts.push({
+        provider: "deterministic",
+        attempted: true,
+        success: true,
+        parsed_response: output,
+    });
+
     return {
-        output: buildFallbackOutput(
-            input,
-            "deterministic",
-            llmCallsMade > 0
-                ? "Safety Critic Agent provider output failed validation or parsing. Deterministic fallback was used."
-                : "No Safety Critic Agent provider key was configured. Deterministic fallback was used.",
-        ),
+        output,
         llm_calls_made: llmCallsMade,
+        debug: buildDebugInfo({
+            mode: input.mode,
+            userPrompt: prompt,
+            providerAttempts,
+            output,
+            llmCallsMade,
+        }),
     };
 }
