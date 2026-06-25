@@ -6,6 +6,7 @@ import {
   primitiveRules,
   repeatedProcessPhrases,
   riskRules,
+  shouldIgnoreRealWorldExecutionRisk,
   schedulePhrases,
   sensitiveRiskCategories,
   systemActorPhrases,
@@ -156,6 +157,10 @@ function detectRiskFlags(input: string): RiskCategory[] {
     }
 
     for (const category of rule.categories) {
+      if (category === "real_world_execution" && shouldIgnoreRealWorldExecutionRisk(input)) {
+        continue;
+      }
+
       addUnique(riskFlags, category);
     }
   }

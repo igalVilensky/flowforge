@@ -248,6 +248,23 @@ export const primitiveRules: readonly PrimitiveRule[] = [
   },
 ];
 
+const automaticExecutionPatterns = [
+  /\b(?:send|approve|charge|delete|update)\b.{0,40}\bautomatically\b/,
+  /\bautomatically\b.{0,40}\b(?:send|approve|charge|delete|update)\b/,
+];
+
+function hasNegatedAutomaticExecutionBoundary(input: string): boolean {
+  return /\b(?:do not|don't|never|without|no)\b.{0,60}\b(?:send|approve|charge|delete|update|change|refund)\b.{0,50}\bautomatically\b/.test(input)
+    || /\b(?:do not|don't|never|without|no)\b.{0,60}\b(?:send|approve|charge|delete|update|change|refund)\b/.test(input);
+}
+
+function realWorldExecutionMatches(input: string): boolean {
+  if (hasNegatedAutomaticExecutionBoundary(input)) return false;
+  return automaticExecutionPatterns.some((pattern) => pattern.test(input))
+    || ["send automatically", "approve automatically", "charge automatically", "delete automatically", "update automatically"]
+      .some((phrase) => input.includes(phrase));
+}
+
 export const riskRules: readonly RiskRule[] = [
   {
     categories: ["external_communication"],
@@ -287,17 +304,8 @@ export const riskRules: readonly RiskRule[] = [
   },
   {
     categories: ["real_world_execution"],
-    phrases: [
-      "send automatically",
-      "approve automatically",
-      "charge automatically",
-      "delete automatically",
-      "update automatically",
-    ],
-    patterns: [
-      /\b(?:send|approve|charge|delete|update)\b.{0,40}\bautomatically\b/,
-      /\bautomatically\b.{0,40}\b(?:send|approve|charge|delete|update)\b/,
-    ],
+    phrases: [],
+    patterns: automaticExecutionPatterns,
   },
 ];
 
@@ -310,3 +318,7 @@ export const sensitiveRiskCategories: readonly RiskCategory[] = [
   "refund_or_payment",
   "account_access",
 ];
+
+export function shouldIgnoreRealWorldExecutionRisk(input: string): boolean {
+  return !realWorldExecutionMatches(input);
+}

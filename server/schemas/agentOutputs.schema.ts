@@ -161,20 +161,20 @@ export const safetyCriticAgentConcernSchema = z
         title: requiredString,
         explanation: requiredString,
         recommendation: requiredString,
-        related_step_ids: z.array(requiredString),
-        related_risk_ids: z.array(requiredString),
-        related_gate_ids: z.array(requiredString),
+        related_step_ids: z.array(requiredString).default([]),
+        related_risk_ids: z.array(requiredString).default([]),
+        related_gate_ids: z.array(requiredString).default([]),
     })
-    .strict() satisfies z.ZodType<SafetyCriticAgentConcern>;
+    .strip() satisfies z.ZodType<SafetyCriticAgentConcern>;
 
 export const safetyCriticAgentOutputSchema = agentOutputMetaSchema
     .extend({
         critic_summary: requiredString,
-        concerns: z.array(safetyCriticAgentConcernSchema),
-        recommended_human_gates: z.array(requiredString),
-        draft_only_warnings: z.array(requiredString),
-        blocked_or_not_recommended: z.array(requiredString),
+        concerns: z.array(safetyCriticAgentConcernSchema).default([]),
+        recommended_human_gates: z.array(requiredString).default([]),
+        draft_only_warnings: z.array(requiredString).default([]),
+        blocked_or_not_recommended: z.array(requiredString).default([]),
         safer_alternative: requiredString,
         final_advice: requiredString,
     })
-    .strict() satisfies z.ZodType<SafetyCriticAgentOutput>;
+    .strip() satisfies z.ZodType<SafetyCriticAgentOutput>;

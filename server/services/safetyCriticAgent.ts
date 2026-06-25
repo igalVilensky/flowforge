@@ -78,16 +78,22 @@ function safeParseJSON(rawText: string): unknown {
 function buildFallbackOutput(input: RunSafetyCriticAgentInput, provider: AgentOutputProvider, reason: string): SafetyCriticAgentOutput {
     const hasExternalAction = input.signals.has_external_action;
     const needsHumanReview = input.risks.requires_human_review || input.deterministicBlueprint.human_approval_gates.length > 0;
-    const hasBlockers = input.deterministicBlueprint.not_safe_to_automate.length > 0
-        || input.risks.categories.some((category) =>
-            [
-                "legal",
-                "medical",
-                "visa_or_immigration",
-                "account_access",
-                "delete_or_destructive_action",
-            ].includes(category),
-        );
+
+    const hardBlockerCategories = [
+        "legal",
+        "medical",
+        "visa_or_immigration",
+        "delete_or_destructive_action",
+    ];
+
+    const hasBlockers =
+        input.deterministicBlueprint.automation_boundary === "not_safe_to_automate"
+        || input.deterministicBlueprint.steps.some((step) =>
+            step.automation_policy === "blocked_in_mvp"
+            || step.automation_policy === "not_recommended"
+            || step.real_world_execution === "blocked_in_mvp",
+        )
+        || input.risks.categories.some((category) => hardBlockerCategories.includes(category));
 
     return {
         provider,
@@ -139,7 +145,7 @@ function buildFallbackOutput(input: RunSafetyCriticAgentInput, provider: AgentOu
                         type: "blocked_in_mvp" as const,
                         severity: "blocker" as const,
                         title: "Blocked in MVP",
-                        explanation: "The workflow touches a category that FlowForge should not automate in the MVP.",
+                        explanation: "The workflow touches a hard-blocked category that FlowForge should not automate in the MVP.",
                         recommendation: "Use an internal summary and escalate to a qualified human owner.",
                         related_step_ids: input.deterministicBlueprint.steps.map((step) => step.id),
                         related_risk_ids: input.deterministicBlueprint.risks.map((risk) => risk.id),
@@ -152,8 +158,11 @@ function buildFallbackOutput(input: RunSafetyCriticAgentInput, provider: AgentOu
         draft_only_warnings: hasExternalAction
             ? ["Any generated external message, reply, notification, or email must remain draft-only."]
             : [],
-        blocked_or_not_recommended: input.deterministicBlueprint.not_safe_to_automate.length > 0
-            ? input.deterministicBlueprint.not_safe_to_automate
+        blocked_or_not_recommended: hasBlockers
+            ? [
+                ...input.deterministicBlueprint.not_recommended,
+                ...input.deterministicBlueprint.not_safe_to_automate,
+            ]
             : input.deterministicBlueprint.not_recommended,
         safer_alternative: "Create an internal summary and route it to a human reviewer before any real-world action.",
         final_advice: hasBlockers

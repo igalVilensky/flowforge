@@ -35,7 +35,6 @@ const HARD_BLOCKED_CATEGORIES: RiskCategory[] = [
     "legal",
     "medical",
     "visa_or_immigration",
-    "account_access",
     "delete_or_destructive_action",
 ];
 
@@ -45,6 +44,7 @@ const HUMAN_APPROVAL_CATEGORIES: RiskCategory[] = [
     "employment",
     "external_communication",
     "personal_data",
+    "account_access",
     "high_stakes_decision",
     "real_world_execution",
 ];
@@ -116,6 +116,13 @@ function isSafeInternalPreview(input: BuildSafetyCriticReviewInput): boolean {
         && (blueprint.automation_boundary === "fully_automatable" || blueprint.automation_boundary === "partially_automatable");
 }
 
+
+function hasBlockingClarificationNeed(clarificationPlan?: ClarificationPlan): boolean {
+    if (clarificationPlan?.needed !== true) return false;
+
+    return clarificationPlan.missing_fields.some((field) => field !== "success_criteria");
+}
+
 function buildOverallStatus(input: BuildSafetyCriticReviewInput): SafetyCriticReview["overall_status"] {
     const { signals, risks, routerDecision, clarificationPlan, blueprint } = input;
 
@@ -129,7 +136,7 @@ function buildOverallStatus(input: BuildSafetyCriticReviewInput): SafetyCriticRe
 
     // Important: do not let the AI router alone force clarification.
     // The deterministic clarification plan is the source of truth for whether details are actually missing.
-    if (clarificationPlan?.needed === true) {
+    if (hasBlockingClarificationNeed(clarificationPlan)) {
         return "needs_clarification";
     }
 
@@ -199,14 +206,14 @@ function buildFindings(input: BuildSafetyCriticReviewInput, overallStatus: Safet
         }));
     }
 
-    if (clarificationPlan?.needed === true) {
+    if (hasBlockingClarificationNeed(clarificationPlan)) {
         findings.push(createFinding({
             id: "safety_finding_needs_clarification",
             type: "needs_clarification",
             severity: "warning",
             title: "Clarification needed before implementation",
             explanation:
-                clarificationPlan.reason
+                clarificationPlan?.reason
                 || "The process description is not specific enough to trust as an implementation-ready automation blueprint.",
             recommendation:
                 "Answer the clarification questions, improve the prompt, and recompile before implementation.",
@@ -259,7 +266,7 @@ function buildFindings(input: BuildSafetyCriticReviewInput, overallStatus: Safet
             severity: "blocker",
             title: "Unsafe automation is blocked",
             explanation:
-                "This workflow includes hard-blocked automation boundaries such as legal, medical, visa, account-access, or destructive actions.",
+                "This workflow includes hard-blocked automation boundaries such as legal, medical, visa/immigration, or destructive actions.",
             recommendation:
                 "Convert the workflow into internal review, draft-only output, or human-approved task creation.",
             related_step_ids: unique([
