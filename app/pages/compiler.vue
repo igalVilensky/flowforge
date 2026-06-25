@@ -49,6 +49,7 @@ const selectedExampleLabel = ref<string | null>(null);
 const clarificationRateLimitMessage = ref("");
 const clarificationLastResponse = ref<ClarificationSessionResponse | null>(null);
 const activeAgentDetailsId = ref<string | null>(null);
+const showModeMenu = ref(false);
 
 const examples = [
   {
@@ -73,11 +74,23 @@ const examples = [
 ];
 
 const modes: Array<{ value: CompileMode; label: string; hint: string }> = [
-  { value: "demo", label: "Demo", hint: "no AI" },
-  { value: "rule_only", label: "Rule", hint: "deterministic" },
-  { value: "balanced", label: "Balanced", hint: "AI + rules" },
-  { value: "full", label: "Full", hint: "agents" },
+  { value: "rule_only", label: "Rule", hint: "deterministic only" },
+  { value: "balanced", label: "Balanced", hint: "router + clarifier AI" },
+  { value: "full", label: "Full", hint: "all agents" },
 ];
+
+const modeExpectations: Record<Exclude<CompileMode, "demo">, string> = {
+  rule_only: "Expected: deterministic scanner, deterministic blueprint, deterministic safety review. No LLM agent should be used.",
+  balanced: "Expected: AI router/clarifier when helpful, deterministic blueprint and deterministic safety review.",
+  full: "Expected: AI router, Blueprint Architect, and Safety Critic when providers are available; deterministic fallback explains failures.",
+};
+
+const selectedMode = computed(() => modes.find((item) => item.value === mode.value) ?? modes.at(-1)!);
+
+function selectMode(value: CompileMode) {
+  mode.value = value;
+  showModeMenu.value = false;
+}
 
 const trimmedInput = computed(() => processInput.value.trim());
 const hasInput = computed(() => trimmedInput.value.length > 0);
@@ -237,20 +250,65 @@ function formatDebugValue(value: unknown) {
   }
 }
 
+function compactText(value: unknown, maxLength = 220) {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  const normalized = text.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) return normalized;
+
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function addFact(items: DetailItem[], label: string, value: unknown) {
+  if (value === null || value === undefined || value === "") return;
+  items.push({ label, value: String(value) });
+}
+
+function countAgentOutput(provider?: string, usedAi?: boolean, fallback?: boolean) {
+  if (!provider) return "Not run";
+  if (usedAi) return `${provider} · AI`;
+  if (fallback) return `${provider} · fallback`;
+  return provider;
+}
+
 const knownFactItems = computed<DetailItem[]>(() => {
-  const facts = clarificationSession.value?.known_facts;
-  if (!facts) return [];
-
   const items: DetailItem[] = [];
+  const facts = clarificationSession.value?.known_facts;
 
-  if (facts.workflow_goal) items.push({ label: "Goal", value: facts.workflow_goal });
-  if (facts.task_type) items.push({ label: "Task", value: facts.task_type });
-  if (facts.trigger) items.push({ label: "Trigger", value: facts.trigger });
-  if (facts.data_source) items.push({ label: "Source", value: facts.data_source });
-  if (facts.desired_output) items.push({ label: "Output", value: facts.desired_output });
-  if (facts.human_owner) items.push({ label: "Owner", value: facts.human_owner });
-  if (facts.approval_boundary) items.push({ label: "Gate", value: facts.approval_boundary });
-  if (facts.external_action_boundary) items.push({ label: "Boundary", value: facts.external_action_boundary });
+  if (facts?.workflow_goal) addFact(items, "Goal", facts.workflow_goal);
+  if (facts?.task_type) addFact(items, "Task", facts.task_type);
+  if (facts?.trigger) addFact(items, "Trigger", facts.trigger);
+  if (facts?.data_source) addFact(items, "Source", facts.data_source);
+  if (facts?.desired_output) addFact(items, "Output", facts.desired_output);
+  if (facts?.human_owner) addFact(items, "Owner", facts.human_owner);
+  if (facts?.approval_boundary) addFact(items, "Gate", facts.approval_boundary);
+  if (facts?.external_action_boundary) addFact(items, "Boundary", facts.external_action_boundary);
+
+  if (job.value) {
+    addFact(items, "Compile mode", job.value.mode);
+    addFact(items, "Mode expectation", modeExpectations[(job.value.mode === "demo" ? "rule_only" : job.value.mode) as Exclude<CompileMode, "demo">]);
+    addFact(items, "Expected result", job.value.safety_critic?.overall_status ?? job.value.status);
+    addFact(items, "Workflow", job.value.result?.workflow_name);
+    addFact(items, "Router route", job.value.router_decision?.route);
+    addFact(items, "Router reason", compactText(job.value.router_decision?.reason, 180));
+    addFact(items, "Risk level", job.value.risks?.risk_level);
+    addFact(items, "Readiness", job.value.readiness?.score);
+    addFact(items, "Human gates", job.value.result?.human_approval_gates?.length ?? 0);
+    addFact(items, "Blueprint Architect", countAgentOutput(
+      job.value.blueprint_architect_agent?.provider,
+      job.value.blueprint_architect_agent?.used_ai,
+      job.value.blueprint_architect_agent?.fallback_used,
+    ));
+    addFact(items, "Safety Critic Agent", countAgentOutput(
+      job.value.safety_critic_agent?.provider,
+      job.value.safety_critic_agent?.used_ai,
+      job.value.safety_critic_agent?.fallback_used,
+    ));
+    addFact(items, "LLM calls", `${job.value.token_usage?.llm_calls_used ?? 0}/${job.value.token_usage?.llm_calls_limit ?? 0}`);
+  } else if (!facts) {
+    addFact(items, "Selected mode", mode.value);
+    addFact(items, "Mode expectation", modeExpectations[(mode.value === "demo" ? "rule_only" : mode.value) as Exclude<CompileMode, "demo">]);
+  }
 
   return items;
 });
@@ -572,16 +630,32 @@ function isPrimaryDisabled() {
           {{ mainStatus }}
         </span>
 
-        <div class="mode-segment" aria-label="Compile mode">
+        <div class="mode-menu-wrap">
           <button
-            v-for="item in modes"
-            :key="item.value"
             type="button"
-            :class="{ selected: mode === item.value }"
-            @click="mode = item.value"
+            class="mode-menu-trigger"
+            :class="{ open: showModeMenu }"
+            @click="showModeMenu = !showModeMenu"
           >
-            <span>{{ item.label }}</span>
+           
+            <strong>{{ selectedMode.label }}</strong>
+            <small>{{ selectedMode.hint }}</small>
+            <span class="mode-chevron">⌄</span>
           </button>
+
+          <div v-if="showModeMenu" class="mode-menu-popover">
+            <button
+              v-for="item in modes"
+              :key="item.value"
+              type="button"
+              class="mode-menu-option"
+              :class="{ selected: mode === item.value }"
+              @click="selectMode(item.value)"
+            >
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.hint }}</small>
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -765,7 +839,7 @@ function isPrimaryDisabled() {
             </div>
 
             <p v-else class="muted">
-              Known facts will appear here while FlowForge clarifies the request.
+              Context will appear here after clarification or compile.
             </p>
 
             <div class="answers-box">
@@ -857,8 +931,15 @@ function isPrimaryDisabled() {
 
             <div v-if="job?.agent_trace?.length" class="trace-list">
               <article v-for="(event, index) in job.agent_trace" :key="index" class="trace-item">
-                <strong>{{ event.action || event.tool_name || `Trace ${index + 1}` }}</strong>
-                <p>{{ event.output_summary || event.input_summary || event.reason || event.status || "Completed" }}</p>
+                <div class="trace-head">
+                  <strong>{{ event.action || event.tool_name || `Trace ${index + 1}` }}</strong>
+                  <span :class="`trace-status trace-${event.status || 'completed'}`">{{ event.status || "completed" }}</span>
+                </div>
+                <p>{{ compactText(event.output_summary || event.input_summary || event.reason || "Completed", 260) }}</p>
+                <details v-if="event.reason || event.metadata" class="trace-details">
+                  <summary>Why / metadata</summary>
+                  <pre>{{ formatDebugValue({ reason: event.reason, metadata: event.metadata }) }}</pre>
+                </details>
               </article>
             </div>
 
@@ -991,7 +1072,7 @@ The current endpoint returns the agent outcome and raw provider response when av
   position: fixed;
   z-index: 40;
   inset: 0 0 auto 0;
-  height: 44px;
+  height: 50px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1078,7 +1159,8 @@ The current endpoint returns the agent outcome and raw provider response when av
   background: rgba(255, 255, 255, 0.035);
 }
 
-.mode-segment button,
+.mode-menu-trigger,
+.mode-menu-option,
 .ghost-button,
 .example-chip,
 .panel-tabs button,
@@ -1098,11 +1180,117 @@ The current endpoint returns the agent outcome and raw provider response when av
   background: transparent;
 }
 
-.mode-segment button.selected {
-  color: #07101c;
-  background: linear-gradient(135deg, #66e3ff, #8c7dff);
-  border-color: transparent;
+.mode-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  width: 176px;
+}
+
+.mode-menu-trigger {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "kicker chevron"
+    "label chevron"
+    "hint chevron";
+  align-items: center;
+  width: 100%;
+  height: 44px;
+  padding: 7px 10px;
+  border: 1px solid rgba(102, 227, 255, 0.26);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.12), transparent 8rem),
+    rgba(255, 255, 255, 0.045);
+  color: #eef3ff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mode-menu-trigger.open,
+.mode-menu-trigger:hover {
+  border-color: rgba(102, 227, 255, 0.58);
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.18), transparent 8rem),
+    rgba(102, 227, 255, 0.08);
+}
+
+.mode-menu-kicker {
+  grid-area: kicker;
+  color: #7d8cff;
+  font-size: 8px;
   font-weight: 900;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.mode-menu-trigger strong {
+  grid-area: label;
+  margin-top: 1px;
+  color: #eef3ff;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.mode-menu-trigger small {
+  grid-area: hint;
+  margin-top: 2px;
+  color: #9ba9d8;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.mode-chevron {
+  grid-area: chevron;
+  color: #66e3ff;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.mode-menu-popover {
+  position: absolute;
+  z-index: 80;
+  right: 0;
+  top: calc(100% + 8px);
+  display: grid;
+  width: 230px;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(145, 166, 255, 0.22);
+  border-radius: 16px;
+  background: rgba(7, 10, 18, 0.98);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
+}
+
+.mode-menu-option {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: #eef3ff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mode-menu-option:hover,
+.mode-menu-option.selected {
+  border-color: rgba(102, 227, 255, 0.34);
+  background: rgba(102, 227, 255, 0.09);
+}
+
+.mode-menu-option strong {
+  font-size: 12px;
+}
+
+.mode-menu-option small {
+  color: #9ba9d8;
+  font-size: 11px;
 }
 
 .console-grid {
@@ -1629,7 +1817,8 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 
-.mode-segment button,
+.mode-menu-trigger,
+.mode-menu-option,
 .example-chip,
 .panel-tabs button,
 .answers-toggle,
@@ -1646,7 +1835,8 @@ The current endpoint returns the agent outcome and raw provider response when av
     opacity 160ms ease;
 }
 
-.mode-segment button:hover,
+.mode-menu-trigger:hover,
+.mode-menu-option:hover,
 .example-chip:hover,
 .panel-tabs button:hover,
 .answers-toggle:hover,
@@ -1947,6 +2137,78 @@ The current endpoint returns the agent outcome and raw provider response when av
   margin-top: 8px;
 }
 
+
+
+.trace-item,
+.trace-item *,
+.agent-card,
+.agent-card *,
+.provider-attempt,
+.provider-attempt *,
+.action-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.trace-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trace-status {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(145, 166, 255, 0.18);
+  border-radius: 999px;
+  color: #9ba9d8;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.trace-completed {
+  border-color: rgba(67, 224, 166, 0.28);
+  color: #43e0a6;
+}
+
+.trace-failed {
+  border-color: rgba(255, 107, 107, 0.28);
+  color: #ff9a9a;
+}
+
+.trace-skipped {
+  border-color: rgba(255, 209, 102, 0.28);
+  color: #ffd166;
+}
+
+.trace-details {
+  margin-top: 8px;
+}
+
+.trace-details summary {
+  cursor: pointer;
+  color: #9decff;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.trace-details pre {
+  margin: 8px 0 0;
+  max-width: 100%;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #dbe4ff;
+  font-size: 11px;
+  line-height: 1.45;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 10px;
+}
 
 @media (max-width: 1100px) {
   .console-grid {
