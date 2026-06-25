@@ -25,6 +25,13 @@ type DetailItem = {
   value: string;
 };
 
+type ObservabilityCard = {
+  label: string;
+  value: string;
+  note: string;
+  tone: "success" | "warning" | "danger" | "neutral";
+};
+
 type AgentCard = {
   id: string;
   label: string;
@@ -412,6 +419,109 @@ function guidedClarifierStatusReason() {
   if (clarificationAnswers.value.length > 0) return "Collected clarification answers for this run.";
   return "Only runs when the request is too vague or needs guided detail.";
 }
+
+function allProviderAttempts() {
+  const debug = job.value?.agent_debug;
+  if (!debug) return [];
+
+  return Object.entries(debug).flatMap(([agentId, agentDebug]) =>
+    (agentDebug?.provider_attempts ?? []).map((attempt) => ({
+      agentId,
+      ...attempt,
+    })),
+  );
+}
+
+const agentExecutionSummary = computed(() => {
+  const cards = agentCards.value.filter((agent) => agent.id !== "guided_clarifier");
+  const aiUsed = cards.filter((agent) => agent.providerTone === "ai");
+  const fallbacks = cards.filter((agent) => agent.providerTone === "fallback");
+  const skipped = cards.filter((agent) => agent.providerTone === "skipped");
+  const deterministic = cards.filter((agent) => agent.providerTone === "deterministic");
+
+  return {
+    cards,
+    aiUsed,
+    fallbacks,
+    skipped,
+    deterministic,
+  };
+});
+
+const providerFailureItems = computed(() => {
+  return allProviderAttempts()
+    .filter((attempt) => attempt.attempted && !attempt.success && attempt.error_summary)
+    .map((attempt) => ({
+      label: `${attempt.agentId.replaceAll("_", " ")} · ${attempt.provider}`,
+      value: compactText(attempt.error_summary, 180),
+    }));
+});
+
+const observabilityCards = computed<ObservabilityCard[]>(() => {
+  if (!job.value) {
+    return [
+      {
+        label: "Run state",
+        value: "No compile yet",
+        note: "Compile a workflow to see observability data.",
+        tone: "neutral",
+      },
+    ];
+  }
+
+  const aiCount = agentExecutionSummary.value.aiUsed.length;
+  const fallbackCount = agentExecutionSummary.value.fallbacks.length;
+  const failedCount = providerFailureItems.value.length;
+  const tokenUsage = job.value.token_usage;
+  const expectedMode = modeExpectations[(job.value.mode === "demo" ? "rule_only" : job.value.mode) as Exclude<CompileMode, "demo">];
+
+  return [
+    {
+      label: "Mode expectation",
+      value: job.value.mode === "demo" ? "rule" : job.value.mode,
+      note: expectedMode,
+      tone: "neutral",
+    },
+    {
+      label: "AI agents used",
+      value: `${aiCount}`,
+      note: aiCount
+        ? agentExecutionSummary.value.aiUsed.map((agent) => agent.label).join(", ")
+        : "No agent used an LLM successfully in this run.",
+      tone: aiCount ? "success" : "neutral",
+    },
+    {
+      label: "Fallbacks",
+      value: `${fallbackCount}`,
+      note: fallbackCount
+        ? agentExecutionSummary.value.fallbacks.map((agent) => agent.label).join(", ")
+        : "No agent fallback was needed.",
+      tone: fallbackCount ? "warning" : "success",
+    },
+    {
+      label: "Provider failures",
+      value: `${failedCount}`,
+      note: failedCount
+        ? "Open the failed provider rows below or the agent modal for raw details."
+        : "No failed provider attempts were reported.",
+      tone: failedCount ? "danger" : "success",
+    },
+    {
+      label: "LLM calls",
+      value: `${tokenUsage?.llm_calls_used ?? 0}/${tokenUsage?.llm_calls_limit ?? 0}`,
+      note: "Calls used in this compile run compared with the selected mode limit.",
+      tone: (tokenUsage?.llm_calls_used ?? 0) > (tokenUsage?.llm_calls_limit ?? 0) ? "warning" : "neutral",
+    },
+    {
+      label: "Trust note",
+      value: job.value.safety_critic?.overall_status ?? job.value.status,
+      note: fallbackCount || failedCount
+        ? "Final safety result is still deterministic, but one or more AI agent outputs were unavailable or rejected."
+        : "No provider fallback was reported; inspect agent details for prompt/response evidence.",
+      tone: fallbackCount || failedCount ? "warning" : "success",
+    },
+  ];
+});
 
 const knownFactItems = computed<DetailItem[]>(() => {
   const items: DetailItem[] = [];
@@ -1047,11 +1157,29 @@ function isPrimaryDisabled() {
 
           <section v-else-if="activePanel === 'details'" class="side-section">
             <div class="side-title">
-              <h2>Safety details</h2>
+              <h2>Run observability</h2>
               <span>{{ safetyStatus || "none" }}</span>
             </div>
 
+            <div class="observability-grid">
+              <article
+                v-for="card in observabilityCards"
+                :key="card.label"
+                class="observability-card"
+                :class="`tone-${card.tone}`"
+              >
+                <span>{{ card.label }}</span>
+                <strong>{{ card.value }}</strong>
+                <p>{{ card.note }}</p>
+              </article>
+            </div>
+
             <template v-if="job">
+              <div class="side-title compact-title">
+                <h2>Safety details</h2>
+                <span>{{ job.risks?.risk_level || "unknown" }}</span>
+              </div>
+
               <div class="detail-card">
                 <span>Risk</span>
                 <strong>{{ job.risks?.risk_level || "unknown" }}</strong>
@@ -1066,11 +1194,19 @@ function isPrimaryDisabled() {
                 <span>Next safe action</span>
                 <strong>{{ nextSafeAction }}</strong>
               </div>
-            </template>
 
-            <p v-else class="muted">
-              Safety details appear after compile.
-            </p>
+              <div v-if="providerFailureItems.length" class="side-title compact-title">
+                <h2>Provider failures</h2>
+                <span>{{ providerFailureItems.length }}</span>
+              </div>
+
+              <div v-if="providerFailureItems.length" class="failure-list">
+                <article v-for="item in providerFailureItems" :key="item.label" class="failure-item">
+                  <span>{{ item.label }}</span>
+                  <p>{{ item.value }}</p>
+                </article>
+              </div>
+            </template>
           </section>
 
           <section v-else class="side-section">
@@ -1855,6 +1991,74 @@ The current endpoint returns the agent outcome and raw provider response when av
   font-size: 13px;
   color: #e9efff;
   font-weight: 600;
+}
+
+.observability-grid,
+.failure-list {
+  display: grid;
+  gap: 8px;
+}
+
+.observability-card {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  border: 1px solid rgba(145, 166, 255, 0.13);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.observability-card span,
+.failure-item span {
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.observability-card strong {
+  color: #e9efff;
+  font-size: 17px;
+  font-weight: 950;
+}
+
+.observability-card p,
+.failure-item p {
+  margin: 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.observability-card.tone-success {
+  border-color: rgba(67, 224, 166, 0.24);
+  background: rgba(67, 224, 166, 0.055);
+}
+
+.observability-card.tone-warning {
+  border-color: rgba(255, 209, 102, 0.26);
+  background: rgba(255, 209, 102, 0.055);
+}
+
+.observability-card.tone-danger {
+  border-color: rgba(255, 107, 107, 0.26);
+  background: rgba(255, 107, 107, 0.055);
+}
+
+.compact-title {
+  margin-top: 16px;
+}
+
+.failure-item {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  border: 1px solid rgba(255, 107, 107, 0.22);
+  border-radius: 15px;
+  background: rgba(255, 107, 107, 0.04);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .answers-box {
