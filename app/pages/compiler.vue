@@ -31,6 +31,9 @@ type AgentCard = {
   status: "active" | "done" | "idle" | "skipped" | "needs_detail";
   summary: string;
   provider: string;
+  statusLabel: string;
+  statusReason: string;
+  providerTone: "ai" | "fallback" | "deterministic" | "standby" | "failed" | "skipped";
   debugId?: keyof NonNullable<CompileJob["agent_debug"]> | "guided_clarifier";
 };
 
@@ -156,6 +159,9 @@ const agentCards = computed<AgentCard[]>(() => [
       || clarificationLastResponse.value?.session.reason
       || (clarificationAnswers.value.length > 0 ? "Clarification answers collected." : "Waiting for a clarification need."),
     provider: clarificationLastResponse.value?.provider || "standby",
+    statusLabel: guidedClarifierStatusLabel(),
+    statusReason: guidedClarifierStatusReason(),
+    providerTone: guidedClarifierTone(),
     debugId: "guided_clarifier",
   },
   {
@@ -164,6 +170,9 @@ const agentCards = computed<AgentCard[]>(() => [
     status: job.value?.router_decision ? "done" : runState.value === "compiling" ? "active" : "idle",
     summary: job.value?.router_decision?.reason || "Routes compile requests when needed.",
     provider: job.value?.router_decision?.provider || "standby",
+    statusLabel: routerStatusLabel(),
+    statusReason: routerStatusReason(),
+    providerTone: routerProviderTone(),
   },
   {
     id: "clarification_agent",
@@ -173,6 +182,25 @@ const agentCards = computed<AgentCard[]>(() => [
       || job.value?.clarification_plan?.reason
       || "Explains compile-time missing details when needed.",
     provider: job.value?.clarification_agent?.provider || "standby",
+    statusLabel: agentStatusLabel(
+      job.value?.clarification_agent?.provider,
+      job.value?.clarification_agent?.used_ai,
+      job.value?.clarification_agent?.fallback_used,
+      job.value?.clarification_agent?.status,
+    ),
+    statusReason: agentStatusReason(
+      job.value?.clarification_agent?.provider,
+      job.value?.clarification_agent?.used_ai,
+      job.value?.clarification_agent?.fallback_used,
+      job.value?.clarification_agent?.reason,
+      job.value?.clarification_agent?.status,
+    ),
+    providerTone: providerTone(
+      job.value?.clarification_agent?.provider,
+      job.value?.clarification_agent?.used_ai,
+      job.value?.clarification_agent?.fallback_used,
+      job.value?.clarification_agent?.status,
+    ),
     debugId: "clarification_agent",
   },
   {
@@ -181,6 +209,25 @@ const agentCards = computed<AgentCard[]>(() => [
     status: job.value?.blueprint_architect_agent ? agentOutputStatusToCardStatus(job.value.blueprint_architect_agent.status) : runState.value === "compiling" ? "active" : "idle",
     summary: job.value?.blueprint_architect_agent?.summary || job.value?.result?.summary || "Builds the workflow preview.",
     provider: job.value?.blueprint_architect_agent?.provider || "standby",
+    statusLabel: agentStatusLabel(
+      job.value?.blueprint_architect_agent?.provider,
+      job.value?.blueprint_architect_agent?.used_ai,
+      job.value?.blueprint_architect_agent?.fallback_used,
+      job.value?.blueprint_architect_agent?.status,
+    ),
+    statusReason: agentStatusReason(
+      job.value?.blueprint_architect_agent?.provider,
+      job.value?.blueprint_architect_agent?.used_ai,
+      job.value?.blueprint_architect_agent?.fallback_used,
+      job.value?.blueprint_architect_agent?.reason,
+      job.value?.blueprint_architect_agent?.status,
+    ),
+    providerTone: providerTone(
+      job.value?.blueprint_architect_agent?.provider,
+      job.value?.blueprint_architect_agent?.used_ai,
+      job.value?.blueprint_architect_agent?.fallback_used,
+      job.value?.blueprint_architect_agent?.status,
+    ),
     debugId: "blueprint_architect_agent",
   },
   {
@@ -191,10 +238,28 @@ const agentCards = computed<AgentCard[]>(() => [
       || job.value?.safety_critic?.summary
       || "Checks gates, blocked actions, and next safe action.",
     provider: job.value?.safety_critic_agent?.provider || (job.value?.safety_critic ? "deterministic" : "standby"),
+    statusLabel: agentStatusLabel(
+      job.value?.safety_critic_agent?.provider,
+      job.value?.safety_critic_agent?.used_ai,
+      job.value?.safety_critic_agent?.fallback_used,
+      job.value?.safety_critic_agent?.status,
+    ),
+    statusReason: agentStatusReason(
+      job.value?.safety_critic_agent?.provider,
+      job.value?.safety_critic_agent?.used_ai,
+      job.value?.safety_critic_agent?.fallback_used,
+      job.value?.safety_critic_agent?.reason,
+      job.value?.safety_critic_agent?.status,
+    ),
+    providerTone: providerTone(
+      job.value?.safety_critic_agent?.provider,
+      job.value?.safety_critic_agent?.used_ai,
+      job.value?.safety_critic_agent?.fallback_used,
+      job.value?.safety_critic_agent?.status,
+    ),
     debugId: "safety_critic_agent",
   },
 ]);
-
 
 const activeAgentCard = computed(() => agentCards.value.find((agent) => agent.id === activeAgentDetailsId.value) ?? null);
 
@@ -269,6 +334,83 @@ function countAgentOutput(provider?: string, usedAi?: boolean, fallback?: boolea
   if (usedAi) return `${provider} · AI`;
   if (fallback) return `${provider} · fallback`;
   return provider;
+}
+
+function providerTone(provider?: string, usedAi?: boolean, fallback?: boolean, status?: unknown): AgentCard["providerTone"] {
+  if (status === "skipped") return "skipped";
+  if (status === "failed_validation") return "failed";
+  if (!provider || provider === "standby") return "standby";
+  if (usedAi) return "ai";
+  if (fallback) return "fallback";
+  if (provider === "deterministic") return "deterministic";
+  return "standby";
+}
+
+function agentStatusLabel(provider?: string, usedAi?: boolean, fallback?: boolean, status?: unknown) {
+  if (status === "skipped") return "Skipped";
+  if (status === "failed_validation") return "Needs fix";
+  if (!provider || provider === "standby") return "Standby";
+  if (usedAi) return "AI used";
+  if (fallback) return "Fallback";
+  if (provider === "deterministic") return "Rules";
+  return "Ready";
+}
+
+function agentStatusReason(provider?: string, usedAi?: boolean, fallback?: boolean, reason?: string, status?: unknown) {
+  if (reason) return compactText(reason, 150);
+  if (status === "skipped") return "Not needed for this run.";
+  if (!provider || provider === "standby") return "Waiting for a compile run.";
+  if (usedAi) return `This agent successfully used ${provider}.`;
+  if (fallback) return "Provider failed, was unavailable, or output did not pass validation.";
+  if (provider === "deterministic") return "This step used deterministic rules, not an LLM.";
+  return "No extra status detail returned.";
+}
+
+function shouldShowAgentReason(agent: AgentCard) {
+  return compactText(agent.summary, 150) !== compactText(agent.statusReason, 150);
+}
+
+function routerProviderTone() {
+  const decision = job.value?.router_decision;
+  if (!decision) return "standby";
+  if (decision.used_ai) return "ai";
+  if (decision.fallback_used) return "fallback";
+  if (decision.provider === "deterministic") return "deterministic";
+  return "standby";
+}
+
+function routerStatusLabel() {
+  const decision = job.value?.router_decision;
+  if (!decision) return "Standby";
+  if (decision.used_ai) return "AI used";
+  if (decision.fallback_used) return "Fallback";
+  if (decision.provider === "deterministic") return "Rules";
+  return "Done";
+}
+
+function routerStatusReason() {
+  const decision = job.value?.router_decision;
+  if (!decision) return "Waiting for a compile request.";
+  return compactText(decision.reason || "Router selected the compile path.", 150);
+}
+
+function guidedClarifierTone(): AgentCard["providerTone"] {
+  if (hasClarification.value) return clarificationLastResponse.value?.used_ai ? "ai" : "deterministic";
+  if (clarificationLastResponse.value?.fallback_used) return "fallback";
+  if (clarificationLastResponse.value?.used_ai) return "ai";
+  return "standby";
+}
+
+function guidedClarifierStatusLabel() {
+  if (hasClarification.value) return clarificationLastResponse.value?.used_ai ? "AI asking" : "Clarifying";
+  if (clarificationAnswers.value.length > 0) return "Answered";
+  return "Standby";
+}
+
+function guidedClarifierStatusReason() {
+  if (hasClarification.value) return "Asking one contextual question before compile.";
+  if (clarificationAnswers.value.length > 0) return "Collected clarification answers for this run.";
+  return "Only runs when the request is too vague or needs guided detail.";
 }
 
 const knownFactItems = computed<DetailItem[]>(() => {
@@ -637,7 +779,7 @@ function isPrimaryDisabled() {
             :class="{ open: showModeMenu }"
             @click="showModeMenu = !showModeMenu"
           >
-           
+            <span class="mode-menu-kicker">Mode</span>
             <strong>{{ selectedMode.label }}</strong>
             <small>{{ selectedMode.hint }}</small>
             <span class="mode-chevron">⌄</span>
@@ -875,9 +1017,17 @@ function isPrimaryDisabled() {
                   <strong>{{ agent.label }}</strong>
                   <small>{{ agent.status }}</small>
                 </div>
-                <p>{{ agent.summary }}</p>
-                <footer>
+
+                <div class="agent-status-line">
+                  <span :class="`agent-provider-pill tone-${agent.providerTone}`">{{ agent.statusLabel }}</span>
                   <span>{{ agent.provider }}</span>
+                </div>
+
+                <p>{{ agent.summary }}</p>
+                <p v-if="shouldShowAgentReason(agent)" class="agent-status-reason">{{ agent.statusReason }}</p>
+
+                <footer>
+                  <span>{{ agent.providerTone }}</span>
                   <button
                     v-if="agent.debugId || agent.id === 'router'"
                     type="button"
@@ -1072,7 +1222,7 @@ The current endpoint returns the agent outcome and raw provider response when av
   position: fixed;
   z-index: 40;
   inset: 0 0 auto 0;
-  height: 50px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1950,6 +2100,74 @@ The current endpoint returns the agent outcome and raw provider response when av
   margin-top: 12px;
 }
 
+
+.agent-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.agent-status-line > span:last-child {
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-provider-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(145, 166, 255, 0.18);
+  border-radius: 999px;
+  color: #9ba9d8;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-provider-pill.tone-ai {
+  border-color: rgba(67, 224, 166, 0.28);
+  background: rgba(67, 224, 166, 0.08);
+  color: #43e0a6;
+}
+
+.agent-provider-pill.tone-fallback {
+  border-color: rgba(255, 209, 102, 0.3);
+  background: rgba(255, 209, 102, 0.08);
+  color: #ffd166;
+}
+
+.agent-provider-pill.tone-deterministic {
+  border-color: rgba(145, 166, 255, 0.24);
+  background: rgba(145, 166, 255, 0.07);
+  color: #b9c7ff;
+}
+
+.agent-provider-pill.tone-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+  background: rgba(255, 107, 107, 0.08);
+  color: #ff9a9a;
+}
+
+.agent-provider-pill.tone-skipped,
+.agent-provider-pill.tone-standby {
+  border-color: rgba(145, 166, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  color: #7e8dbd;
+}
+
+.agent-status-reason {
+  margin-top: -4px !important;
+  color: #7e8dbd !important;
+  font-size: 12px !important;
+}
+
 @keyframes agentPulse {
   0%, 100% {
     transform: scale(1);
@@ -2019,8 +2237,10 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .agent-modal {
+  display: flex;
+  flex-direction: column;
   width: min(1120px, calc(100vw - 32px));
-  max-height: min(820px, calc(100vh - 40px));
+  max-height: calc(100vh - 40px);
   overflow: hidden;
   border: 1px solid rgba(145, 166, 255, 0.22);
   border-radius: 26px;
@@ -2061,8 +2281,9 @@ The current endpoint returns the agent outcome and raw provider response when av
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   padding: 14px;
-  max-height: calc(100vh - 150px);
-  overflow: auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-section {
@@ -2093,7 +2314,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .modal-section pre {
   margin: 0;
-  max-height: 330px;
+  max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -2108,6 +2329,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 .provider-attempts {
   display: grid;
   gap: 10px;
+  padding-bottom: 18px;
 }
 
 .provider-attempt {
