@@ -12,6 +12,7 @@ type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "fai
 
 type FlowStepLike = {
   id?: string;
+  label?: string;
   title?: string;
   name?: string;
   description?: string;
@@ -60,6 +61,7 @@ const clarificationRateLimitMessage = ref("");
 const clarificationLastResponse = ref<ClarificationSessionResponse | null>(null);
 const activeAgentDetailsId = ref<string | null>(null);
 const showModeMenu = ref(false);
+const handoffCopied = ref(false);
 
 const examples = [
   {
@@ -570,6 +572,214 @@ const workflowSteps = computed<FlowStepLike[]>(() => {
   return Array.isArray(result?.steps) ? result.steps : [];
 });
 
+function workflowStepLabel(step: FlowStepLike, index: number) {
+  return step.label || step.title || step.name || `Step ${index + 1}`;
+}
+
+function workflowStepTone(step: FlowStepLike) {
+  const policy = step.automation_policy ?? "";
+  const execution = step.real_world_execution ?? "";
+
+  if (policy === "blocked_in_mvp" || policy === "not_recommended" || execution === "blocked_in_mvp") {
+    return "blocked";
+  }
+
+  if (policy === "human_approval" || execution === "requires_human_trigger") {
+    return "approval";
+  }
+
+  if (policy === "draft_only") {
+    return "draft";
+  }
+
+  if (policy === "assist_only") {
+    return "assist";
+  }
+
+  return "safe";
+}
+
+function formatStepValue(value?: string) {
+  if (!value || value === "none") return "No external action";
+  return value.replaceAll("_", " ");
+}
+
+function automationPolicyLabel(value?: string) {
+  if (value === "automate") return "Can be automated";
+  if (value === "assist_only") return "Assist only";
+  if (value === "draft_only") return "Draft only";
+  if (value === "human_approval") return "Human approval";
+  if (value === "blocked_in_mvp") return "Blocked in MVP";
+  if (value === "not_recommended") return "Not recommended";
+  return formatStepValue(value);
+}
+
+function executionBoundaryLabel(value?: string) {
+  if (!value || value === "none") return "No real-world execution";
+  if (value === "draft_only") return "Draft only";
+  if (value === "requires_human_trigger") return "Requires human trigger";
+  if (value === "blocked_in_mvp") return "Blocked in MVP";
+  return formatStepValue(value);
+}
+
+function primitiveLabel(value?: string) {
+  return formatStepValue(value || "workflow step");
+}
+
+
+function sourceInputText(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "Not available.";
+
+  const record = value as Record<string, unknown>;
+  const likelyText = record.text || record.prompt || record.idea || record.input || record.description || record.workflow;
+
+  if (typeof likelyText === "string") return likelyText;
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "Not available.";
+  }
+}
+
+function readableList(items: unknown[], fallback: string) {
+  const cleanItems = items
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return String(record.description || record.label || record.title || record.action || "");
+      }
+      return "";
+    })
+    .filter(Boolean);
+
+  return cleanItems.length ? cleanItems.map((item) => `- ${item}`).join("\n") : `- ${fallback}`;
+}
+
+function arrayFromRecord(record: unknown, keys: string[]) {
+  if (!record || typeof record !== "object") return [];
+
+  const source = record as Record<string, unknown>;
+
+  return keys.flatMap((key) => {
+    const value = source[key];
+    return Array.isArray(value) ? value : [];
+  });
+}
+
+function safetyFindingDescriptions(safety: unknown, acceptedTypes: string[]) {
+  if (!safety || typeof safety !== "object") return [];
+
+  const findings = (safety as Record<string, unknown>).findings;
+  if (!Array.isArray(findings)) return [];
+
+  return findings
+    .filter((finding) => {
+      if (!finding || typeof finding !== "object") return false;
+      const type = String((finding as Record<string, unknown>).type ?? "");
+      return acceptedTypes.some((acceptedType) => type.includes(acceptedType));
+    })
+    .map((finding) => {
+      const record = finding as Record<string, unknown>;
+      return record.description || record.summary || record.message || record.title;
+    })
+    .filter(Boolean);
+}
+
+
+const n8nImplementationPrompt = computed(() => {
+  if (!job.value) return "";
+
+  const result = job.value.result;
+  const safety = job.value.safety_critic;
+  const steps = workflowSteps.value;
+  const originalIdea = sourceInputText(job.value.input);
+
+  const stepLines = steps.length
+    ? steps.map((step, index) => [
+        `${index + 1}. ${workflowStepLabel(step, index)}`,
+        `   Purpose: ${step.description || "No description provided."}`,
+        `   Suggested n8n node role: ${primitiveLabel(step.primitive)}`,
+        `   Safety policy: ${automationPolicyLabel(step.automation_policy)}`,
+        `   Execution rule: ${executionBoundaryLabel(step.real_world_execution)}`,
+      ].join("\n")).join("\n\n")
+    : "No structured step list was provided. Build the implementation from the original idea and safety constraints.";
+
+  const humanGates = [
+    ...arrayFromRecord(result, ["human_gates", "human_approval_gates", "approval_gates", "required_human_gates"]),
+    ...arrayFromRecord(safety, ["required_human_gates", "human_gates", "human_approval_gates", "approval_gates"]),
+    ...safetyFindingDescriptions(safety, ["human", "approval"]),
+  ].filter(Boolean);
+
+  const blockedActions = [
+    ...arrayFromRecord(result, ["not_safe_to_automate", "blocked_actions", "excluded_actions"]),
+    ...arrayFromRecord(safety, ["blocked_actions", "not_safe_to_automate", "excluded_actions"]),
+    ...safetyFindingDescriptions(safety, ["blocked", "unsafe", "not_safe"]),
+  ].filter(Boolean);
+
+  const warnings = [
+    ...arrayFromRecord(safety, ["warnings", "concerns", "implementation_notes"]),
+    ...safetyFindingDescriptions(safety, ["warning", "risk", "concern"]),
+  ].filter(Boolean);
+
+  return [
+    "Create an n8n workflow implementation plan from this FlowForge blueprint.",
+    "",
+    "Goal:",
+    "- Turn the blueprint into a practical n8n node-by-node plan.",
+    "- Do not execute anything now.",
+    "- Do not invent production side effects that are not explicitly approved below.",
+    "",
+    "Original automation request:",
+    originalIdea,
+    "",
+    "FlowForge decision:",
+    `- Safety status: ${safety?.overall_status ?? job.value.status}`,
+    `- Blueprint summary: ${result?.summary ?? "No summary provided."}`,
+    `- Next safe action: ${safety?.next_safe_action ?? "Review the implementation before connecting real services."}`,
+    "",
+    "Implementation constraints:",
+    "- Use test credentials or mocked/sample data first.",
+    "- Any email sending must be a draft or manual approval step unless explicitly allowed.",
+    "- Any production write, customer/account update, deletion, refund, payment, or external action must require manual approval.",
+    "- Prefer internal tasks, labels, summaries, draft messages, review queues, and notifications.",
+    "- Add error handling and logging nodes where useful.",
+    "",
+    "Workflow nodes to design:",
+    stepLines,
+    "",
+    "Human approval gates to include:",
+    readableList(humanGates, "Add a manual approval step before any real-world action."),
+    "",
+    "Actions that must stay blocked or disabled:",
+    readableList(blockedActions, "Keep production side effects disabled until reviewed."),
+    "",
+    "Warnings / notes:",
+    readableList(warnings, "Keep the workflow in draft/test mode until reviewed."),
+    "",
+    "Return format:",
+    "1. Proposed n8n node list in execution order.",
+    "2. For each node: node type, purpose, input data, output data, and safety boundary.",
+    "3. Manual approval points.",
+    "4. Test data to use for a dry run.",
+    "5. What must remain disabled before production.",
+    "",
+    "Do not return vague advice. Return a concrete implementation plan that a developer can build in n8n.",
+  ].join("\n");
+});
+
+async function copyN8nImplementationPrompt() {
+  if (!n8nImplementationPrompt.value) return;
+
+  await navigator.clipboard.writeText(n8nImplementationPrompt.value);
+  handoffCopied.value = true;
+  window.setTimeout(() => {
+    handoffCopied.value = false;
+  }, 1800);
+}
+
 const resultTitle = computed(() => {
   if (hasClarification.value) return "Clarifier is asking for one detail";
   if (!job.value) return "Describe an automation";
@@ -1015,18 +1225,29 @@ function isPrimaryDisabled() {
             <div v-if="workflowSteps.length" class="flow-map">
               <article
                 v-for="(step, index) in workflowSteps"
-                :key="step.id || step.title || step.name || index"
+                :key="step.id || step.label || step.title || step.name || index"
                 class="flow-node"
+                :class="`flow-${workflowStepTone(step)}`"
+                :style="`--flow-index: ${index}`"
               >
                 <div class="node-index">{{ index + 1 }}</div>
                 <div class="node-body">
-                  <h3>{{ step.title || step.name || `Step ${index + 1}` }}</h3>
+                  <h3>{{ workflowStepLabel(step, index) }}</h3>
                   <p>{{ step.description || "Safe workflow step." }}</p>
-                  <div class="node-tags">
-                    <span v-if="step.primitive">{{ step.primitive }}</span>
-                    <span v-if="step.automation_policy">{{ step.automation_policy }}</span>
-                    <span v-if="step.real_world_execution">{{ step.real_world_execution }}</span>
-                  </div>
+                  <dl class="node-meta">
+                    <div v-if="step.primitive">
+                      <dt>Step type</dt>
+                      <dd>{{ primitiveLabel(step.primitive) }}</dd>
+                    </div>
+                    <div v-if="step.automation_policy">
+                      <dt>Automation policy</dt>
+                      <dd>{{ automationPolicyLabel(step.automation_policy) }}</dd>
+                    </div>
+                    <div>
+                      <dt>Execution boundary</dt>
+                      <dd>{{ executionBoundaryLabel(step.real_world_execution) }}</dd>
+                    </div>
+                  </dl>
                 </div>
               </article>
             </div>
@@ -1034,6 +1255,27 @@ function isPrimaryDisabled() {
             <div v-else class="empty-flow">
               Workflow details are available in the raw result, but no step list was returned.
             </div>
+
+            <section v-if="job" class="handoff-card">
+              <div class="handoff-head">
+                <div>
+                  <p class="eyebrow">Implementation handoff</p>
+                  <h2>n8n builder prompt</h2>
+                  <p>
+                    Safe implementation brief generated from this blueprint. It keeps FlowForge non-executing and requires human approval before real-world actions.
+                  </p>
+                </div>
+
+                <button type="button" class="handoff-copy" @click="copyN8nImplementationPrompt">
+                  {{ handoffCopied ? "Copied" : "Copy prompt" }}
+                </button>
+              </div>
+
+              <details class="handoff-preview">
+                <summary>Preview implementation prompt</summary>
+                <pre>{{ n8nImplementationPrompt }}</pre>
+              </details>
+            </section>
           </section>
         </div>
 
@@ -1831,68 +2073,273 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .flow-map {
-  display: grid;
-  gap: 10px;
+  --connector-gap: 34px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 28px var(--connector-gap);
   margin-top: 20px;
+  padding: 8px;
+  overflow: visible;
 }
 
 .flow-node {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 14px;
   position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  flex: 1 1 240px;
+  min-width: 220px;
+  max-width: 300px;
+}
+
+/* n8n-style cable between nodes. No arrows. */
+.flow-node:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: calc(50% + 26px);
+  left: 100%;
+  width: var(--connector-gap);
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(102, 227, 255, 0.22);
+  transform: translateY(-50%);
 }
 
 .flow-node:not(:last-child)::after {
   content: "";
   position: absolute;
-  left: 20px;
-  top: 44px;
-  bottom: -10px;
-  width: 1px;
-  background: linear-gradient(#66e3ff, rgba(102, 227, 255, 0.06));
+  z-index: 1;
+  top: calc(50% + 26px);
+  left: 100%;
+  width: var(--connector-gap);
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(102, 227, 255, 0.95),
+    rgba(140, 125, 255, 0.95),
+    transparent
+  );
+  transform: translateY(-50%) scaleX(0);
+  transform-origin: left center;
+  filter: drop-shadow(0 0 8px rgba(102, 227, 255, 0.55));
+  animation: flowSignal 3.2s ease-in-out infinite;
+  animation-delay: calc(var(--flow-index) * 180ms);
 }
 
 .node-index {
-  z-index: 1;
+  z-index: 2;
   display: grid;
   place-items: center;
+  width: 42px;
   height: 42px;
+  border: 1px solid rgba(102, 227, 255, 0.28);
   border-radius: 15px;
   color: #07101c;
   font-weight: 900;
   background: linear-gradient(135deg, #66e3ff, #8c7dff);
+  box-shadow: 0 0 22px rgba(102, 227, 255, 0.14);
 }
 
 .node-body {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-rows: auto minmax(76px, 1fr) auto;
+  min-height: 220px;
   border: 1px solid rgba(145, 166, 255, 0.15);
   border-radius: 18px;
   padding: 14px;
-  background: rgba(6, 10, 20, 0.55);
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.07), transparent 10rem),
+    rgba(6, 10, 20, 0.88);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.18);
+}
+
+.flow-safe .node-body {
+  border-color: rgba(67, 224, 166, 0.25);
+}
+
+.flow-assist .node-body,
+.flow-draft .node-body {
+  border-color: rgba(255, 209, 102, 0.25);
+  background:
+    radial-gradient(circle at top right, rgba(255, 209, 102, 0.08), transparent 10rem),
+    rgba(6, 10, 20, 0.88);
+}
+
+.flow-approval .node-body {
+  border-color: rgba(140, 125, 255, 0.34);
+  background:
+    radial-gradient(circle at top right, rgba(140, 125, 255, 0.11), transparent 10rem),
+    rgba(6, 10, 20, 0.88);
+}
+
+.flow-blocked .node-body {
+  border-color: rgba(255, 107, 107, 0.3);
+  background:
+    radial-gradient(circle at top right, rgba(255, 107, 107, 0.09), transparent 10rem),
+    rgba(6, 10, 20, 0.88);
+}
+
+.flow-assist .node-index,
+.flow-draft .node-index {
+  background: linear-gradient(135deg, #ffd166, #8c7dff);
+}
+
+.flow-approval .node-index {
+  background: linear-gradient(135deg, #8c7dff, #66e3ff);
+}
+
+.flow-blocked .node-index {
+  background: linear-gradient(135deg, #ff6b6b, #ffd166);
 }
 
 .node-body h3 {
   margin: 0 0 6px;
+  font-size: 15px;
+  line-height: 1.18;
 }
 
 .node-body p {
   margin: 0;
   color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.42;
 }
 
-.node-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+.node-meta {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
 }
 
-.node-tags span {
-  padding: 4px 7px;
-  border: 1px solid rgba(145, 166, 255, 0.18);
-  border-radius: 999px;
-  color: #cbd6ff;
+.node-meta div {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid rgba(145, 166, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.node-meta dt {
+  color: #7d8cff;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.node-meta dd {
+  margin: 0;
+  color: #dbe4ff;
   font-size: 11px;
+  line-height: 1.2;
+  text-transform: capitalize;
+}
+
+@keyframes flowSignal {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) scaleX(0);
+  }
+
+  12% {
+    opacity: 1;
+    transform: translateY(-50%) scaleX(1);
+  }
+
+  24% {
+    opacity: 0;
+    transform: translateY(-50%) scaleX(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-50%) scaleX(1);
+  }
+}
+
+.handoff-card {
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid rgba(102, 227, 255, 0.18);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.08), transparent 18rem),
+    rgba(255, 255, 255, 0.035);
+}
+
+.handoff-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.handoff-head h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.handoff-head p {
+  margin: 0;
+  max-width: 760px;
+  color: #9ba9d8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.handoff-copy {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(102, 227, 255, 0.32);
+  border-radius: 13px;
+  background: rgba(102, 227, 255, 0.08);
+  color: #66e3ff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.handoff-copy:hover {
+  border-color: rgba(102, 227, 255, 0.62);
+  background: rgba(102, 227, 255, 0.13);
+}
+
+.handoff-preview {
+  margin-top: 14px;
+  border: 1px solid rgba(145, 166, 255, 0.13);
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.52);
+  overflow: hidden;
+}
+
+.handoff-preview summary {
+  padding: 12px 14px;
+  color: #cbd6ff;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.handoff-preview pre {
+  max-height: 320px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border-top: 1px solid rgba(145, 166, 255, 0.13);
+  color: #dbe4ff;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .empty-flow {
@@ -2689,5 +3136,28 @@ The current endpoint returns the agent outcome and raw provider response when av
   .brand-path {
     display: none;
   }
+
+  .flow-node {
+    min-width: 100%;
+    max-width: none;
+  }
+
+  .flow-node:not(:last-child)::before,
+  .flow-node:not(:last-child)::after {
+    display: none;
+  }
+
+  .node-body {
+    min-height: 170px;
+  }
+
+  .handoff-head {
+    flex-direction: column;
+  }
+
+  .handoff-copy {
+    width: 100%;
+  }
+
 }
 </style>
