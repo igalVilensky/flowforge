@@ -1,26 +1,43 @@
 # FlowForge
 
-FlowForge is a **safe automation blueprint compiler**.
+FlowForge is a **non-executing safety and observability layer for AI automation prototypes**.
 
-It turns a plain-language process into a structured, validated, non-executing automation preview. It does not blindly automate the request. It finds the safest useful automation boundary and guides the user when the request is too vague.
+It turns a plain-language automation idea into a structured, human-gated blueprint. FlowForge does not execute workflows, connect production tools, or perform real-world actions. It helps a human understand what could be automated, what needs approval, what is unsafe, and what implementation constraints must be preserved.
 
-## Core idea
+## Product Direction
 
 ```text
-Describe a process
-  → clarify messy input when needed
-  → scan structure and risks
-  → route with AI only when enabled
-  → build a safe non-executing blueprint
-  → review the blueprint with safety checks
-  → show the focused next outcome
+Describe an automation idea
+  -> clarify vague or risky details
+  -> route the request through the compiler
+  -> build a safe non-executing blueprint
+  -> review gates, blocked actions, and risk
+  -> expose agent trace and run observability
+  -> prepare an n8n implementation handoff prompt
 ```
 
-FlowForge is intentionally conservative. The MVP never executes real-world actions.
+FlowForge is intentionally conservative. The useful output is not "automation happened." The useful output is a safe preview that a human can inspect before anything is built or connected.
 
----
+## Current Capabilities
 
-## What FlowForge does
+FlowForge currently includes:
+
+- guided clarification for vague requests
+- compile modes: `rule_only`, `balanced`, and `full`
+- agent-assisted routing, clarification, blueprint generation, and safety review
+- agent status explanations
+- agent trace/debug visibility
+- provider attempt and fallback visibility
+- LLM call tracking
+- run observability summary
+- human approval gates and blocked actions
+- risk/safety outcomes
+- horizontal blueprint flow visualization
+- n8n implementation handoff prompt
+
+The n8n handoff is a builder prompt for a human implementer. FlowForge does **not** currently generate full n8n workflow JSON.
+
+## What FlowForge Does
 
 FlowForge can preview workflows such as:
 
@@ -28,70 +45,53 @@ FlowForge can preview workflows such as:
 - classification workflows
 - extraction workflows
 - draft-only support replies
-- human-reviewed refund/payment workflows
+- human-reviewed refund or payment workflows
 - internal review task creation
 - safe alternatives for risky automation requests
 
-FlowForge shows the user one primary outcome:
+The compiler focuses on one primary outcome:
 
 ```text
-1. Workflow possible
-   Show the workflow blueprint first.
-
-2. Missing details
-   Ask one clarification question at a time.
-
-3. Not safe
-   Show the blocked verdict and next safe move.
+Safe internal preview
+Needs human approval
+Needs clarification
+Not safe to automate
 ```
 
-Advanced details are still available on demand:
+Advanced details remain available in the console:
 
 - risk level
 - human approval gates
 - draft-only boundaries
-- MVP-blocked actions
-- dry-run scenarios
-- AI provider path
-- agent trace
+- blocked actions
+- dry-run guidance
+- provider path
+- agent status explanations
+- agent trace/debug
 - Safety Critic review
+- run observability summary
 
----
+## What FlowForge Does Not Do
 
-## What FlowForge does not do
-
-The MVP does **not**:
+FlowForge does **not**:
 
 - send emails or messages
 - update accounts
 - issue refunds
+- charge payments
 - delete records
 - cancel subscriptions
-- give legal, medical, visa, or other high-stakes advice
+- give legal, medical, visa, financial, or other high-stakes advice
 - execute n8n workflows
 - connect to production tools
 - store jobs in a database
 - provide auth or user accounts
 
-Everything is a safe preview.
+Everything is a safe, non-executing preview.
 
----
+## Main User Flow
 
-## Current milestone
-
-Current milestone: **M12 — Guided Clarification + Focused Compiler UX**
-
-Status: **implemented / ready for validation**
-
-M12 adds a dedicated clarification session flow. Instead of showing a batch of hardcoded missing-field questions, FlowForge can call a Clarification Conversation Agent that reads messy input, extracts known facts, asks one contextual question at a time, and returns a rewritten compile prompt when enough information is collected.
-
-M12 also changes the compiler page from a dense report view into a focused guided experience.
-
----
-
-## Main user flow
-
-### 1. User enters a process
+### 1. User describes a process
 
 Example:
 
@@ -99,17 +99,17 @@ Example:
 Automate my tasks.
 ```
 
-FlowForge should not immediately ask a generic data-source question. It should first ask what kind of task the user wants to automate.
+FlowForge should not guess a workflow from a vague request. It starts a guided clarification session and asks one contextual question at a time.
 
-Expected first clarification:
+Example clarification:
 
 ```text
-What kind of tasks should FlowForge help with first — emails, tickets, documents, leads, scheduling, or internal admin work?
+What kind of tasks should FlowForge help with first: emails, tickets, documents, leads, scheduling, or internal admin work?
 ```
 
-### 2. FlowForge asks one question at a time
+### 2. FlowForge clarifies until the request is useful
 
-The clarification session tracks previous answers and stops when enough useful facts are known.
+The clarification session tracks previous answers and stops when enough practical detail is known.
 
 Example collected facts:
 
@@ -124,13 +124,65 @@ Boundary: no reply is sent automatically
 
 ### 3. FlowForge compiles a blueprint
 
-When the session is ready, the page calls `/api/compile` with the agent’s `rewritten_compile_prompt`.
+When the session is ready, the page calls `/api/compile` with the clarified prompt. The compiler returns a `CompileJob` with a safe blueprint, safety outcome, agent outputs, trace/debug data, and observability details.
 
-If a workflow is possible, the first result view is the workflow itself, similar to a lightweight n8n/Make-style blueprint.
+### 4. FlowForge prepares implementation handoff
 
----
+For valid blueprint results, the compiler page can generate an n8n builder prompt. The prompt describes the node-by-node implementation constraints, human approval points, test-data guidance, and what must remain disabled before production.
 
-## Safety outcomes
+## Agent Stack
+
+FlowForge exposes the agent path instead of hiding it behind a single answer.
+
+### Guided Clarifier
+
+Reads a vague automation idea, extracts known facts, asks one contextual question at a time, and can produce a rewritten compile prompt.
+
+### Router
+
+Routes compile requests and explains the chosen path. Depending on mode and provider availability, this can use AI or deterministic fallback.
+
+### Compile Clarifier
+
+Checks whether the compile request still needs missing details before a blueprint would be useful.
+
+### Blueprint Architect
+
+Builds or improves the non-executing workflow preview with step roles, policies, and execution boundaries.
+
+### Safety Critic
+
+Reviews the blueprint for safety outcome, human approval gates, blocked actions, risk, and the next safe action.
+
+## Compile Modes
+
+### Rule-only
+
+```text
+mode: "rule_only"
+```
+
+Uses deterministic compiler behavior only. No LLM agent should be used.
+
+### Balanced
+
+```text
+mode: "balanced"
+```
+
+Allows targeted AI help where useful, while preserving deterministic safety boundaries and fallbacks.
+
+### Full
+
+```text
+mode: "full"
+```
+
+Allows the most agent/provider usage when providers are configured. Safety validation remains conservative and fallback-aware.
+
+`demo` may still be accepted by the API for deterministic demo compatibility, but the primary user-facing modes are `rule_only`, `balanced`, and `full`.
+
+## Safety Outcomes
 
 ### Safe internal preview
 
@@ -148,8 +200,8 @@ Expected result:
 ```text
 Workflow blueprint
 Safe internal preview
-low risk
-0 gates
+Low risk
+No production side effects
 ```
 
 ### Needs human approval
@@ -167,8 +219,8 @@ Expected result:
 ```text
 Workflow blueprint with human gates
 Needs human approval
-medium risk
-1 gate
+Medium risk
+Manual approval before external action
 ```
 
 ### Needs clarification
@@ -184,6 +236,7 @@ Expected result:
 ```text
 Guided clarification
 One contextual question at a time
+No blueprint until enough detail is known
 ```
 
 ### Not safe to automate
@@ -200,13 +253,12 @@ Expected result:
 
 ```text
 Not safe to automate
-high risk
-next safe move
+High risk
+Blocked actions
+Next safe move
 ```
 
----
-
-## API endpoints
+## API Endpoints
 
 ### Compile
 
@@ -229,7 +281,7 @@ Response:
 CompileJob
 ```
 
-### Guided clarification
+### Guided Clarification
 
 ```text
 POST /api/clarify
@@ -262,29 +314,7 @@ The clarification response includes:
 - `ready_to_compile=true`
 - `rewritten_compile_prompt`
 
----
-
-## Compile modes
-
-### Demo
-
-No AI calls. Useful for deterministic demo paths.
-
-### Rule-only
-
-No AI calls. Useful for proving the compiler works without providers.
-
-### Balanced
-
-Uses AI where allowed, with deterministic safety boundaries.
-
-### Full
-
-Allows the most provider usage, still with no execution and deterministic validation.
-
----
-
-## Tech stack
+## Tech Stack
 
 - Nuxt 4
 - Vue 3
@@ -293,110 +323,68 @@ Allows the most provider usage, still with no execution and deterministic valida
 - Zod
 - Groq provider
 - Gemini fallback
-- Deterministic fallbacks
+- deterministic fallbacks
 - npm
 
----
-
-## Project structure
+## Project Structure
 
 ```text
 app/
+  app.vue
   pages/
+    index.vue
     compiler.vue
 
 shared/
   types/
-    compileJob.ts
     agentOutputs.ts
     clarificationSession.ts
+    compileJob.ts
     workflow.ts
 
 server/
   api/
-    compile.post.ts
     clarify.post.ts
-
+    compile.post.ts
   prompts/
     clarificationConversationPrompt.ts
     clarificationAgentPrompt.ts
     blueprintArchitectPrompt.ts
     safetyCriticAgentPrompt.ts
-
   schemas/
-    compileJob.schema.ts
     agentOutputs.schema.ts
     clarificationSession.schema.ts
-
+    compileJob.schema.ts
   services/
-    signalScanner.ts
-    riskScanner.ts
-    readinessScorer.ts
-    clarificationPlanner.ts
-    clarificationConversationAgent.ts
-    clarificationAgent.ts
-    routerAgent.ts
     blueprintBuilder.ts
+    clarificationAgent.ts
+    clarificationConversationAgent.ts
+    clarificationPlanner.ts
+    readinessScorer.ts
+    riskScanner.ts
+    routerAgent.ts
     safetyCritic.ts
     schemaValidator.ts
-  schemas/
-    compileJob.schema.ts
-  fixtures/
-    validCompileJob.ts
-  rules/
-    primitiveRules.ts
-
-shared/
-  types/
-    compileJob.ts
-    workflow.ts
-
-docs/
-  ARCHITECTURE.md
-  MILESTONES.md
-  REQUIREMENTS.md
-  DEMO_SCRIPT.md
+    signalScanner.ts
 ```
 
----
-
-## Main compile pipeline
+## Main Compile Pipeline
 
 ```text
 POST /api/compile
-  ↓
-signalScanner
-  ↓
-riskScanner
-  ↓
-readinessScorer
-  ↓
-routerAgent
-  ↓
-clarificationPlanner
-  ↓
-blueprintBuilder
-  ↓
-safetyCritic
-  ↓
-schemaValidator
-  ↓
-CompileJob response
+  -> signalScanner
+  -> riskScanner
+  -> readinessScorer
+  -> routerAgent
+  -> clarificationPlanner
+  -> clarificationAgent
+  -> blueprintBuilder / Blueprint Architect
+  -> safetyCritic / Safety Critic
+  -> schemaValidator
+  -> CompileJob response
 ```
 
-Only the router may use AI.
-
-The following are deterministic:
-
-- signal scan
-- risk scan
-- readiness score
-- clarification plan
-- blueprint generation
-- Safety Critic
-- schema validation
-
----
+Provider-backed agents are mode-dependent and fallback-aware. Deterministic scanners, schema validation, and safety boundaries remain part of the compiler path.
 
 ## Install
 
@@ -404,7 +392,7 @@ The following are deterministic:
 npm install
 ```
 
-## Run locally
+## Run Locally
 
 ```bash
 npm run dev
@@ -413,45 +401,47 @@ npm run dev
 Open:
 
 ```text
+http://localhost:3000/
 http://localhost:3000/compiler
 ```
 
----
-
 ## Validation
 
-Run before marking the current milestone complete:
+Run:
+
+```bash
+npm run typecheck
+npm run build
+```
+
+Optional fixture validation:
 
 ```bash
 npm run validate:fixtures
-npm run typecheck
 ```
 
 Expected:
 
-- fixture validates against the Zod schema
 - TypeScript passes
-- CompileJob includes Safety Critic data
+- production build completes
+- fixture validates against the Zod schema
 - frontend and backend types stay aligned
+- `CompileJob` includes safety, agent, trace/debug, and observability data
 
----
+## Provider Environment
 
-## Provider environment
+FlowForge can run without AI in `rule_only` mode.
 
-FlowForge can run without AI in Demo or Rule-only mode.
-
-For Balanced or Full mode, configure providers if available:
+For `balanced` or `full` mode, configure providers if available:
 
 ```bash
 GROQ_API_KEY=...
 GEMINI_API_KEY=...
 ```
 
-If provider calls fail, the router can fall back to deterministic routing.
+If provider calls fail, FlowForge reports fallback or provider-attempt details in the console and keeps the run non-executing.
 
----
-
-## Demo script
+## Demo Script
 
 Recommended demo order:
 
@@ -459,71 +449,13 @@ Recommended demo order:
 2. Human-gated support reply workflow
 3. Vague customer-message request
 4. Visa/payment/account auto-send request
-5. Show router details in Balanced or Full mode
-6. Show Safety Critic details
+5. Show agent status explanations
+6. Show provider attempts, fallbacks, trace/debug, and LLM call tracking
+7. Show the n8n implementation handoff prompt
 
-Use Demo mode for the safest presentation path.
+Use `rule_only` for the most deterministic presentation path. Use `balanced` or `full` only if provider keys are configured and stable.
 
-Use Balanced or Full mode only if provider keys are configured and stable.
-
----
-
-## Tested M11 scenarios
-
-The following scenarios were tested during M11:
-
-```text
-Safe internal admissions intake
-→ Safe internal preview
-```
-
-```text
-Support reply drafted for team lead review
-→ Needs human approval
-```
-
-```text
-Refund/payment review routed to finance
-→ Needs human approval
-```
-
-```text
-Vague “Automate my customer messages”
-→ Needs clarification
-```
-
-```text
-Visa/payment/account update/send automatically
-→ Not safe to automate
-```
-
-```text
-Medical symptoms/diagnosis/advice/profile update
-→ Not safe to automate
-```
-
-```text
-Delete customer records/cancel subscription/email user
-→ Not safe to automate
-```
-
-Balanced and Full modes preserve deterministic Safety Critic outcomes.
-
----
-
-## Known polish items
-
-The M11 logic is complete, but the UI still has a few polish items:
-
-- Rename “Blocked” counter to “MVP boundaries” when status is not blocked
-- Hide “Before build questions” unless the main state is clarification
-- Show only top clarification questions first
-- Improve risk-specific blocked recommendations
-- Reword “Build non-executing preview — Blocked in MVP” to clarify that execution is blocked, not the preview
-
----
-
-## Design principle
+## Design Principle
 
 FlowForge should keep one thing primary:
 
@@ -535,8 +467,6 @@ Do not automate
 ```
 
 Everything else belongs in details on demand.
-
----
 
 ## License
 
