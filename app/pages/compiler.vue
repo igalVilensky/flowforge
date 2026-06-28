@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { CompileJob, CompileMode } from "../../shared/types/compileJob";
 import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
+import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
 import type {
   ClarificationSession,
   ClarificationSessionAnswer,
@@ -9,6 +10,7 @@ import type {
 
 type PanelView = "context" | "agents" | "details" | "trace";
 type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
+type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
 
 type FlowStepLike = {
   id?: string;
@@ -62,6 +64,14 @@ const clarificationLastResponse = ref<ClarificationSessionResponse | null>(null)
 const activeAgentDetailsId = ref<string | null>(null);
 const showModeMenu = ref(false);
 const handoffCopied = ref(false);
+const n8nGeneratorState = ref<N8nGeneratorState>("idle");
+const n8nGenerateError = ref("");
+const n8nWorkflowDraft = ref<N8nWorkflow | null>(null);
+const n8nWarnings = ref<string[]>([]);
+const n8nProvider = ref("");
+const n8nUsedAi = ref(false);
+const n8nFallbackUsed = ref(false);
+const n8nJsonCopied = ref(false);
 
 const examples = [
   {
@@ -780,6 +790,147 @@ async function copyN8nImplementationPrompt() {
   }, 1800);
 }
 
+const n8nWorkflowJsonText = computed(() => {
+  return n8nWorkflowDraft.value ? JSON.stringify(n8nWorkflowDraft.value, null, 2) : "";
+});
+
+const canGenerateN8nJson = computed(() => {
+  return Boolean(
+    job.value
+    && n8nImplementationPrompt.value
+    && n8nGeneratorState.value !== "generating"
+    && safetyStatus.value !== "not_safe_to_automate"
+    && safetyStatus.value !== "needs_clarification",
+  );
+});
+
+const n8nGeneratorMeta = computed(() => {
+  if (!n8nWorkflowDraft.value) return "";
+
+  return [
+    n8nProvider.value || "provider unknown",
+    n8nUsedAi.value ? "AI draft" : "no AI used",
+    n8nFallbackUsed.value ? "fallback" : "validated",
+  ].join(" · ");
+});
+
+const n8nJsonFileName = computed(() => {
+  const source = job.value?.result?.workflow_name || "flowforge-n8n-draft";
+  const safeName = source
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+
+  return `${safeName || "flowforge-n8n-draft"}.json`;
+});
+
+function resetN8nGeneratorState() {
+  n8nGeneratorState.value = "idle";
+  n8nGenerateError.value = "";
+  n8nWorkflowDraft.value = null;
+  n8nWarnings.value = [];
+  n8nProvider.value = "";
+  n8nUsedAi.value = false;
+  n8nFallbackUsed.value = false;
+  n8nJsonCopied.value = false;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function issueSummaryFromErrorData(data: unknown) {
+  const record = asRecord(data);
+  const nestedData = asRecord(record?.data);
+  const issues = nestedData?.issues;
+
+  if (!Array.isArray(issues)) return "";
+
+  return issues
+    .slice(0, 3)
+    .map((issue) => {
+      const issueRecord = asRecord(issue);
+      const path = typeof issueRecord?.path === "string" ? issueRecord.path : "workflow";
+      const message = typeof issueRecord?.message === "string" ? issueRecord.message : "Invalid n8n workflow JSON.";
+      return `${path}: ${message}`;
+    })
+    .join("; ");
+}
+
+function apiErrorMessage(error: unknown, fallback: string) {
+  const record = asRecord(error);
+  const data = asRecord(record?.data);
+  const responseData = asRecord(asRecord(record?.response)?._data);
+  const base =
+    (typeof data?.statusMessage === "string" && data.statusMessage)
+    || (typeof data?.message === "string" && data.message)
+    || (typeof responseData?.statusMessage === "string" && responseData.statusMessage)
+    || (typeof record?.statusMessage === "string" && record.statusMessage)
+    || (typeof record?.message === "string" && record.message)
+    || fallback;
+
+  if (/413|payload too large|rate_limit_exceeded|tpm limit|requested tokens|tokens per minute|groq api error/i.test(base)) {
+    return "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact blueprint summary, but this request still exceeded the provider limit. Try a shorter workflow or reduce blueprint steps.";
+  }
+
+  const issueSummary = issueSummaryFromErrorData(data);
+
+  return issueSummary ? `${base} ${issueSummary}` : base;
+}
+
+async function generateN8nWorkflowDraft() {
+  if (!job.value || !canGenerateN8nJson.value) return;
+
+  n8nGeneratorState.value = "generating";
+  n8nGenerateError.value = "";
+  n8nJsonCopied.value = false;
+
+  try {
+    const response = await $fetch<N8nGenerateResponse>("/api/n8n-generate", {
+      method: "POST",
+      body: {
+        compile_job: job.value,
+        implementation_prompt: n8nImplementationPrompt.value,
+      },
+    });
+
+    n8nWorkflowDraft.value = response.workflow_json;
+    n8nWarnings.value = response.warnings;
+    n8nProvider.value = response.provider;
+    n8nUsedAi.value = response.used_ai;
+    n8nFallbackUsed.value = response.fallback_used;
+    n8nGeneratorState.value = "ready";
+  } catch (error) {
+    n8nWorkflowDraft.value = null;
+    n8nWarnings.value = [];
+    n8nGenerateError.value = apiErrorMessage(error, "Could not generate n8n JSON draft.");
+    n8nGeneratorState.value = "failed";
+  }
+}
+
+async function copyN8nWorkflowJson() {
+  if (!n8nWorkflowJsonText.value) return;
+
+  await navigator.clipboard.writeText(n8nWorkflowJsonText.value);
+  n8nJsonCopied.value = true;
+  window.setTimeout(() => {
+    n8nJsonCopied.value = false;
+  }, 1800);
+}
+
+function downloadN8nWorkflowJson() {
+  if (!n8nWorkflowJsonText.value) return;
+
+  const blob = new Blob([n8nWorkflowJsonText.value], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = n8nJsonFileName.value;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 const resultTitle = computed(() => {
   if (hasClarification.value) return "Clarifier is asking for one detail";
   if (!job.value) return "Describe an automation";
@@ -831,6 +982,7 @@ function resetRun() {
   activeAgentDetailsId.value = null;
   runState.value = "idle";
   showAnswered.value = false;
+  resetN8nGeneratorState();
 }
 
 function answerPayload(extraAnswer?: ClarificationSessionAnswer) {
@@ -1033,6 +1185,7 @@ async function compilePrompt(input: string) {
     }
 
     job.value = response;
+    resetN8nGeneratorState();
     runState.value = response.safety_critic?.overall_status === "not_safe_to_automate" ? "blocked" : "ready";
     activePanel.value = "context";
   } catch (error) {
@@ -1275,6 +1428,55 @@ function isPrimaryDisabled() {
                 <summary>Preview implementation prompt</summary>
                 <pre>{{ n8nImplementationPrompt }}</pre>
               </details>
+
+              <section class="n8n-json-draft" aria-label="n8n JSON draft generator">
+                <div class="n8n-json-head">
+                  <div>
+                    <h3>n8n JSON draft</h3>
+                    <p>
+                      Generate an importable workflow JSON draft from this safe blueprint while keeping production side effects disabled.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    class="n8n-generate-button"
+                    :disabled="!canGenerateN8nJson"
+                    @click="generateN8nWorkflowDraft"
+                  >
+                    <span v-if="n8nGeneratorState === 'generating'" class="mini-loader" />
+                    <span>{{ n8nGeneratorState === "generating" ? "Generating" : "Generate n8n JSON draft" }}</span>
+                  </button>
+                </div>
+
+                <p class="n8n-safety-note">
+                  Draft only. Review before importing. Credentials are placeholders. Production side effects remain disabled.
+                </p>
+
+                <p v-if="n8nGenerateError" class="n8n-error">
+                  {{ n8nGenerateError }}
+                </p>
+
+                <ul v-if="n8nWarnings.length" class="n8n-warning-list">
+                  <li v-for="warning in n8nWarnings" :key="warning">{{ warning }}</li>
+                </ul>
+
+                <div v-if="n8nWorkflowDraft" class="n8n-json-output">
+                  <div class="n8n-json-toolbar">
+                    <span>{{ n8nGeneratorMeta }}</span>
+                    <div>
+                      <button type="button" class="handoff-copy" @click="copyN8nWorkflowJson">
+                        {{ n8nJsonCopied ? "Copied" : "Copy JSON" }}
+                      </button>
+                      <button type="button" class="handoff-copy" @click="downloadN8nWorkflowJson">
+                        Download JSON
+                      </button>
+                    </div>
+                  </div>
+
+                  <pre>{{ n8nWorkflowJsonText }}</pre>
+                </div>
+              </section>
             </section>
           </section>
         </div>
@@ -2311,6 +2513,12 @@ The current endpoint returns the agent outcome and raw provider response when av
   background: rgba(102, 227, 255, 0.13);
 }
 
+.handoff-copy:disabled,
+.n8n-generate-button:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
 .handoff-preview {
   margin-top: 14px;
   border: 1px solid rgba(145, 166, 255, 0.13);
@@ -2340,6 +2548,135 @@ The current endpoint returns the agent outcome and raw provider response when av
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.n8n-json-draft {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(67, 224, 166, 0.18);
+  border-radius: 16px;
+  background: rgba(67, 224, 166, 0.035);
+}
+
+.n8n-json-head,
+.n8n-json-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.n8n-json-head h3 {
+  margin: 0 0 5px;
+  color: #e9efff;
+  font-size: 15px;
+}
+
+.n8n-json-head p,
+.n8n-safety-note {
+  margin: 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.n8n-generate-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  flex: 0 0 auto;
+  padding: 0 14px;
+  border: 1px solid rgba(67, 224, 166, 0.34);
+  border-radius: 13px;
+  background: rgba(67, 224, 166, 0.1);
+  color: #8ff5cc;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.n8n-generate-button:hover:not(:disabled) {
+  border-color: rgba(67, 224, 166, 0.62);
+  background: rgba(67, 224, 166, 0.15);
+}
+
+.n8n-safety-note {
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 209, 102, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 209, 102, 0.055);
+  color: #ffe7a3;
+}
+
+.n8n-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 107, 107, 0.25);
+  border-radius: 12px;
+  background: rgba(255, 107, 107, 0.055);
+  color: #ffb3b3;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.n8n-warning-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.n8n-warning-list li {
+  padding: 9px 11px;
+  border: 1px solid rgba(145, 166, 255, 0.13);
+  border-radius: 12px;
+  color: #cbd6ff;
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.n8n-json-output {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(145, 166, 255, 0.13);
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.62);
+}
+
+.n8n-json-toolbar {
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(145, 166, 255, 0.13);
+}
+
+.n8n-json-toolbar span {
+  color: #9ba9d8;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.n8n-json-toolbar div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.n8n-json-output pre {
+  max-height: 420px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  color: #dbe4ff;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
 }
 
 .empty-flow {
@@ -2625,6 +2962,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 .answers-toggle,
 .ghost-button,
 .primary-action,
+.n8n-generate-button,
 .agent-card,
 .flow-node,
 .question-card {
@@ -3155,7 +3493,18 @@ The current endpoint returns the agent outcome and raw provider response when av
     flex-direction: column;
   }
 
+  .n8n-json-head,
+  .n8n-json-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .handoff-copy {
+    width: 100%;
+  }
+
+  .n8n-generate-button,
+  .n8n-json-toolbar div {
     width: 100%;
   }
 

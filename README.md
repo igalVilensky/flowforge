@@ -14,6 +14,7 @@ Describe an automation idea
   -> review gates, blocked actions, and risk
   -> expose agent trace and run observability
   -> prepare an n8n implementation handoff prompt
+  -> optionally generate a safe n8n JSON draft
 ```
 
 FlowForge is intentionally conservative. The useful output is not "automation happened." The useful output is a safe preview that a human can inspect before anything is built or connected.
@@ -34,8 +35,9 @@ FlowForge currently includes:
 - risk/safety outcomes
 - horizontal blueprint flow visualization
 - n8n implementation handoff prompt
+- experimental n8n workflow JSON draft generation
 
-The n8n handoff is a builder prompt for a human implementer. FlowForge does **not** currently generate full n8n workflow JSON.
+The n8n JSON output is a draft/template only. It is generated behind an explicit button, uses placeholder credentials, stays inactive, and must be reviewed before import or connection to real services.
 
 ## What FlowForge Does
 
@@ -129,6 +131,8 @@ When the session is ready, the page calls `/api/compile` with the clarified prom
 ### 4. FlowForge prepares implementation handoff
 
 For valid blueprint results, the compiler page can generate an n8n builder prompt. The prompt describes the node-by-node implementation constraints, human approval points, test-data guidance, and what must remain disabled before production.
+
+The compiler page can also generate an experimental n8n workflow JSON draft when `GROQ_N8N_API_KEY` is configured. The draft is validated before display, marked as draft-only, and can be copied or downloaded. The generator uses a compact blueprint summary, not the full `CompileJob`, and it must not be treated as execution-ready.
 
 ## Agent Stack
 
@@ -314,6 +318,43 @@ The clarification response includes:
 - `ready_to_compile=true`
 - `rewritten_compile_prompt`
 
+### n8n JSON Draft Generation
+
+```text
+POST /api/n8n-generate
+```
+
+Request:
+
+```ts
+{
+  compile_job: CompileJob;
+  implementation_prompt: string;
+}
+```
+
+The endpoint accepts the full compile job from the UI, then builds a compact server-side generator payload. It sends only the original request, workflow name, short summaries, safety status, next safe action, capped steps, capped approval gates, capped blocked actions, and capped warnings to the model. It intentionally excludes `agent_debug`, agent trace, provider attempts, raw model responses, token usage, router/debug details, the full risk/readiness objects, and the full implementation prompt.
+
+Response:
+
+```ts
+{
+  workflow_json: object;
+  warnings: string[];
+  provider: "groq";
+  used_ai: boolean;
+  fallback_used: boolean;
+}
+```
+
+If `GROQ_N8N_API_KEY` is missing, the endpoint returns:
+
+```text
+n8n JSON generator is not configured. Add GROQ_N8N_API_KEY to enable this feature.
+```
+
+The endpoint validates that the model output is JSON, includes `nodes` and `connections`, has required node fields, is not empty, is not active, uses placeholder credentials, and rejects obvious active external side-effect nodes. Generated workflow JSON remains a non-executing draft.
+
 ## Tech Stack
 
 - Nuxt 4
@@ -340,13 +381,16 @@ shared/
     agentOutputs.ts
     clarificationSession.ts
     compileJob.ts
+    n8nWorkflow.ts
     workflow.ts
 
 server/
   api/
     clarify.post.ts
     compile.post.ts
+    n8n-generate.post.ts
   prompts/
+    n8nWorkflowGeneratorPrompt.ts
     clarificationConversationPrompt.ts
     clarificationAgentPrompt.ts
     blueprintArchitectPrompt.ts
@@ -355,10 +399,12 @@ server/
     agentOutputs.schema.ts
     clarificationSession.schema.ts
     compileJob.schema.ts
+    n8nWorkflow.schema.ts
   services/
     blueprintBuilder.ts
     clarificationAgent.ts
     clarificationConversationAgent.ts
+    n8nWorkflowGeneratorAgent.ts
     clarificationPlanner.ts
     readinessScorer.ts
     riskScanner.ts
@@ -439,6 +485,12 @@ GROQ_API_KEY=...
 GEMINI_API_KEY=...
 ```
 
+For experimental n8n JSON draft generation:
+
+```bash
+GROQ_N8N_API_KEY=...
+```
+
 If provider calls fail, FlowForge reports fallback or provider-attempt details in the console and keeps the run non-executing.
 
 ## Demo Script
@@ -452,6 +504,7 @@ Recommended demo order:
 5. Show agent status explanations
 6. Show provider attempts, fallbacks, trace/debug, and LLM call tracking
 7. Show the n8n implementation handoff prompt
+8. Generate the experimental n8n JSON draft, if `GROQ_N8N_API_KEY` is configured
 
 Use `rule_only` for the most deterministic presentation path. Use `balanced` or `full` only if provider keys are configured and stable.
 

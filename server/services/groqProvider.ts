@@ -1,19 +1,36 @@
 import process from "node:process";
 
+type GroqCallOptions = {
+  apiKeyEnv?: string;
+  modelEnv?: string;
+  maxTokensEnv?: string;
+  defaultModel?: string;
+  defaultMaxTokens?: number;
+  maxTokensCap?: number;
+  timeoutMs?: number;
+};
+
 export async function callGroq(
   prompt: string,
   systemPrompt: string,
+  options: GroqCallOptions = {},
 ): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY;
-  const model = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
-  const maxTokens = Number(process.env.GROQ_MAX_TOKENS || 900);
+  const apiKeyEnv = options.apiKeyEnv ?? "GROQ_API_KEY";
+  const modelEnv = options.modelEnv ?? "GROQ_MODEL";
+  const maxTokensEnv = options.maxTokensEnv ?? "GROQ_MAX_TOKENS";
+  const apiKey = process.env[apiKeyEnv];
+  const model = process.env[modelEnv] || options.defaultModel || "llama-3.1-8b-instant";
+  const configuredMaxTokens = Number(process.env[maxTokensEnv] || options.defaultMaxTokens || 900);
+  const maxTokens = options.maxTokensCap
+    ? Math.min(configuredMaxTokens, options.maxTokensCap)
+    : configuredMaxTokens;
 
   if (!apiKey) {
-    throw new Error("GROQ_API_KEY is not set.");
+    throw new Error(`${apiKeyEnv} is not set.`);
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? 15000);
 
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {

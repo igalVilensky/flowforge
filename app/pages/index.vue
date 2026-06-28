@@ -34,7 +34,7 @@ const compilerPasses = [
   {
     label: "Handoff",
     title: "Prepare implementation guidance",
-    copy: "Generate an n8n builder prompt for a human to implement with constraints intact.",
+    copy: "Generate an n8n builder prompt or experimental JSON draft with constraints intact.",
   },
 ];
 
@@ -85,7 +85,7 @@ const featureCards = [
   },
   {
     title: "n8n handoff",
-    copy: "FlowForge creates an implementation prompt with approval constraints and disabled side effects.",
+    copy: "FlowForge creates an implementation prompt and optional draft JSON with approval constraints and disabled side effects.",
   },
 ];
 
@@ -125,7 +125,7 @@ const handoffRules = [
   "Use test credentials or mocked data first.",
   "Keep production writes disabled by default.",
   "Require human approval for external or sensitive actions.",
-  "Treat the n8n output as a builder prompt, not generated workflow JSON.",
+  "Treat n8n JSON as a draft template, not an execution-ready workflow.",
 ];
 </script>
 
@@ -300,12 +300,13 @@ const handoffRules = [
     <section class="handoff-section" aria-labelledby="handoff-title">
       <div>
         <p class="eyebrow">Implementation handoff</p>
-        <h2 id="handoff-title">From safe blueprint to n8n builder prompt.</h2>
+        <h2 id="handoff-title">From safe blueprint to n8n handoff.</h2>
         <p>
           The compiler can prepare a concrete implementation prompt for a human
-          builder. It carries forward approval constraints and blocked actions,
-          but FlowForge still does not execute workflows, connect production
-          tools, or emit finished n8n workflow JSON.
+          builder, plus an experimental draft JSON export when configured. It
+          carries forward approval constraints and blocked actions, but
+          FlowForge still does not execute workflows or connect production
+          tools.
         </p>
       </div>
 
