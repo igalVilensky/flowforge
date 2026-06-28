@@ -201,7 +201,6 @@ function buildNodeNameAliases(input: Record<string, unknown>): Map<string, strin
     }
 
     const nameAlias = nodeAlias(node.name);
-
     aliases.set(nameAlias, node.name);
 
     const firstWord = nodeAlias(node.name.split(/\s+/)[0]);
@@ -322,6 +321,459 @@ export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
   };
 }
 
+function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<string, unknown> {
+  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
+  const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
+
+  const existingJsCode = typeof parameters.jsCode === "string" ? parameters.jsCode : "";
+  const legacyCode = typeof parameters.code === "string" ? parameters.code : "";
+
+  if (!existingJsCode && legacyCode) {
+    parameters.jsCode = legacyCode;
+    delete parameters.code;
+  }
+
+  const isSampleNode = nodeName.includes("sample");
+  const isExtractNode = nodeName.includes("extract");
+  const isClassifyNode = nodeName.includes("classify");
+
+  if (isSampleNode) {
+    parameters.jsCode = [
+      "return [{",
+      "  json: {",
+      "    subject: \"Job Application\",",
+      "    body: \"Sample application email for safe draft testing only.\",",
+      "    candidate_name: \"\",",
+      "    role: \"\",",
+      "    portfolio_link: \"\",",
+      "    application_source: \"\"",
+      "  }",
+      "}];",
+    ].join("\n");
+  }
+
+  if (isExtractNode && nodeName.includes("candidate")) {
+    parameters.jsCode = [
+      "return items.map((item) => ({",
+      "  json: {",
+      "    ...item.json,",
+      "    candidate_name: item.json.candidate_name || \"\",",
+      "    role: item.json.role || \"\",",
+      "    portfolio_link: item.json.portfolio_link || \"\",",
+      "    application_source: item.json.application_source || \"\"",
+      "  }",
+      "}));",
+    ].join("\n");
+  }
+
+  if (isClassifyNode) {
+    parameters.jsCode = [
+      "return items.map((item) => {",
+      "  const role = String(item.json.role || \"\").toLowerCase();",
+      "  const portfolio = String(item.json.portfolio_link || \"\");",
+      "  const source = String(item.json.application_source || \"\").toLowerCase();",
+      "",
+      "  const priority = portfolio || role.includes(\"senior\") || source.includes(\"referral\")",
+      "    ? \"high\"",
+      "    : \"normal\";",
+      "",
+      "  return {",
+      "    json: {",
+      "      ...item.json,",
+      "      priority",
+      "    }",
+      "  };",
+      "});",
+    ].join("\n");
+  }
+
+  return {
+    ...node,
+    parameters,
+  };
+}
+
+function normalizeStickyNoteParameters(node: Record<string, unknown>): Record<string, unknown> {
+  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
+  const hasText =
+    typeof parameters.content === "string"
+    || typeof parameters.text === "string"
+    || typeof parameters.note === "string";
+
+  if (!hasText) {
+    parameters.content = "Manual review required before contacting candidates, sending external messages, or connecting production systems.";
+  }
+
+  return {
+    ...node,
+    parameters,
+  };
+}
+
+function normalizeSetNodeParameters(node: Record<string, unknown>): Record<string, unknown> {
+  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
+  const values = isRecord(parameters.values) ? { ...parameters.values } : null;
+  const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
+
+  if (!values) {
+    return {
+      ...node,
+      parameters,
+    };
+  }
+
+  if (nodeName.includes("extract candidate")) {
+    parameters.values = {
+      candidate_name: values.candidate_name || "={{ $json.candidate_name }}",
+      role: values.role || "={{ $json.role }}",
+      portfolio_link: values.portfolio_link || "={{ $json.portfolio_link }}",
+      application_source: values.application_source || "={{ $json.application_source }}",
+    };
+  }
+
+  const currentValues = isRecord(parameters.values) ? parameters.values : values;
+
+  if (nodeName.includes("review") && !currentValues.review_status) {
+    parameters.values = {
+      ...currentValues,
+      review_status: "pending",
+    };
+  }
+
+  return {
+    ...node,
+    parameters,
+  };
+}
+
+export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    nodes: input.nodes.map((node) => {
+      if (!isRecord(node) || typeof node.type !== "string") {
+        return node;
+      }
+
+      if (node.type === "n8n-nodes-base.code") {
+        return normalizeCodeNodeParameters(node);
+      }
+
+      if (node.type === "n8n-nodes-base.stickyNote") {
+        return normalizeStickyNoteParameters(node);
+      }
+
+      if (node.type === "n8n-nodes-base.set") {
+        return normalizeSetNodeParameters(node);
+      }
+
+      return node;
+    }),
+  };
+}
+
+function connectionTargetNodeName(target: unknown): string | null {
+  if (!isRecord(target) || typeof target.node !== "string" || !target.node.trim()) {
+    return null;
+  }
+
+  return target.node;
+}
+
+function getConnectionTargetsForSource(connections: Record<string, unknown>, sourceNodeName: string): string[] {
+  const nodeConnections = connections[sourceNodeName];
+
+  if (!isRecord(nodeConnections)) {
+    return [];
+  }
+
+  const targets: string[] = [];
+
+  for (const output of Object.values(nodeConnections)) {
+    if (!Array.isArray(output)) {
+      continue;
+    }
+
+    for (const group of output) {
+      if (!Array.isArray(group)) {
+        continue;
+      }
+
+      for (const target of group) {
+        const targetName = connectionTargetNodeName(target);
+
+        if (targetName) {
+          targets.push(targetName);
+        }
+      }
+    }
+  }
+
+  return targets;
+}
+
+function getSourcesTargetingNode(connections: Record<string, unknown>, targetNodeName: string): string[] {
+  const sources: string[] = [];
+
+  for (const [sourceNodeName, nodeConnections] of Object.entries(connections)) {
+    if (!isRecord(nodeConnections)) {
+      continue;
+    }
+
+    for (const output of Object.values(nodeConnections)) {
+      if (!Array.isArray(output)) {
+        continue;
+      }
+
+      for (const group of output) {
+        if (!Array.isArray(group)) {
+          continue;
+        }
+
+        const hasTarget = group.some((target) => connectionTargetNodeName(target) === targetNodeName);
+
+        if (hasTarget) {
+          sources.push(sourceNodeName);
+        }
+      }
+    }
+  }
+
+  return [...new Set(sources)];
+}
+
+function createMainConnection(targetNodeName: string): Record<string, unknown> {
+  return {
+    node: targetNodeName,
+    type: "main",
+    index: 0,
+  };
+}
+
+function removeTargetsFromConnectionOutput(output: unknown, nodesToRemove: ReadonlySet<string>): unknown {
+  if (!Array.isArray(output)) {
+    return output;
+  }
+
+  return output
+    .map((group) => {
+      if (!Array.isArray(group)) {
+        return group;
+      }
+
+      return group.filter((target) => {
+        const targetName = connectionTargetNodeName(target);
+        return !targetName || !nodesToRemove.has(targetName);
+      });
+    })
+    .filter((group) => !Array.isArray(group) || group.length > 0);
+}
+
+function removeTargetsFromNodeConnections(
+  nodeConnections: Record<string, unknown>,
+  nodesToRemove: ReadonlySet<string>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const [connectionType, output] of Object.entries(nodeConnections)) {
+    const cleanedOutput = removeTargetsFromConnectionOutput(output, nodesToRemove);
+
+    if (Array.isArray(cleanedOutput) && cleanedOutput.length === 0) {
+      continue;
+    }
+
+    result[connectionType] = cleanedOutput;
+  }
+
+  return result;
+}
+
+function addMainConnection(
+  connections: Record<string, unknown>,
+  sourceNodeName: string,
+  targetNodeName: string,
+): void {
+  if (sourceNodeName === targetNodeName) {
+    return;
+  }
+
+  const sourceConnections = isRecord(connections[sourceNodeName])
+    ? { ...connections[sourceNodeName] }
+    : {};
+
+  const mainOutput = Array.isArray(sourceConnections.main)
+    ? [...sourceConnections.main]
+    : [];
+
+  const firstGroup = Array.isArray(mainOutput[0])
+    ? [...mainOutput[0]]
+    : [];
+
+  const alreadyConnected = firstGroup.some((target) => connectionTargetNodeName(target) === targetNodeName);
+
+  if (!alreadyConnected) {
+    firstGroup.push(createMainConnection(targetNodeName));
+  }
+
+  sourceConnections.main = [firstGroup, ...mainOutput.slice(1)];
+  connections[sourceNodeName] = sourceConnections;
+}
+
+function isStickyNoteNode(node: unknown): boolean {
+  return isRecord(node) && node.type === "n8n-nodes-base.stickyNote" && typeof node.name === "string";
+}
+
+export function normalizeStickyNoteConnections(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes) || !isRecord(input.connections)) {
+    return input;
+  }
+
+  const stickyNoteNames = new Set(
+    input.nodes
+      .filter(isStickyNoteNode)
+      .map((node) => (node as Record<string, unknown>).name)
+      .filter((name): name is string => typeof name === "string" && Boolean(name.trim())),
+  );
+
+  if (stickyNoteNames.size === 0) {
+    return input;
+  }
+
+  const originalConnections = input.connections;
+  const cleanedConnections: Record<string, unknown> = {};
+
+  for (const [sourceNodeName, nodeConnections] of Object.entries(originalConnections)) {
+    if (stickyNoteNames.has(sourceNodeName)) {
+      continue;
+    }
+
+    if (!isRecord(nodeConnections)) {
+      cleanedConnections[sourceNodeName] = nodeConnections;
+      continue;
+    }
+
+    const cleanedNodeConnections = removeTargetsFromNodeConnections(nodeConnections, stickyNoteNames);
+
+    if (Object.keys(cleanedNodeConnections).length > 0) {
+      cleanedConnections[sourceNodeName] = cleanedNodeConnections;
+    }
+  }
+
+  for (const stickyNoteName of stickyNoteNames) {
+    const previousSources = getSourcesTargetingNode(originalConnections, stickyNoteName).filter(
+      (source) => !stickyNoteNames.has(source),
+    );
+
+    const nextTargets = getConnectionTargetsForSource(originalConnections, stickyNoteName).filter(
+      (target) => !stickyNoteNames.has(target),
+    );
+
+    for (const previousSource of previousSources) {
+      for (const nextTarget of nextTargets) {
+        addMainConnection(cleanedConnections, previousSource, nextTarget);
+      }
+    }
+  }
+
+  return {
+    ...input,
+    connections: cleanedConnections,
+  };
+}
+
+function isReviewSetNode(node: unknown): node is Record<string, unknown> {
+  if (!isRecord(node)) return false;
+
+  const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
+  const nodeType = typeof node.type === "string" ? node.type : "";
+
+  return nodeType === "n8n-nodes-base.set"
+    && nodeName.includes("review")
+    && (
+      nodeName.includes("task")
+      || nodeName.includes("gate")
+      || nodeName.includes("pending")
+    );
+}
+
+function findDuplicateReviewSetNodeNames(nodes: unknown[]): Set<string> {
+  const reviewSetNodes = nodes.filter(isReviewSetNode);
+
+  if (reviewSetNodes.length <= 1) {
+    return new Set();
+  }
+
+  const preferredNode = reviewSetNodes.find((node) => {
+    const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
+
+    return nodeName.startsWith("prepare ")
+      || nodeName.includes("prepare admissions")
+      || nodeName.includes("prepare support")
+      || nodeName.includes("prepare finance");
+  }) ?? reviewSetNodes[0];
+
+  const preferredName = typeof preferredNode?.name === "string" ? preferredNode.name : "";
+
+  return new Set(
+    reviewSetNodes
+      .map((node) => typeof node.name === "string" ? node.name : "")
+      .filter((name) => name && name !== preferredName),
+  );
+}
+
+function removeNodesFromConnections(
+  connections: Record<string, unknown>,
+  nodeNamesToRemove: ReadonlySet<string>,
+): Record<string, unknown> {
+  const cleanedConnections: Record<string, unknown> = {};
+
+  for (const [sourceNodeName, nodeConnections] of Object.entries(connections)) {
+    if (nodeNamesToRemove.has(sourceNodeName)) {
+      continue;
+    }
+
+    if (!isRecord(nodeConnections)) {
+      cleanedConnections[sourceNodeName] = nodeConnections;
+      continue;
+    }
+
+    const cleanedNodeConnections = removeTargetsFromNodeConnections(nodeConnections, nodeNamesToRemove);
+
+    if (Object.keys(cleanedNodeConnections).length > 0) {
+      cleanedConnections[sourceNodeName] = cleanedNodeConnections;
+    }
+  }
+
+  return cleanedConnections;
+}
+
+export function normalizeDuplicateReviewSetNodes(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes) || !isRecord(input.connections)) {
+    return input;
+  }
+
+  const duplicateReviewNodeNames = findDuplicateReviewSetNodeNames(input.nodes);
+
+  if (duplicateReviewNodeNames.size === 0) {
+    return input;
+  }
+
+  return {
+    ...input,
+    nodes: input.nodes.filter((node) => {
+      if (!isRecord(node) || typeof node.name !== "string") {
+        return true;
+      }
+
+      return !duplicateReviewNodeNames.has(node.name);
+    }),
+    connections: removeNodesFromConnections(input.connections, duplicateReviewNodeNames),
+  };
+}
+
 function workflowWarnings(workflow: N8nWorkflow): string[] {
   const disabledNodes = workflow.nodes.filter((node) => node.disabled === true);
   const warnings = [
@@ -372,7 +824,10 @@ export async function runN8nWorkflowGeneratorAgent(input: {
   const parsed = parseStrictJson(rawResponse);
   const named = normalizeGeneratedWorkflowName(parsed, compactInput.workflow_name);
   const normalizedIds = normalizeGeneratedWorkflowIds(named);
-  const normalized = normalizeGeneratedWorkflowConnections(normalizedIds);
+  const normalizedConnections = normalizeGeneratedWorkflowConnections(normalizedIds);
+  const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(normalizedConnections);
+  const normalizedStickyNotes = normalizeStickyNoteConnections(normalizedParameters);
+  const normalized = normalizeDuplicateReviewSetNodes(normalizedStickyNotes);
   const validation = n8nWorkflowSchema.safeParse(normalized);
 
   if (!validation.success) {
