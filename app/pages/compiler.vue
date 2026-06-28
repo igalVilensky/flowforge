@@ -68,6 +68,8 @@ const n8nGeneratorState = ref<N8nGeneratorState>("idle");
 const n8nGenerateError = ref("");
 const n8nWorkflowDraft = ref<N8nWorkflow | null>(null);
 const n8nWarnings = ref<string[]>([]);
+const n8nStaticSafetyWarning =
+  "Draft only. Review before importing. Credentials are placeholders. Production side effects remain disabled.";
 const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
@@ -794,6 +796,10 @@ const n8nWorkflowJsonText = computed(() => {
   return n8nWorkflowDraft.value ? JSON.stringify(n8nWorkflowDraft.value, null, 2) : "";
 });
 
+const displayedN8nWarnings = computed(() => {
+  return n8nWarnings.value.filter((warning) => warning !== n8nStaticSafetyWarning);
+});
+
 const canGenerateN8nJson = computed(() => {
   return Boolean(
     job.value
@@ -871,7 +877,7 @@ function apiErrorMessage(error: unknown, fallback: string) {
     || fallback;
 
   if (/413|payload too large|rate_limit_exceeded|tpm limit|requested tokens|tokens per minute|groq api error/i.test(base)) {
-    return "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact blueprint summary, but this request still exceeded the provider limit. Try a shorter workflow or reduce blueprint steps.";
+    return "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact implementation brief, but this request still exceeded the provider limit. Try a shorter workflow or reduce workflow details.";
   }
 
   const issueSummary = issueSummaryFromErrorData(data);
@@ -1450,15 +1456,15 @@ function isPrimaryDisabled() {
                 </div>
 
                 <p class="n8n-safety-note">
-                  Draft only. Review before importing. Credentials are placeholders. Production side effects remain disabled.
+                  {{ n8nStaticSafetyWarning }}
                 </p>
 
                 <p v-if="n8nGenerateError" class="n8n-error">
                   {{ n8nGenerateError }}
                 </p>
 
-                <ul v-if="n8nWarnings.length" class="n8n-warning-list">
-                  <li v-for="warning in n8nWarnings" :key="warning">{{ warning }}</li>
+                <ul v-if="displayedN8nWarnings.length" class="n8n-warning-list">
+                  <li v-for="warning in displayedN8nWarnings" :key="warning">{{ warning }}</li>
                 </ul>
 
                 <div v-if="n8nWorkflowDraft" class="n8n-json-output">

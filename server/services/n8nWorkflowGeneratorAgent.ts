@@ -7,18 +7,18 @@ import type {
   N8nWorkflow,
 } from "../../shared/types/n8nWorkflow";
 import {
-  buildCompactN8nGenerationInput,
   buildN8nWorkflowGeneratorUserPrompt,
   n8nWorkflowGeneratorSystemPrompt,
 } from "../prompts/n8nWorkflowGeneratorPrompt";
 import { n8nWorkflowSchema } from "../schemas/n8nWorkflow.schema";
 import { callGroq } from "./groqProvider";
+import { buildCompactN8nGenerationInput } from "./n8nImplementationBriefBuilder";
 
 export const n8nGeneratorNotConfiguredMessage =
   "n8n JSON generator is not configured. Add GROQ_N8N_API_KEY to enable this feature.";
 
 export const n8nGeneratorProviderLimitMessage =
-  "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact blueprint summary, but this request still exceeded the provider limit. Try a shorter workflow or reduce blueprint steps.";
+  "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact implementation brief, but this request still exceeded the provider limit. Try a shorter workflow or reduce workflow details.";
 
 export type N8nWorkflowValidationIssue = {
   path: string;
@@ -102,6 +102,15 @@ function slugifyNodeId(value: unknown, fallback: string): string {
   return slug || fallback;
 }
 
+function nodeAlias(value: unknown): string {
+  return typeof value === "string"
+    ? value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+    : "";
+}
+
 function uniqueNodeId(baseId: string, usedIds: Set<string>): string {
   let candidate = baseId;
   let suffix = 2;
@@ -113,6 +122,45 @@ function uniqueNodeId(baseId: string, usedIds: Set<string>): string {
 
   usedIds.add(candidate);
   return candidate;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isGenericGeneratedWorkflowName(value: unknown): boolean {
+  if (typeof value !== "string") return true;
+
+  const normalized = value
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return !normalized
+    || [
+      "classification workflow",
+      "extraction workflow",
+      "safe automation preview",
+      "draft workflow",
+      "draft n8n workflow",
+      "n8n workflow",
+      "workflow",
+    ].includes(normalized);
+}
+
+export function normalizeGeneratedWorkflowName(input: unknown, workflowName: string): unknown {
+  if (!isRecord(input)) {
+    return input;
+  }
+
+  if (!isGenericGeneratedWorkflowName(input.name)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    name: workflowName,
+  };
 }
 
 export function normalizeGeneratedWorkflowIds(input: unknown): unknown {
@@ -139,6 +187,138 @@ export function normalizeGeneratedWorkflowIds(input: unknown): unknown {
         id: uniqueNodeId(baseId, usedIds),
       };
     }),
+  };
+}
+
+function buildNodeNameAliases(input: Record<string, unknown>): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const nodes = Array.isArray(input.nodes) ? input.nodes : [];
+  const firstWordCandidates = new Map<string, string[]>();
+
+  for (const node of nodes) {
+    if (!isRecord(node) || typeof node.name !== "string" || !node.name.trim()) {
+      continue;
+    }
+
+    const nameAlias = nodeAlias(node.name);
+
+    aliases.set(nameAlias, node.name);
+
+    const firstWord = nodeAlias(node.name.split(/\s+/)[0]);
+
+    if (firstWord) {
+      firstWordCandidates.set(firstWord, [...(firstWordCandidates.get(firstWord) ?? []), node.name]);
+    }
+
+    if (typeof node.id === "string" && node.id.trim()) {
+      aliases.set(nodeAlias(node.id), node.name);
+    }
+
+    if (nameAlias.includes("manual_review")) {
+      aliases.set("review", node.name);
+      aliases.set("manual", node.name);
+      aliases.set("manual_review", node.name);
+      aliases.set("review_gate", node.name);
+    }
+  }
+
+  for (const [firstWord, names] of firstWordCandidates) {
+    if (names.length === 1 && !aliases.has(firstWord)) {
+      aliases.set(firstWord, names[0] ?? "");
+    }
+  }
+
+  return aliases;
+}
+
+function resolveConnectionNodeName(value: string, aliases: Map<string, string>): string {
+  return aliases.get(nodeAlias(value)) ?? value;
+}
+
+function normalizeConnectionTarget(target: unknown, aliases: Map<string, string>): unknown {
+  if (typeof target === "string") {
+    return {
+      node: resolveConnectionNodeName(target, aliases),
+      type: "main",
+      index: 0,
+    };
+  }
+
+  if (!isRecord(target) || typeof target.node !== "string") {
+    return target;
+  }
+
+  const resolvedNodeName = resolveConnectionNodeName(target.node, aliases);
+
+  if (
+    typeof target.type === "string"
+    && typeof target.index === "number"
+    && target.node === resolvedNodeName
+  ) {
+    return target;
+  }
+
+  return {
+    ...target,
+    node: resolvedNodeName,
+    type: typeof target.type === "string" ? target.type : "main",
+    index: typeof target.index === "number" ? target.index : 0,
+  };
+}
+
+function normalizeConnectionGroup(group: unknown, aliases: Map<string, string>): unknown {
+  if (Array.isArray(group)) {
+    return group.map((target) => normalizeConnectionTarget(target, aliases));
+  }
+
+  if (typeof group === "string" || (isRecord(group) && typeof group.node === "string")) {
+    return [normalizeConnectionTarget(group, aliases)];
+  }
+
+  return group;
+}
+
+function normalizeConnectionOutput(output: unknown, aliases: Map<string, string>): unknown {
+  if (Array.isArray(output)) {
+    return output.map((group) => normalizeConnectionGroup(group, aliases));
+  }
+
+  if (typeof output === "string" || (isRecord(output) && typeof output.node === "string")) {
+    return [[normalizeConnectionTarget(output, aliases)]];
+  }
+
+  return output;
+}
+
+export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
+  if (!isRecord(input) || !isRecord(input.connections)) {
+    return input;
+  }
+
+  const aliases = buildNodeNameAliases(input);
+  const normalizedConnections = Object.fromEntries(
+    Object.entries(input.connections).map(([sourceNodeName, nodeConnections]) => {
+      if (!isRecord(nodeConnections)) {
+        return [sourceNodeName, nodeConnections];
+      }
+
+      const resolvedSourceNodeName = resolveConnectionNodeName(sourceNodeName, aliases);
+
+      return [
+        resolvedSourceNodeName,
+        Object.fromEntries(
+          Object.entries(nodeConnections).map(([connectionType, output]) => [
+            connectionType,
+            normalizeConnectionOutput(output, aliases),
+          ]),
+        ),
+      ];
+    }),
+  );
+
+  return {
+    ...input,
+    connections: normalizedConnections,
   };
 }
 
@@ -190,7 +370,9 @@ export async function runN8nWorkflowGeneratorAgent(input: {
   }
 
   const parsed = parseStrictJson(rawResponse);
-  const normalized = normalizeGeneratedWorkflowIds(parsed);
+  const named = normalizeGeneratedWorkflowName(parsed, compactInput.workflow_name);
+  const normalizedIds = normalizeGeneratedWorkflowIds(named);
+  const normalized = normalizeGeneratedWorkflowConnections(normalizedIds);
   const validation = n8nWorkflowSchema.safeParse(normalized);
 
   if (!validation.success) {

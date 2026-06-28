@@ -132,7 +132,7 @@ When the session is ready, the page calls `/api/compile` with the clarified prom
 
 For valid blueprint results, the compiler page can generate an n8n builder prompt. The prompt describes the node-by-node implementation constraints, human approval points, test-data guidance, and what must remain disabled before production.
 
-The compiler page can also generate an experimental n8n workflow JSON draft when `GROQ_N8N_API_KEY` is configured. The draft is validated before display, marked as draft-only, and can be copied or downloaded. The generator uses a compact blueprint summary, not the full `CompileJob`, and it must not be treated as execution-ready.
+The compiler page can also generate an experimental n8n workflow JSON draft when `GROQ_N8N_API_KEY` is configured. The draft is validated before display, marked as draft-only, and can be copied or downloaded. The generator uses a compact implementation brief, not the full `CompileJob`, and it must not be treated as execution-ready.
 
 ## Agent Stack
 

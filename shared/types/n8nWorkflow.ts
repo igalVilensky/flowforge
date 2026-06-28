@@ -30,15 +30,29 @@ export type N8nGenerateRequest = {
   implementation_prompt: string;
 };
 
-export type CompactN8nWorkflowStep = {
-  label: string;
-  description: string;
-  primitive: string;
-  automation_policy: string;
-  real_world_execution: string;
+export type N8nAllowedNodeType =
+  | "n8n-nodes-base.manualTrigger"
+  | "n8n-nodes-base.scheduleTrigger"
+  | "n8n-nodes-base.set"
+  | "n8n-nodes-base.code"
+  | "n8n-nodes-base.if"
+  | "n8n-nodes-base.stickyNote";
+
+export type N8nImplementationBrief = {
+  workflow_goal: string;
+  trigger_description: string;
+  source: string;
+  extracted_fields: string[];
+  classification_target: string;
+  classification_rules: string[];
+  internal_outputs: string[];
+  human_approval_gates: string[];
+  blocked_or_not_safe_actions: string[];
+  warnings: string[];
+  recommended_nodes: string[];
 };
 
-export type CompactN8nGenerationInput = {
+export type CompactN8nGenerationInput = N8nImplementationBrief & {
   original_request: string;
   workflow_name: string;
   blueprint_summary: string;
@@ -47,10 +61,6 @@ export type CompactN8nGenerationInput = {
   next_safe_action: string;
   risk_level?: string;
   readiness_score?: number;
-  workflow_steps: CompactN8nWorkflowStep[];
-  human_approval_gates: string[];
-  blocked_or_not_safe_actions: string[];
-  warnings: string[];
 };
 
 export type N8nGenerateResponse = {
