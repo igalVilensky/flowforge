@@ -345,6 +345,80 @@ function compactText(value: unknown, maxLength = 220) {
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
+function providerDisplayName(provider?: string) {
+  if (!provider) return "Provider";
+  if (provider === "groq") return "Groq";
+  if (provider === "gemini") return "Gemini";
+  if (provider === "deterministic") return "Deterministic";
+
+  return provider.replaceAll("_", " ");
+}
+
+function normalizeProviderFailureMessage(provider: unknown, errorSummary: unknown) {
+  const providerName = providerDisplayName(typeof provider === "string" ? provider : undefined);
+  const rawText = typeof errorSummary === "string" ? errorSummary : String(errorSummary ?? "");
+  const normalized = rawText.toLowerCase();
+
+  if (
+    normalized.includes("429")
+    || normalized.includes("too many requests")
+    || normalized.includes("rate limit")
+    || normalized.includes("rate_limit")
+  ) {
+    return `${providerName} rate limit reached. Try again later or use deterministic fallback.`;
+  }
+
+  if (
+    normalized.includes("aborted")
+    || normalized.includes("aborterror")
+    || normalized.includes("timed out")
+    || normalized.includes("timeout")
+  ) {
+    return `${providerName} request timed out or was aborted.`;
+  }
+
+  if (
+    normalized.includes("schema")
+    || normalized.includes("validation")
+    || normalized.includes("invalid json")
+    || normalized.includes("no valid json")
+    || normalized.includes("failed to parse")
+    || normalized.includes("unexpected token")
+  ) {
+    return "Invalid AI output rejected by schema.";
+  }
+
+  if (normalized.includes("api_key") || normalized.includes("is not set") || normalized.includes("not configured")) {
+    return `${providerName} is not configured. Deterministic fallback can still complete the run.`;
+  }
+
+  if (!rawText) return "Unknown provider failure.";
+
+  return rawText.length <= 120
+    ? rawText
+    : `${providerName} provider failed. Deterministic fallback can still complete the run.`;
+}
+
+function cleanFallbackReason(reason?: string) {
+  const text = reason ?? "";
+  const normalized = text.toLowerCase();
+
+  if (
+    normalized.includes("safety critic ai was unavailable")
+    || normalized.includes("safety critic agent provider")
+  ) {
+    return "Fallback used: deterministic safety review completed because AI provider output was unavailable.";
+  }
+
+  if (normalized.includes("deterministic fallback was used") && normalized.includes("provider key")) {
+    return "Fallback used: deterministic review completed because no AI provider key was configured.";
+  }
+
+  if (!text) return "Fallback used: deterministic checks completed this step.";
+
+  return compactText(text, 150);
+}
+
 function addFact(items: DetailItem[], label: string, value: unknown) {
   if (value === null || value === undefined || value === "") return;
   items.push({ label, value: String(value) });
@@ -378,11 +452,11 @@ function agentStatusLabel(provider?: string, usedAi?: boolean, fallback?: boolea
 }
 
 function agentStatusReason(provider?: string, usedAi?: boolean, fallback?: boolean, reason?: string, status?: unknown) {
-  if (reason) return compactText(reason, 150);
   if (status === "skipped") return "Not needed for this run.";
   if (!provider || provider === "standby") return "Waiting for a compile run.";
   if (usedAi) return `This agent successfully used ${provider}.`;
-  if (fallback) return "Provider failed, was unavailable, or output did not pass validation.";
+  if (fallback) return cleanFallbackReason(reason);
+  if (reason) return compactText(reason, 150);
   if (provider === "deterministic") return "This step used deterministic rules, not an LLM.";
   return "No extra status detail returned.";
 }
@@ -466,8 +540,8 @@ const providerFailureItems = computed(() => {
   return allProviderAttempts()
     .filter((attempt) => attempt.attempted && !attempt.success && attempt.error_summary)
     .map((attempt) => ({
-      label: `${attempt.agentId.replaceAll("_", " ")} · ${attempt.provider}`,
-      value: compactText(attempt.error_summary, 180),
+      label: `${attempt.agentId.replaceAll("_", " ")} · ${providerDisplayName(attempt.provider)}`,
+      value: compactText(normalizeProviderFailureMessage(attempt.provider, attempt.error_summary), 180),
     }));
 });
 
@@ -488,6 +562,7 @@ const observabilityCards = computed<ObservabilityCard[]>(() => {
   const failedCount = providerFailureItems.value.length;
   const tokenUsage = job.value.token_usage;
   const expectedMode = modeExpectations[(job.value.mode === "demo" ? "rule_only" : job.value.mode) as Exclude<CompileMode, "demo">];
+  const safetyCriticFallback = job.value.safety_critic_agent?.fallback_used === true;
 
   return [
     {
@@ -508,7 +583,9 @@ const observabilityCards = computed<ObservabilityCard[]>(() => {
       label: "Fallbacks",
       value: `${fallbackCount}`,
       note: fallbackCount
-        ? agentExecutionSummary.value.fallbacks.map((agent) => agent.label).join(", ")
+        ? safetyCriticFallback
+          ? "Safety Critic: deterministic safety review completed because AI provider output was unavailable."
+          : agentExecutionSummary.value.fallbacks.map((agent) => agent.label).join(", ")
         : "No agent fallback was needed.",
       tone: fallbackCount ? "warning" : "success",
     },
@@ -516,21 +593,23 @@ const observabilityCards = computed<ObservabilityCard[]>(() => {
       label: "Provider failures",
       value: `${failedCount}`,
       note: failedCount
-        ? "Open the failed provider rows below or the agent modal for raw details."
+        ? safetyCriticFallback
+          ? "Safety Critic AI providers were unavailable. Deterministic safety fallback completed successfully."
+          : "Open the failed provider rows below or the agent modal for raw details."
         : "No failed provider attempts were reported.",
-      tone: failedCount ? "danger" : "success",
+      tone: failedCount ? safetyCriticFallback ? "warning" : "danger" : "success",
     },
     {
-      label: "LLM calls",
+      label: "LLM attempts used",
       value: `${tokenUsage?.llm_calls_used ?? 0}/${tokenUsage?.llm_calls_limit ?? 0}`,
-      note: "Calls used in this compile run compared with the selected mode limit.",
+      note: "Provider attempts used in this compile run compared with the selected mode limit.",
       tone: (tokenUsage?.llm_calls_used ?? 0) > (tokenUsage?.llm_calls_limit ?? 0) ? "warning" : "neutral",
     },
     {
       label: "Trust note",
       value: job.value.safety_critic?.overall_status ?? job.value.status,
       note: fallbackCount || failedCount
-        ? "Final safety result is still deterministic, but one or more AI agent outputs were unavailable or rejected."
+        ? "Final safety result is deterministic and valid; AI provider failures are listed for transparency."
         : "No provider fallback was reported; inspect agent details for prompt/response evidence.",
       tone: fallbackCount || failedCount ? "warning" : "success",
     },
@@ -570,7 +649,7 @@ const knownFactItems = computed<DetailItem[]>(() => {
       job.value.safety_critic_agent?.used_ai,
       job.value.safety_critic_agent?.fallback_used,
     ));
-    addFact(items, "LLM calls", `${job.value.token_usage?.llm_calls_used ?? 0}/${job.value.token_usage?.llm_calls_limit ?? 0}`);
+    addFact(items, "LLM attempts", `${job.value.token_usage?.llm_calls_used ?? 0}/${job.value.token_usage?.llm_calls_limit ?? 0}`);
   } else if (!facts) {
     addFact(items, "Selected mode", mode.value);
     addFact(items, "Mode expectation", modeExpectations[(mode.value === "demo" ? "rule_only" : mode.value) as Exclude<CompileMode, "demo">]);
@@ -1735,6 +1814,10 @@ The current endpoint returns the agent outcome and raw provider response when av
                   <strong>{{ attempt.provider }}</strong>
                   <span>{{ attempt.success ? "success" : attempt.attempted ? "failed" : "not attempted" }}</span>
                   <p v-if="attempt.error_summary">{{ attempt.error_summary }}</p>
+                  <details v-if="attempt.raw_error_summary">
+                    <summary>Raw error</summary>
+                    <pre>{{ attempt.raw_error_summary }}</pre>
+                  </details>
                   <details v-if="attempt.raw_response">
                     <summary>Raw response</summary>
                     <pre>{{ attempt.raw_response }}</pre>

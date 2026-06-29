@@ -61,6 +61,63 @@ function summarizeError(error: unknown): string {
     return "Unknown error.";
 }
 
+function normalizeProviderFailure(provider: AgentOutputProvider, error: unknown): { summary: string; rawSummary?: string } {
+    const rawSummary = summarizeError(error);
+    const normalized = rawSummary.toLowerCase();
+    const providerName = provider === "groq" ? "Groq" : provider === "gemini" ? "Gemini" : "Provider";
+
+    if (
+        normalized.includes("429")
+        || normalized.includes("too many requests")
+        || normalized.includes("rate limit")
+        || normalized.includes("rate_limit")
+    ) {
+        return {
+            summary: `${providerName} rate limit reached. Try again later or use deterministic fallback.`,
+            rawSummary,
+        };
+    }
+
+    if (
+        normalized.includes("aborted")
+        || normalized.includes("aborterror")
+        || normalized.includes("timed out")
+        || normalized.includes("timeout")
+    ) {
+        return {
+            summary: `${providerName} request timed out or was aborted before returning a valid response.`,
+            rawSummary,
+        };
+    }
+
+    if (
+        error instanceof ZodError
+        || normalized.includes("schema")
+        || normalized.includes("validation")
+        || normalized.includes("invalid json")
+        || normalized.includes("no valid json")
+        || normalized.includes("failed to parse")
+        || normalized.includes("unexpected token")
+    ) {
+        return {
+            summary: "Invalid AI output rejected by schema.",
+            rawSummary,
+        };
+    }
+
+    if (normalized.includes("api_key") || normalized.includes("is not set") || normalized.includes("not configured")) {
+        return {
+            summary: `${providerName} is not configured. Deterministic fallback can still complete the review.`,
+            rawSummary,
+        };
+    }
+
+    return {
+        summary: `${providerName} provider failed. Deterministic fallback can still complete the review.`,
+        rawSummary,
+    };
+}
+
 function safeParseJSON(rawText: string): unknown {
     try {
         return JSON.parse(rawText);
@@ -283,11 +340,14 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
                 }),
             };
         } catch (error) {
+            const failure = normalizeProviderFailure("groq", error);
+
             providerAttempts.push({
                 provider: "groq",
                 attempted: true,
                 success: false,
-                error_summary: summarizeError(error),
+                error_summary: failure.summary,
+                raw_error_summary: failure.rawSummary,
                 raw_response: rawResponse,
                 parsed_response: parsedResponse,
             });
@@ -331,11 +391,14 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
                 }),
             };
         } catch (error) {
+            const failure = normalizeProviderFailure("gemini", error);
+
             providerAttempts.push({
                 provider: "gemini",
                 attempted: true,
                 success: false,
-                error_summary: summarizeError(error),
+                error_summary: failure.summary,
+                raw_error_summary: failure.rawSummary,
                 raw_response: rawResponse,
                 parsed_response: parsedResponse,
             });
@@ -355,7 +418,7 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
 
     const reason =
         llmCallsMade > 0
-            ? `Safety Critic Agent provider output failed validation or parsing. ${providerErrors.join(" | ")}`
+            ? `Safety Critic AI was unavailable, so FlowForge used deterministic safety fallback. Deterministic checks completed the safety review. ${providerErrors.join(" ")}`
             : "No Safety Critic Agent provider key was configured. Deterministic fallback was used.";
 
     const output = buildFallbackOutput(input, "deterministic", reason);

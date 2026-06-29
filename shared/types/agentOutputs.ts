@@ -34,6 +34,7 @@ export type AgentProviderDebugAttempt = {
     attempted: boolean;
     success: boolean;
     error_summary?: string;
+    raw_error_summary?: string;
     raw_response?: string;
     parsed_response?: unknown;
 };

@@ -329,6 +329,7 @@ const agentProviderDebugAttemptSchema = z
     attempted: z.boolean(),
     success: z.boolean(),
     error_summary: z.string().optional(),
+    raw_error_summary: z.string().optional(),
     raw_response: z.string().optional(),
     parsed_response: z.unknown().optional(),
   })

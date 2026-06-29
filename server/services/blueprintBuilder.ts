@@ -48,6 +48,23 @@ type StepDefinition = {
   real_world_execution?: RealWorldExecutionPolicy;
 };
 
+type BlueprintDomain = "admissions" | "support" | "finance" | "generic";
+
+type DomainStepContext = {
+  domain: BlueprintDomain;
+  source: string;
+  sourceItem: string;
+  triggerTiming: string;
+  extractedFields: string[];
+  classificationTarget: string;
+  internalOutput: string;
+  approvalOwner: string;
+  hasDraftReply: boolean;
+  hasExplicitExternalMessageBlock: boolean;
+  hasExplicitFinancialActionBlock: boolean;
+  hasExplicitProductionWriteBlock: boolean;
+};
+
 const highRiskCategories: readonly RiskCategory[] = [
   "legal",
   "medical",
@@ -239,6 +256,56 @@ function normalizeForPreview(input: string): string {
   return input.replace(/\s+/g, " ").trim();
 }
 
+function normalizeForDetection(input: string): string {
+  return input
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const normalized = normalizeForPreview(value);
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function hasAny(input: string, phrases: readonly string[]): boolean {
+  return phrases.some((phrase) => input.includes(phrase));
+}
+
+function titleCase(value: string): string {
+  return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function cleanDomainPhrase(value: string): string {
+  return value
+    .replace(/^(?:the|a|an)\s+/, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.]+$/g, "")
+    .trim();
+}
+
+function displayFieldName(value: string): string {
+  return cleanDomainPhrase(value)
+    .replace(/\bid\b/g, "ID")
+    .replace(/\burl\b/g, "URL")
+    .replace(/\bapi\b/g, "API");
+}
+
+function addUniqueText(items: string[], item: string, maxLength = 120): void {
+  const text = truncateText(displayFieldName(item), maxLength);
+
+  if (text && !items.includes(text)) {
+    items.push(text);
+  }
+}
+
 function joinList(items: readonly string[]): string {
   if (items.length === 0) {
     return "";
@@ -254,6 +321,258 @@ function joinList(items: readonly string[]): string {
 
   return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
 }
+
+function detectDomain(processInput: string, risks: RiskSummary): BlueprintDomain {
+  const input = normalizeForDetection(processInput);
+
+  if (hasAny(input, ["admissions", "candidate", "applicant", "job application", "application email", "portfolio"])) {
+    return "admissions";
+  }
+
+  if (
+    hasAny(input, ["refund", "billing", "payment", "charge", "invoice", "receipt"])
+    || hasAnyRisk(risks.categories, financialRiskCategories)
+  ) {
+    return "finance";
+  }
+
+  if (
+    hasAny(input, ["support", "ticket", "customer", "helpdesk", "zendesk", "intercom", "complaint", "angry"])
+    || hasRisk(risks.categories, "complaint_or_angry_user")
+  ) {
+    return "support";
+  }
+
+  return "generic";
+}
+
+function detectTriggerTiming(input: string, signals: SignalSummary): string {
+  if (hasAny(input, ["every morning", "each morning"])) {
+    return "on the morning schedule";
+  }
+
+  if (input.includes("every weekday")) {
+    return "on the weekday schedule";
+  }
+
+  if (hasAny(input, ["daily", "every day", "each day"])) {
+    return "on the daily schedule";
+  }
+
+  if (hasAny(input, ["weekly", "every week"])) {
+    return "on the weekly schedule";
+  }
+
+  if (hasAny(input, ["monthly", "every month"])) {
+    return "on the monthly schedule";
+  }
+
+  if (signals.has_scheduled_trigger) {
+    return "on the requested schedule";
+  }
+
+  if (/\b(?:when|whenever|after|once)\b/.test(input)) {
+    return "when it arrives";
+  }
+
+  return "for the internal review run";
+}
+
+function detectSource(input: string, domain: BlueprintDomain): string {
+  const knownSources = [
+    "admissions inbox",
+    "support inbox",
+    "finance inbox",
+    "billing inbox",
+    "shared inbox",
+    "email inbox",
+    "ticket queue",
+    "support queue",
+    "zendesk",
+    "intercom",
+    "google sheet",
+    "spreadsheet",
+    "web form",
+  ];
+  const knownSource = knownSources.find((source) => input.includes(source));
+
+  if (knownSource) {
+    return knownSource.startsWith("the ") ? knownSource : `the ${knownSource}`;
+  }
+
+  const fromMatch = input.match(/\bfrom\s+(?:the\s+)?([a-z0-9][a-z0-9 -]{1,60}?)(?:,|\.|\band\b|\bwithout\b|\bdo not\b|$)/);
+  const sourceText = cleanDomainPhrase(fromMatch?.[1] ?? "");
+
+  if (sourceText) {
+    return sourceText.startsWith("the ") ? sourceText : `the ${sourceText}`;
+  }
+
+  if (domain === "admissions") {
+    return "the admissions inbox";
+  }
+
+  if (domain === "support") {
+    return "the support inbox";
+  }
+
+  if (domain === "finance") {
+    return "the finance queue";
+  }
+
+  return "the requested internal source";
+}
+
+function detectSourceItem(input: string, domain: BlueprintDomain): string {
+  if (domain === "admissions") {
+    return input.includes("email") ? "job application emails" : "job application items";
+  }
+
+  if (domain === "support") {
+    if (input.includes("email")) return "support email";
+    if (input.includes("ticket")) return "support ticket";
+    return "support request";
+  }
+
+  if (domain === "finance") {
+    if (input.includes("refund")) return "refund request";
+    if (input.includes("billing")) return "billing request";
+    return "finance request";
+  }
+
+  if (input.includes("email")) return "source email";
+  if (input.includes("ticket")) return "source ticket";
+  if (input.includes("request")) return "source request";
+
+  return "source item";
+}
+
+function detectExplicitExtractedFields(input: string): string[] {
+  const fields: string[] = [];
+  const extractMatch = input.match(
+    /\bextract\s+(?:the\s+)?(.+?)(?:,\s*(?:classify|create|prepare|route|draft|write|send|notify|without|do not|don't)\b|\s+and\s+(?:classify|create|prepare|route|draft|write|send|notify)\b|\.|$)/,
+  );
+  const fieldText = extractMatch?.[1]?.split(/\bfrom\s+(?:the\s+)?/)[0] ?? "";
+
+  for (const rawField of fieldText.replace(/\s+and\s+/g, ", ").split(/[,;]/)) {
+    addUniqueText(fields, rawField, 80);
+  }
+
+  return fields;
+}
+
+function detectExtractedFields(input: string, domain: BlueprintDomain, signals: SignalSummary): string[] {
+  const fields = detectExplicitExtractedFields(input);
+
+  if (domain === "admissions") {
+    if (fields.length === 0 || hasAny(input, ["candidate details", "application fields"])) {
+      addUniqueText(fields, "candidate name", 80);
+      addUniqueText(fields, "role", 80);
+      addUniqueText(fields, "portfolio link", 80);
+      addUniqueText(fields, "application source", 80);
+    }
+  } else if (domain === "support" && fields.length === 0) {
+    addUniqueText(fields, "sender", 80);
+    addUniqueText(fields, "order ID", 80);
+    addUniqueText(fields, "complaint reason", 80);
+    addUniqueText(fields, "urgency", 80);
+  } else if (domain === "finance" && fields.length === 0) {
+    addUniqueText(fields, "customer name", 80);
+    addUniqueText(fields, "order ID", 80);
+    addUniqueText(fields, "amount", 80);
+    addUniqueText(fields, "reason", 80);
+  } else if (fields.length === 0 && hasPrimitive(signals, "extraction")) {
+    addUniqueText(fields, "requested fields", 80);
+  }
+
+  return fields.slice(0, 8);
+}
+
+function detectClassificationTarget(input: string, domain: BlueprintDomain): string {
+  const classifyMatch = input.match(
+    /\bclassify\s+(?:the\s+)?([a-z0-9 -]{2,80}?)(?:,|\.|\band\s+(?:create|prepare|route|draft|send|notify|log)\b|\bwithout\b|$)/,
+  );
+  const target = cleanDomainPhrase(classifyMatch?.[1] ?? "");
+
+  if (target) {
+    if (domain === "admissions" && target === "priority") return "application priority";
+    if (domain === "support" && ["issue", "request", "priority"].includes(target)) return "issue priority";
+    if (domain === "finance" && target === "refund risk") return "refund review risk";
+    if (domain === "finance" && target === "risk") return "refund review risk";
+
+    return truncateText(target, 80);
+  }
+
+  if (hasAny(input, ["classify", "categorize", "triage", "label"])) {
+    if (domain === "admissions") return "application priority";
+    if (domain === "support") return "issue priority";
+    if (domain === "finance") return "refund review risk";
+
+    return "internal review category";
+  }
+
+  return "";
+}
+
+function detectInternalOutput(input: string, domain: BlueprintDomain): string {
+  if (domain === "admissions") return "admissions review task";
+  if (domain === "support") return "support review task";
+  if (domain === "finance") return "finance review task";
+
+  if (hasAny(input, ["task", "ticket", "review task"])) return "internal review task";
+  if (hasAny(input, ["report", "dashboard", "digest"])) return "internal report";
+  if (hasAny(input, ["summary", "summarize"])) return "internal review summary";
+
+  return "internal review output";
+}
+
+function detectApprovalOwner(input: string, domain: BlueprintDomain): string {
+  const ownerMatch = input.match(
+    /\b(?:the\s+)?([a-z0-9][a-z0-9 -]{1,60}?(?:team lead|lead|team|manager|owner|reviewer|approver|human))\s+(?:must|should|will|reviews?|approves?)\b/,
+  );
+  const owner = cleanDomainPhrase(ownerMatch?.[1] ?? "");
+
+  if (owner) {
+    return owner;
+  }
+
+  if (input.includes("support lead")) return "support lead";
+  if (input.includes("admissions team")) return "admissions team";
+  if (input.includes("finance")) return "finance";
+
+  if (domain === "admissions") return "admissions reviewer";
+  if (domain === "support") return "support lead";
+  if (domain === "finance") return "finance reviewer";
+
+  return "human reviewer";
+}
+
+function buildDomainStepContext(
+  processInput: string,
+  signals: SignalSummary,
+  risks: RiskSummary,
+): DomainStepContext {
+  const normalizedInput = normalizeForDetection(processInput);
+  const domain = detectDomain(processInput, risks);
+
+  return {
+    domain,
+    source: detectSource(normalizedInput, domain),
+    sourceItem: detectSourceItem(normalizedInput, domain),
+    triggerTiming: detectTriggerTiming(normalizedInput, signals),
+    extractedFields: detectExtractedFields(normalizedInput, domain, signals),
+    classificationTarget: detectClassificationTarget(normalizedInput, domain),
+    internalOutput: detectInternalOutput(normalizedInput, domain),
+    approvalOwner: detectApprovalOwner(normalizedInput, domain),
+    hasDraftReply: hasAny(normalizedInput, ["draft", "reply", "response", "write", "compose"]),
+    hasExplicitExternalMessageBlock:
+      /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:send|sending|reply|replies|message|messages|email|emails|external message|external messages)\b/.test(normalizedInput),
+    hasExplicitFinancialActionBlock:
+      /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:refund|refunding|payment|pay|charge|charging)\b/.test(normalizedInput),
+    hasExplicitProductionWriteBlock:
+      /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:write|writing|update|updating|create|creating|save|saving)\b.{0,60}\b(?:production|live|real)\b/.test(normalizedInput),
+  };
+}
+
 
 function getFriendlyRiskLabel(category: RiskCategory): string {
   return riskItemDefinitions[category].label.toLowerCase();
@@ -510,163 +829,175 @@ function getAutomationBoundary(
   return "partially_automatable";
 }
 
-function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): WorkflowStep[] {
+function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks: RiskSummary): WorkflowStep[] {
+  const context = buildDomainStepContext(processInput, signals, risks);
   const categories = risks.categories;
-  const requiresApprovalStep = needsBlueprintHumanReview(categories, risks);
-  const hasDetectedRisks = categories.length > 0;
+  const requiresApprovalStep =
+    needsBlueprintHumanReview(categories, risks)
+    || signals.has_external_action
+    || hasPrimitive(signals, "approval")
+    || context.domain !== "generic"
+    || context.hasDraftReply
+    || context.hasExplicitExternalMessageBlock
+    || context.hasExplicitFinancialActionBlock
+    || context.hasExplicitProductionWriteBlock;
+  const extractionFields = context.extractedFields.length > 0 ? context.extractedFields : ["requested fields"];
 
-  const steps: WorkflowStep[] = [
-    buildStep({
-      id: "intake_process",
-      label: "Capture process description",
-      description: "Store the submitted process text as the source for a non-executing preview.",
-      primitive: "intake",
-      actor: "system",
-      input: "User process description",
-      output: "Compile job input",
-      automation_policy: "automate",
-    }),
-  ];
+  const sourceRiskCategories = categoriesFrom(categories, [
+    "external_communication",
+    "personal_data",
+    "employment",
+    "financial",
+    "refund_or_payment",
+    "complaint_or_angry_user",
+  ]);
 
-  if (hasPrimitive(signals, "monitoring")) {
-    steps.push(
-      buildStep({
-        id: "monitor_condition",
-        label: "Monitor condition",
-        description: "Describe the monitored condition without connecting a live scheduler or listener.",
-        primitive: "monitoring",
-        actor: "system",
-        input: "Process trigger details",
-        output: "Monitoring plan",
-        automation_policy: "assist_only",
-      }),
-    );
-  }
+  const extractionRiskCategories = categoriesFrom(categories, [
+    "personal_data",
+    "employment",
+    "financial",
+    "refund_or_payment",
+    "account_access",
+  ]);
 
-  if (hasPrimitive(signals, "classification")) {
-    steps.push(
-      buildStep({
-        id: "classify_request",
-        label: "Classify the request",
-        description: "Identify the likely workflow shape, topic, or category with deterministic rules.",
-        primitive: "classification",
-        actor: "rules",
-        input: "Compile job input",
-        output: "Workflow classification",
-        automation_policy: "automate",
-      }),
-    );
-  }
+  const classificationRiskCategories = categoriesFrom(categories, [
+    "employment",
+    "financial",
+    "refund_or_payment",
+    "complaint_or_angry_user",
+    "high_stakes_decision",
+  ]);
 
-  if (hasPrimitive(signals, "extraction")) {
-    steps.push(
-      buildStep({
-        id: "extract_required_fields",
-        label: "Extract required fields",
-        description: "Pull structured fields from the submitted process for review.",
-        primitive: "extraction",
-        actor: "rules",
-        input: "Compile job input",
-        output: "Extracted field list",
-        automation_policy: "automate",
-        risk_categories: categoriesFrom(categories, dataAccessCategories),
-      }),
-    );
-  }
+  const reviewTaskRiskCategories = categoriesFrom(categories, [
+    "personal_data",
+    "employment",
+    "financial",
+    "refund_or_payment",
+    "external_communication",
+    "account_access",
+    "real_world_execution",
+  ]);
 
-  if (hasPrimitive(signals, "summarization")) {
-    steps.push(
-      buildStep({
-        id: "summarize_context",
-        label: "Summarize context",
-        description: "Prepare a concise internal summary for reviewers.",
-        primitive: "summarization",
-        actor: "rules",
-        input: "Compile job input",
-        output: "Internal summary",
-        automation_policy: "automate",
-        risk_categories: categoriesFrom(categories, ["personal_data", "medical", "legal", "visa_or_immigration"]),
-      }),
-    );
-  }
+  const steps: WorkflowStep[] = [];
+
+  const collectLabelByDomain: Record<BlueprintDomain, string> = {
+    admissions: "Collect application emails",
+    support: context.sourceItem.includes("email") ? "Collect support email" : "Collect support request",
+    finance: context.sourceItem.includes("refund") ? "Collect refund request" : "Collect finance request",
+    generic: "Collect source item",
+  };
 
   steps.push(
     buildStep({
-      id: "detect_risks",
-      label: hasDetectedRisks ? "Detect safety risks" : "Check safety boundary",
-      description: hasDetectedRisks
-        ? "Flag external communication, sensitive data, high-stakes decisions, and execution risk."
-        : "Confirm whether the workflow includes external actions, sensitive data, high-stakes decisions, or execution risk.",
-      primitive: "risk_detection",
-      actor: "rules",
-      input: "Workflow signals",
-      output: "Risk summary",
-      automation_policy: "automate",
-      risk_categories: categories,
+      id: `${context.domain}_collect_source_item`,
+      label: collectLabelByDomain[context.domain],
+      description:
+        context.domain === "generic"
+          ? `Read the ${context.sourceItem} from ${context.source} ${context.triggerTiming}.`
+          : `Read new ${context.sourceItem} from ${context.source} ${context.triggerTiming}.`,
+      primitive: "intake",
+      actor: "system",
+      input: "Workflow trigger and source details",
+      output: titleCase(context.sourceItem),
+      automation_policy: "assist_only",
+      risk_categories: sourceRiskCategories,
+      real_world_execution: "none",
     }),
   );
 
-  if (hasPrimitive(signals, "validation")) {
+  if (hasPrimitive(signals, "extraction") || context.extractedFields.length > 0) {
+    const extractLabelByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Extract candidate details",
+      support: "Extract support request details",
+      finance: "Extract refund details",
+      generic: "Extract requested fields",
+    };
+
     steps.push(
       buildStep({
-        id: "validate_required_fields",
-        label: "Validate required fields",
-        description: "Check whether trigger, output, owner, permission, and execution details are defined.",
-        primitive: "validation",
+        id: `${context.domain}_extract_fields`,
+        label: extractLabelByDomain[context.domain],
+        description: `Extract ${joinList(extractionFields)}.`,
+        primitive: "extraction",
         actor: "rules",
-        input: "Workflow signals and missing information",
-        output: "Validation notes",
+        input: titleCase(context.sourceItem),
+        output: "Structured review fields",
         automation_policy: "automate",
+        risk_categories: extractionRiskCategories,
+        real_world_execution: "none",
       }),
     );
   }
 
-  if (hasPrimitive(signals, "routing") || hasPrimitive(signals, "escalation")) {
+  if (hasPrimitive(signals, "classification") || context.classificationTarget) {
+    const target = context.classificationTarget || "internal review category";
+    const classificationDescriptionByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Assign an internal triage priority for admissions review only.",
+      support: "Assign an internal issue priority using urgency, customer impact, and complaint signals.",
+      finance: "Assign an internal refund or billing risk label for finance review only.",
+      generic: "Classify or summarize the item for internal review only.",
+    };
+
     steps.push(
       buildStep({
-        id: "route_or_escalate",
-        label: "Route or escalate item",
-        description: "Route lower-risk items internally and escalate sensitive cases to a human owner.",
-        primitive: "routing",
+        id: `${context.domain}_classify_item`,
+        label: `Classify ${target}`,
+        description: classificationDescriptionByDomain[context.domain],
+        primitive: "classification",
         actor: "rules",
-        input: "Risk summary and classification",
-        output: "Owner or queue recommendation",
+        input: "Structured review fields",
+        output: titleCase(target),
+        automation_policy: classificationRiskCategories.length > 0 ? "assist_only" : "automate",
+        risk_categories: classificationRiskCategories,
+        real_world_execution: "none",
+      }),
+    );
+  } else if (context.domain === "generic") {
+    steps.push(
+      buildStep({
+        id: "generic_classify_or_summarize",
+        label: "Classify or summarize item",
+        description: "Classify or summarize the source item only when the request asks for it.",
+        primitive: hasPrimitive(signals, "summarization") ? "summarization" : "classification",
+        actor: "rules",
+        input: titleCase(context.sourceItem),
+        output: "Internal review note",
         automation_policy: "assist_only",
-        risk_categories: categoriesFrom(categories, [
-          "external_communication",
-          "financial",
-          "refund_or_payment",
-          "legal",
-          "medical",
-          "visa_or_immigration",
-          "employment",
-          "complaint_or_angry_user",
-          "high_stakes_decision",
-        ]),
+        real_world_execution: "none",
       }),
     );
   }
 
-  if (hasPrimitive(signals, "drafting")) {
+  if (context.hasDraftReply || hasPrimitive(signals, "drafting")) {
+    const draftLabelByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Draft internal note for review",
+      support: "Draft reply for review",
+      finance: "Draft finance note for review",
+      generic: "Draft output for review",
+    };
+    const draftDescriptionByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Draft internal admissions notes only; do not message candidates automatically.",
+      support: "Draft a customer reply for review without sending it.",
+      finance: "Draft an internal finance note without issuing refunds, payments, or billing changes.",
+      generic: "Draft the requested output for human review without sending or applying it.",
+    };
+
     steps.push(
       buildStep({
-        id: "draft_response",
-        label: "Draft proposed output",
-        description: "Prepare draft text, tasks, or blueprint notes without sending anything.",
+        id: `${context.domain}_draft_for_review`,
+        label: draftLabelByDomain[context.domain],
+        description: draftDescriptionByDomain[context.domain],
         primitive: "drafting",
         actor: "ai",
-        input: "Risk-aware workflow summary",
-        output: "Draft-only response or task",
+        input: "Structured review fields and classification",
+        output: "Draft-only review content",
         automation_policy: "draft_only",
         risk_categories: categoriesFrom(categories, [
           "external_communication",
+          "personal_data",
           "financial",
           "refund_or_payment",
-          "legal",
-          "medical",
-          "visa_or_immigration",
           "employment",
-          "personal_data",
           "complaint_or_angry_user",
           "high_stakes_decision",
         ]),
@@ -675,46 +1006,84 @@ function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): Workflo
     );
   }
 
-  if (hasPrimitive(signals, "notification")) {
-    const notificationRisks = categoriesFrom(categories, ["external_communication", "personal_data"]);
+  if (
+    hasPrimitive(signals, "record_creation")
+    || hasPrimitive(signals, "routing")
+    || hasPrimitive(signals, "escalation")
+    || signals.has_clear_output
+  ) {
+    const reviewTaskLabelByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Prepare admissions review task",
+      support: "Prepare support review task",
+      finance: "Prepare finance review task",
+      generic: "Prepare internal review output",
+    };
 
     steps.push(
       buildStep({
-        id: "prepare_notification",
-        label: "Prepare notification",
-        description: "Prepare notification content without sending it from the MVP preview.",
-        primitive: "notification",
+        id: `${context.domain}_prepare_internal_output`,
+        label: reviewTaskLabelByDomain[context.domain],
+        description:
+          context.domain === "generic"
+            ? "Prepare an internal review output without writing to production systems."
+            : `Prepare an internal ${context.internalOutput} payload without writing to production systems.`,
+        primitive: "record_creation",
         actor: "system",
-        input: "Workflow status and reviewer notes",
-        output: "Draft-only notification",
-        automation_policy: notificationRisks.length > 0 ? "draft_only" : "assist_only",
-        risk_categories: notificationRisks,
-        real_world_execution: notificationRisks.length > 0 ? "draft_only" : "none",
+        input: "Structured review fields, classification, and draft notes",
+        output: titleCase(context.internalOutput),
+        automation_policy: "assist_only",
+        risk_categories: reviewTaskRiskCategories,
+        real_world_execution: "none",
       }),
     );
   }
 
-  if (hasPrimitive(signals, "record_creation")) {
-    const recordRisks = categoriesFrom(categories, [
-      "account_access",
-      "personal_data",
-      "financial",
-      "refund_or_payment",
-      "real_world_execution",
-    ]);
-
+  if (hasPrimitive(signals, "monitoring") && !signals.has_scheduled_trigger) {
     steps.push(
       buildStep({
-        id: "prepare_internal_record",
-        label: "Prepare internal record",
-        description: "Prepare record, task, or tag fields without writing to production systems.",
-        primitive: "record_creation",
+        id: `${context.domain}_monitor_condition`,
+        label: "Monitor source condition",
+        description: "Describe the monitored condition without connecting a live scheduler, inbox listener, or production credential.",
+        primitive: "monitoring",
         actor: "system",
-        input: "Approved workflow notes",
-        output: "Draft record or task payload",
-        automation_policy: recordRisks.length > 0 ? "assist_only" : "automate",
-        risk_categories: recordRisks,
-        real_world_execution: hasRisk(recordRisks, "real_world_execution") ? "blocked_in_mvp" : "none",
+        input: "Source condition",
+        output: "Monitoring preview",
+        automation_policy: "assist_only",
+        risk_categories: categoriesFrom(categories, ["real_world_execution", "account_access", "personal_data"]),
+        real_world_execution: "none",
+      }),
+    );
+  }
+
+  if (hasPrimitive(signals, "summarization") && !steps.some((step) => step.primitive === "summarization")) {
+    steps.push(
+      buildStep({
+        id: `${context.domain}_summarize_context`,
+        label: "Summarize source item",
+        description: "Prepare a concise internal summary for reviewers without sending or applying it.",
+        primitive: "summarization",
+        actor: "rules",
+        input: titleCase(context.sourceItem),
+        output: "Internal summary",
+        automation_policy: "assist_only",
+        risk_categories: categoriesFrom(categories, ["personal_data", "medical", "legal", "visa_or_immigration"]),
+        real_world_execution: "none",
+      }),
+    );
+  }
+
+  if (hasPrimitive(signals, "validation")) {
+    steps.push(
+      buildStep({
+        id: `${context.domain}_validate_required_fields`,
+        label: "Validate required fields",
+        description: "Check whether the source, extracted fields, owner, approval boundary, and output shape are defined.",
+        primitive: "validation",
+        actor: "rules",
+        input: "Structured review fields",
+        output: "Validation notes",
+        automation_policy: "automate",
+        real_world_execution: "none",
       }),
     );
   }
@@ -722,28 +1091,44 @@ function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): Workflo
   if (hasPrimitive(signals, "reporting")) {
     steps.push(
       buildStep({
-        id: "prepare_report",
+        id: `${context.domain}_prepare_report`,
         label: "Prepare report",
-        description: "Create a non-executing report outline for human review.",
+        description: "Create an internal report outline for human review without publishing or updating production data.",
         primitive: "reporting",
         actor: "rules",
-        input: "Workflow signals and risk summary",
+        input: "Structured review fields",
         output: "Report outline",
         automation_policy: "assist_only",
         risk_categories: categoriesFrom(categories, ["personal_data", "financial", "refund_or_payment"]),
+        real_world_execution: "none",
       }),
     );
   }
 
   if (requiresApprovalStep) {
+    const approvalLabelByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Require manual review",
+      support: context.approvalOwner.includes("support lead")
+        ? "Require support lead approval"
+        : "Require support approval",
+      finance: "Require finance approval",
+      generic: "Require human review",
+    };
+    const approvalDescriptionByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Mark the task as pending human review before any follow-up action.",
+      support: `Hold every draft reply and review task until the ${context.approvalOwner} approves it.`,
+      finance: "Hold the finance task for approval before any refund, payment, or billing change.",
+      generic: "Keep the output pending human review before any external, sensitive, or production action.",
+    };
+
     steps.push(
       buildStep({
-        id: "approve_sensitive_action",
-        label: "Approve sensitive action",
-        description: "A human reviews external messages, sensitive decisions, data access, or production changes.",
+        id: `${context.domain}_require_human_review`,
+        label: approvalLabelByDomain[context.domain],
+        description: approvalDescriptionByDomain[context.domain],
         primitive: "approval",
         actor: "human",
-        input: "Risk summary and draft plan",
+        input: "Prepared review output and safety notes",
         output: "Human approval decision",
         automation_policy: "human_approval",
         approval_required: true,
@@ -753,21 +1138,70 @@ function buildWorkflowSteps(signals: SignalSummary, risks: RiskSummary): Workflo
     );
   }
 
-  steps.push(
-    buildStep({
-      id: "build_non_executing_preview",
-      label: "Build non-executing preview",
-      description: "Return a safe blueprint preview and block production execution in the MVP.",
-      primitive: "validation",
-      actor: "system",
-      input: "Compiled blueprint",
-      output: "Validated non-executing preview",
-      automation_policy: hasRisk(categories, "real_world_execution") ? "blocked_in_mvp" : "automate",
-      approval_required: hasRisk(categories, "real_world_execution"),
-      risk_categories: categoriesFrom(categories, executionBlockCategories),
-      real_world_execution: hasRisk(categories, "real_world_execution") ? "blocked_in_mvp" : "none",
-    }),
-  );
+  if (
+    context.domain === "finance"
+    || hasAnyRisk(categories, financialRiskCategories)
+    || context.hasExplicitFinancialActionBlock
+  ) {
+    steps.push(
+      buildStep({
+        id: "block_automatic_financial_actions",
+        label: "Block automatic refund/payment actions",
+        description: "Do not issue refunds, payments, charges, or billing changes automatically.",
+        primitive: "approval",
+        actor: "human",
+        input: "Finance review decision",
+        output: "Blocked automatic financial execution",
+        automation_policy: "human_approval",
+        approval_required: true,
+        risk_categories: categoriesFrom(categories, ["financial", "refund_or_payment", "real_world_execution"]),
+        real_world_execution: "requires_human_trigger",
+      }),
+    );
+  } else if (
+    hasRisk(categories, "external_communication")
+    || context.hasExplicitExternalMessageBlock
+    || hasPrimitive(signals, "notification")
+  ) {
+    const blockLabelByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Block external messaging",
+      support: "Block automatic sending",
+      finance: "Block external messaging",
+      generic: "Block external messaging",
+    };
+
+    steps.push(
+      buildStep({
+        id: "block_external_messaging",
+        label: blockLabelByDomain[context.domain],
+        description: "Do not send emails, replies, or external messages automatically.",
+        primitive: "approval",
+        actor: "human",
+        input: "Prepared draft or review task",
+        output: "Blocked automatic external sending",
+        automation_policy: "human_approval",
+        approval_required: true,
+        risk_categories: categoriesFrom(categories, ["external_communication", "personal_data", "complaint_or_angry_user"]),
+        real_world_execution: "requires_human_trigger",
+      }),
+    );
+  } else if (context.domain === "generic" || hasRisk(categories, "real_world_execution")) {
+    steps.push(
+      buildStep({
+        id: "block_production_execution",
+        label: "Block production execution",
+        description: "Do not write to production systems, send messages, charge, refund, delete, or trigger external tools from this preview.",
+        primitive: "validation",
+        actor: "system",
+        input: "Prepared internal review output",
+        output: "Non-executing preview boundary",
+        automation_policy: requiresApprovalStep ? "human_approval" : "assist_only",
+        approval_required: requiresApprovalStep,
+        risk_categories: categoriesFrom(categories, executionBlockCategories),
+        real_world_execution: requiresApprovalStep ? "requires_human_trigger" : "none",
+      }),
+    );
+  }
 
   return steps;
 }
@@ -921,7 +1355,12 @@ function getStepIdsForCategories(
     .filter((step) => step.risk_categories.some((category) => categories.includes(category)))
     .map((step) => step.id);
   const fallbackIds = steps
-    .filter((step) => ["detect_risks", "approve_sensitive_action", "build_non_executing_preview"].includes(step.id))
+    .filter((step) =>
+      step.primitive === "approval"
+      || step.primitive === "validation"
+      || step.automation_policy === "human_approval"
+      || step.real_world_execution === "requires_human_trigger"
+    )
     .map((step) => step.id);
 
   return unique([...directMatches, ...fallbackIds]);
@@ -958,6 +1397,105 @@ function buildApprovalGate(
     applies_to_step_ids: getStepIdsForCategories(steps, categories),
     reason,
     review_checklist: reviewChecklist,
+  };
+}
+
+function getStepText(step: WorkflowStep): string {
+  return [
+    step.id,
+    step.label,
+    step.description,
+    step.input,
+    step.output,
+    step.primitive,
+    step.automation_policy,
+    step.real_world_execution,
+  ].join(" ").toLowerCase();
+}
+
+function getHumanBoundaryStepIds(steps: readonly WorkflowStep[]): string[] {
+  return steps
+    .filter((step) =>
+      step.automation_policy === "human_approval"
+      || step.automation_policy === "draft_only"
+      || step.real_world_execution === "requires_human_trigger"
+      || step.real_world_execution === "draft_only"
+      || /\b(?:manual review|approval|block|blocked|draft-only|without sending|without writing)\b/.test(getStepText(step))
+    )
+    .map((step) => step.id);
+}
+
+function buildStepDerivedApprovalGate(steps: readonly WorkflowStep[]): HumanApprovalGate | null {
+  const stepIds = getHumanBoundaryStepIds(steps);
+
+  if (stepIds.length === 0) {
+    return null;
+  }
+
+  const combinedText = steps
+    .filter((step) => stepIds.includes(step.id))
+    .map(getStepText)
+    .join(" ");
+  const hasFinancialBoundary = /\b(?:refund|payment|billing|charge|finance)\b/.test(combinedText);
+  const hasExternalMessagingBoundary = /\b(?:external|send|sending|email|reply|message|candidate|customer|contact)\b/.test(combinedText);
+  const hasProductionBoundary = /\b(?:production|write|update|trigger|execute|real-world)\b/.test(combinedText);
+
+  if (hasFinancialBoundary) {
+    return {
+      id: "gate_manual_finance_review",
+      label: "Finance approval before payment action",
+      required: true,
+      applies_to_step_ids: stepIds,
+      reason: "Refund, payment, billing, or charge actions must wait for accountable finance approval.",
+      review_checklist: [
+        "Confirm the customer, order, amount, and policy basis.",
+        "Verify the prepared task is internal only.",
+        "Execute refunds, payments, charges, or billing changes only after a human chooses to proceed.",
+      ],
+    };
+  }
+
+  if (hasExternalMessagingBoundary) {
+    return {
+      id: "gate_manual_external_messaging_review",
+      label: "Manual review before external messaging",
+      required: true,
+      applies_to_step_ids: stepIds,
+      reason: "Manual review is required before contacting candidates, customers, or any external recipient.",
+      review_checklist: [
+        "Confirm the recipient, channel, and reviewer owner.",
+        "Check tone, accuracy, and missing context.",
+        "Send emails, replies, or external messages only after a human chooses to proceed.",
+      ],
+    };
+  }
+
+  if (hasProductionBoundary) {
+    return {
+      id: "gate_manual_production_review",
+      label: "Manual review before production execution",
+      required: true,
+      applies_to_step_ids: stepIds,
+      reason: "Production writes and real-world execution must stay outside the automatic preview.",
+      review_checklist: [
+        "Confirm the target system and production owner.",
+        "Review rollback, audit, and permission requirements.",
+        "Trigger production writes only after a human chooses to proceed.",
+      ],
+    };
+  }
+
+  return {
+    id: "gate_manual_review_boundary",
+    label: "Manual review before follow-up action",
+    required: true,
+    applies_to_step_ids: stepIds,
+    reason: "The blueprint includes human-review boundaries even though the preview itself does not execute actions.",
+    review_checklist: [
+      "Confirm the prepared output is internal only.",
+      "Review extracted fields, classification labels, and task payloads.",
+      "Proceed with follow-up actions only after a human chooses to continue.",
+    ],
   };
 }
 
@@ -1083,6 +1621,12 @@ function buildHumanApprovalGates(steps: readonly WorkflowStep[], risks: RiskSumm
         ],
       ),
     );
+  }
+
+  const stepDerivedGate = buildStepDerivedApprovalGate(steps);
+
+  if (stepDerivedGate && gates.length === 0) {
+    gates.push(stepDerivedGate);
   }
 
   return gates;
@@ -1238,7 +1782,7 @@ export function buildBlueprint({
   readiness,
   mode,
 }: BuildBlueprintInput): SafeAutomationBlueprint {
-  const steps = buildWorkflowSteps(signals, risks);
+  const steps = buildWorkflowSteps(processInput, signals, risks);
 
   return {
     id: `blueprint_${jobId}`,

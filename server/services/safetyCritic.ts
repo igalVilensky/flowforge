@@ -110,7 +110,6 @@ function isSafeInternalPreview(input: BuildSafetyCriticReviewInput): boolean {
         && !signals.has_external_action
         && clarificationPlan?.needed !== true
         && routerDecision?.route !== "reject"
-        && blueprint.human_approval_gates.length === 0
         && !hasExplicitlyBlockedSteps(blueprint)
         && !hasHardBlockedRisk(blueprint, risks)
         && (blueprint.automation_boundary === "fully_automatable" || blueprint.automation_boundary === "partially_automatable");
@@ -150,7 +149,6 @@ function buildOverallStatus(input: BuildSafetyCriticReviewInput): SafetyCriticRe
         || risks.risk_level === "high"
         || signals.has_external_action
         || hasHumanApprovalRisk(blueprint, risks)
-        || blueprint.human_approval_gates.length > 0
         || blueprint.automation_boundary === "human_approval_required"
         || blueprint.automation_boundary === "assistant_only"
         || blueprint.automation_boundary === "not_safe_to_automate"
