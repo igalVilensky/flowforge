@@ -12,6 +12,7 @@ import type {
 } from "../../shared/types/compileJob";
 import type {
     AutomationReadinessScore,
+    RiskCategory,
     RiskSummary,
     SignalSummary,
 } from "../../shared/types/workflow";
@@ -38,6 +39,62 @@ export type BlueprintArchitectAgentResult = {
     llm_calls_made: number;
     debug: AgentDebugInfo;
 };
+
+const allowedRiskCategories: ReadonlySet<string> = new Set<RiskCategory>([
+    "external_communication",
+    "personal_data",
+    "financial",
+    "legal",
+    "medical",
+    "visa_or_immigration",
+    "employment",
+    "refund_or_payment",
+    "complaint_or_angry_user",
+    "delete_or_destructive_action",
+    "account_access",
+    "high_stakes_decision",
+    "real_world_execution",
+]);
+
+type NormalizedBlueprintArchitectOutput = {
+    output: BlueprintArchitectOutput;
+    parsedResponse: unknown;
+    warningSummary?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeOptionalProposedRisks(parsed: unknown): { value: unknown; warningSummary?: string } {
+    if (!isRecord(parsed) || !Array.isArray(parsed.proposed_risks)) {
+        return { value: parsed };
+    }
+
+    const droppedCategories = new Set<string>();
+    const proposedRisks = parsed.proposed_risks.filter((risk) => {
+        const category = isRecord(risk) ? risk.category : undefined;
+
+        if (typeof category === "string" && allowedRiskCategories.has(category)) {
+            return true;
+        }
+
+        droppedCategories.add(typeof category === "string" && category.trim() ? category : "unknown");
+        return false;
+    });
+
+    if (droppedCategories.size === 0) {
+        return { value: parsed };
+    }
+
+    return {
+        value: {
+            ...parsed,
+            proposed_risks: proposedRisks,
+        },
+        warningSummary: `Ignored unsupported AI risk categories: ${Array.from(droppedCategories).join(", ")}`,
+    };
+}
 
 function summarizeError(error: unknown): string {
     if (error instanceof ZodError) {
@@ -174,10 +231,11 @@ function buildFallbackOutput(input: RunBlueprintArchitectAgentInput, provider: A
     };
 }
 
-function normalizeAgentOutput(parsed: unknown, provider: AgentOutputProvider): BlueprintArchitectOutput {
-    const raw = parsed as Record<string, unknown>;
+function normalizeAgentOutput(parsed: unknown, provider: AgentOutputProvider): NormalizedBlueprintArchitectOutput {
+    const sanitized = sanitizeOptionalProposedRisks(parsed);
+    const raw = isRecord(sanitized.value) ? sanitized.value : {};
 
-    return blueprintArchitectOutputSchema.parse({
+    const output = blueprintArchitectOutputSchema.parse({
         ...raw,
         provider,
         used_ai: true,
@@ -186,6 +244,12 @@ function normalizeAgentOutput(parsed: unknown, provider: AgentOutputProvider): B
         confidence: raw.confidence ?? "medium",
         reason: raw.reason ?? "AI generated a structured blueprint proposal.",
     });
+
+    return {
+        output,
+        parsedResponse: sanitized.value,
+        warningSummary: sanitized.warningSummary,
+    };
 }
 
 function shouldUseAi(mode: CompileMode): boolean {
@@ -260,24 +324,25 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
             llmCallsMade += 1;
             rawResponse = await callGroq(prompt, blueprintArchitectSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
-            const output = normalizeAgentOutput(parsedResponse, "groq");
+            const normalized = normalizeAgentOutput(parsedResponse, "groq");
 
             providerAttempts.push({
                 provider: "groq",
                 attempted: true,
                 success: true,
                 raw_response: rawResponse,
-                parsed_response: parsedResponse,
+                parsed_response: normalized.parsedResponse,
+                ...(normalized.warningSummary ? { warning_summary: normalized.warningSummary } : {}),
             });
 
             return {
-                output,
+                output: normalized.output,
                 llm_calls_made: llmCallsMade,
                 debug: buildDebugInfo({
                     mode: input.mode,
                     userPrompt: prompt,
                     providerAttempts,
-                    output,
+                    output: normalized.output,
                     llmCallsMade,
                 }),
             };
@@ -308,24 +373,25 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
             llmCallsMade += 1;
             rawResponse = await callGemini(prompt, blueprintArchitectSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
-            const output = normalizeAgentOutput(parsedResponse, "gemini");
+            const normalized = normalizeAgentOutput(parsedResponse, "gemini");
 
             providerAttempts.push({
                 provider: "gemini",
                 attempted: true,
                 success: true,
                 raw_response: rawResponse,
-                parsed_response: parsedResponse,
+                parsed_response: normalized.parsedResponse,
+                ...(normalized.warningSummary ? { warning_summary: normalized.warningSummary } : {}),
             });
 
             return {
-                output,
+                output: normalized.output,
                 llm_calls_made: llmCallsMade,
                 debug: buildDebugInfo({
                     mode: input.mode,
                     userPrompt: prompt,
                     providerAttempts,
-                    output,
+                    output: normalized.output,
                     llmCallsMade,
                 }),
             };

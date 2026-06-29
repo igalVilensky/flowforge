@@ -1887,6 +1887,49 @@ The current endpoint returns the agent outcome and raw provider response when av
     sans-serif;
 }
 
+/* Firefox */
+.console-shell,
+.console-shell * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(102, 227, 255, 0.5) rgba(8, 12, 22, 0.42);
+}
+
+/* Chromium / Safari / Edge */
+.console-shell ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.console-shell ::-webkit-scrollbar-track {
+  border: 1px solid rgba(145, 166, 255, 0.1);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.01)),
+    rgba(8, 12, 22, 0.48);
+}
+
+.console-shell ::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(7, 10, 18, 0.88);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(102, 227, 255, 0.78), rgba(140, 125, 255, 0.72));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 14px rgba(102, 227, 255, 0.14);
+}
+
+.console-shell ::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(135deg, rgba(102, 227, 255, 0.96), rgba(67, 224, 166, 0.82));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 0 18px rgba(102, 227, 255, 0.28);
+}
+
+.console-shell ::-webkit-scrollbar-corner {
+  background: rgba(8, 12, 22, 0.48);
+}
+
 .topbar {
   position: fixed;
   z-index: 40;

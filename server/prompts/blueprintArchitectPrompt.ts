@@ -127,6 +127,7 @@ Allowed risk category values:
 
 Rules:
 - Keep the workflow non-executing.
+- Use only the allowed risk category values above. Do not invent categories such as "human_error" or "system_failure"; omit uncertain risks instead.
 - Use "draft_only" for generated messages or replies.
 - Use "human_approval" for refunds, payments, external communication, account changes, employment decisions, or high-stakes decisions.
 - Use "blocked_in_mvp" or "not_recommended" for medical advice, legal decisions, visa/immigration decisions, account access changes, deletion, cancellation, or destructive actions.
