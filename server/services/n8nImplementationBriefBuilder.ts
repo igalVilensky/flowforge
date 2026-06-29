@@ -478,6 +478,14 @@ function workflowLabelForDomain(domain: BriefDomain): string {
   return "Internal Review";
 }
 
+function reviewWorkflowLabelForDomain(domain: BriefDomain): string {
+  if (domain === "admissions") return "Admissions Intake Review";
+  if (domain === "support") return "Support Triage Review";
+  if (domain === "finance") return "Finance Review";
+
+  return "Internal Review";
+}
+
 function isGenericWorkflowName(value: string): boolean {
   const normalized = normalizeInput(value);
 
@@ -562,7 +570,9 @@ function buildRecommendedNodes(
   blockedActions: readonly string[],
 ): string[] {
   const nodes: string[] = [];
-  const workflowLabel = workflowLabelForDomain(domain);
+  const workflowLabel = humanApprovalGates.length > 0 || blockedActions.length > 0
+    ? reviewWorkflowLabelForDomain(domain)
+    : workflowLabelForDomain(domain);
   const trigger = normalizeInput(triggerDescription);
 
   if (hasAny(trigger, ["daily", "morning", "weekly", "weekday", "monthly", "scheduled", "every"])) {
@@ -590,6 +600,10 @@ function buildRecommendedNodes(
 
   if (classificationTarget) {
     addUnique(nodes, `Classify ${titleCase(classificationTarget)}`, 100);
+  }
+
+  if (internalOutputs.some((output) => output.includes("draft reply") || output.includes("response"))) {
+    addUnique(nodes, "Draft Reply For Review", 100);
   }
 
   if (internalOutputs.some((output) => output.includes("review task") || output.includes("triage task"))) {

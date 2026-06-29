@@ -163,6 +163,17 @@ export function normalizeGeneratedWorkflowName(input: unknown, workflowName: str
   };
 }
 
+export function normalizeGeneratedWorkflowActiveFlag(input: unknown): unknown {
+  if (!isRecord(input) || input.active !== undefined) {
+    return input;
+  }
+
+  return {
+    ...input,
+    active: false,
+  };
+}
+
 export function normalizeGeneratedWorkflowIds(input: unknown): unknown {
   if (!input || typeof input !== "object" || !Array.isArray((input as { nodes?: unknown }).nodes)) {
     return input;
@@ -321,9 +332,205 @@ export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
   };
 }
 
+const externalActionTargetMarkers = [
+  "email",
+  "gmail",
+  "http",
+  "reply",
+  "sendgrid",
+  "slack",
+  "webhook",
+  "zendesk",
+];
+
+const externalActionVerbMarkers = [
+  "archive",
+  "charge",
+  "delete",
+  "pay",
+  "payment",
+  "post",
+  "publish",
+  "refund",
+  "reply",
+  "send",
+  "update",
+  "write",
+];
+
+const safePlaceholderNameMarkers = [
+  "approval",
+  "blocked",
+  "draft",
+  "manual",
+  "no-op",
+  "noop",
+  "pending",
+  "placeholder",
+  "review",
+  "sample",
+];
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value ?? "");
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function includesAny(value: string, markers: readonly string[]): boolean {
+  return markers.some((marker) => value.includes(marker));
+}
+
+function normalizedNodeName(node: Record<string, unknown>): string {
+  return typeof node.name === "string" ? node.name.toLowerCase() : "";
+}
+
+function normalizedNodeText(node: Record<string, unknown>): string {
+  return [
+    node.name,
+    node.type,
+    safeStringify(node.parameters),
+    safeStringify(node.credentials),
+    typeof node.notes === "string" ? node.notes : "",
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function isSupportNodeName(nodeName: string): boolean {
+  return includesAny(nodeName, ["support", "customer", "ticket", "inbox", "message"]);
+}
+
+function isDraftReplyNodeName(nodeName: string): boolean {
+  return nodeName.includes("draft")
+    || nodeName.includes("reply")
+    || nodeName.includes("response suggestion");
+}
+
+function isReviewOrApprovalNodeName(nodeName: string): boolean {
+  return nodeName.includes("review")
+    || nodeName.includes("approval")
+    || nodeName.includes("approve")
+    || nodeName.includes("pending");
+}
+
+function isSampleSupportMessageNodeName(nodeName: string): boolean {
+  return nodeName.includes("sample") && isSupportNodeName(nodeName);
+}
+
+function isClassifyNodeName(nodeName: string): boolean {
+  return nodeName.includes("classify") || nodeName.includes("categorize");
+}
+
+function isSupportClassificationNodeName(nodeName: string): boolean {
+  return isClassifyNodeName(nodeName)
+    && (
+      isSupportNodeName(nodeName)
+      || nodeName.includes("topic")
+      || nodeName.includes("urgency")
+    );
+}
+
+function isSupportDraftFlowNodeName(nodeName: string): boolean {
+  return isSupportNodeName(nodeName)
+    || isDraftReplyNodeName(nodeName)
+    || isReviewOrApprovalNodeName(nodeName);
+}
+
+function safeDraftReviewFields(values: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...values,
+    review_status: values.review_status || "pending",
+    send_status: values.send_status || "not_sent",
+    draft_only: values.draft_only ?? true,
+    requires_human_approval: values.requires_human_approval ?? true,
+  };
+}
+
+function isLikelyExternalActionPlaceholder(node: Record<string, unknown>): boolean {
+  const nodeName = normalizedNodeName(node);
+  const text = normalizedNodeText(node);
+
+  if (includesAny(nodeName, safePlaceholderNameMarkers)) {
+    return false;
+  }
+
+  if (nodeName.includes("extract") || isClassifyNodeName(nodeName)) {
+    return false;
+  }
+
+  if (nodeName.includes("prepare") && includesAny(nodeName, ["review", "task", "summary"])) {
+    return false;
+  }
+
+  return includesAny(text, externalActionTargetMarkers)
+    && includesAny(text, externalActionVerbMarkers);
+}
+
+function normalizeExternalActionPlaceholderNode(
+  node: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (
+    node.type !== "n8n-nodes-base.code"
+    && node.type !== "n8n-nodes-base.set"
+  ) {
+    return null;
+  }
+
+  if (!isLikelyExternalActionPlaceholder(node)) {
+    return null;
+  }
+
+  const safetyNote = "Disabled no-op placeholder. Do not send external messages until manual review and approval are complete.";
+
+  if (node.type === "n8n-nodes-base.code") {
+    return {
+      ...node,
+      disabled: true,
+      notes: typeof node.notes === "string" && node.notes.trim()
+        ? `${node.notes} ${safetyNote}`
+        : safetyNote,
+      parameters: {
+        jsCode: [
+          "return items.map((item) => ({",
+          "  json: {",
+          "    ...item.json,",
+          "    review_status: \"pending\",",
+          "    send_status: \"not_sent\",",
+          "    draft_only: true,",
+          "    requires_human_approval: true,",
+          "    safety_note: \"No-op placeholder. Manual approval required before any external message is sent.\"",
+          "  }",
+          "}));",
+        ].join("\n"),
+      },
+    };
+  }
+
+  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
+  const values = isRecord(parameters.values) ? { ...parameters.values } : {};
+
+  return {
+    ...node,
+    disabled: true,
+    notes: typeof node.notes === "string" && node.notes.trim()
+      ? `${node.notes} ${safetyNote}`
+      : safetyNote,
+    parameters: {
+      ...parameters,
+      values: safeDraftReviewFields({
+        ...values,
+        safety_note: values.safety_note || "No-op placeholder. Manual approval required before any external message is sent.",
+      }),
+    },
+  };
+}
+
 function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<string, unknown> {
   const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
+  const nodeName = normalizedNodeName(node);
 
   const existingJsCode = typeof parameters.jsCode === "string" ? parameters.jsCode : "";
   const legacyCode = typeof parameters.code === "string" ? parameters.code : "";
@@ -337,7 +544,26 @@ function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<stri
   const isExtractNode = nodeName.includes("extract");
   const isClassifyNode = nodeName.includes("classify");
 
-  if (isSampleNode) {
+  if (isSampleSupportMessageNodeName(nodeName)) {
+    parameters.jsCode = [
+      "return [{",
+      "  json: {",
+      "    source_channel: \"support inbox sample\",",
+      "    subject: \"Cannot access account\",",
+      "    customer_name: \"Sample Customer\",",
+      "    customer_message: \"Sample support message for safe draft testing only. Do not send.\",",
+      "    issue_summary: \"Customer cannot access account.\",",
+      "    topic: \"account_access\",",
+      "    urgency: \"high\",",
+      "    account_identifier: \"\",",
+      "    review_status: \"pending\",",
+      "    send_status: \"not_sent\",",
+      "    draft_only: true,",
+      "    requires_human_approval: true",
+      "  }",
+      "}];",
+    ].join("\n");
+  } else if (isSampleNode) {
     parameters.jsCode = [
       "return [{",
       "  json: {",
@@ -352,7 +578,27 @@ function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<stri
     ].join("\n");
   }
 
-  if (isExtractNode && nodeName.includes("candidate")) {
+  if (isExtractNode && isSupportNodeName(nodeName)) {
+    parameters.jsCode = [
+      "return items.map((item) => {",
+      "  const body = String(item.json.customer_message || item.json.body || \"\");",
+      "",
+      "  return {",
+      "    json: {",
+      "      ...item.json,",
+      "      customer_name: item.json.customer_name || \"\",",
+      "      issue_summary: item.json.issue_summary || body.slice(0, 240),",
+      "      urgency: item.json.urgency || \"\",",
+      "      account_identifier: item.json.account_identifier || \"\",",
+      "      review_status: \"pending\",",
+      "      send_status: \"not_sent\",",
+      "      draft_only: true,",
+      "      requires_human_approval: true",
+      "    }",
+      "  };",
+      "});",
+    ].join("\n");
+  } else if (isExtractNode && nodeName.includes("candidate")) {
     parameters.jsCode = [
       "return items.map((item) => ({",
       "  json: {",
@@ -366,7 +612,34 @@ function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<stri
     ].join("\n");
   }
 
-  if (isClassifyNode) {
+  if (isClassifyNode && isSupportClassificationNodeName(nodeName)) {
+    parameters.jsCode = [
+      "return items.map((item) => {",
+      "  const text = `${item.json.issue_summary || \"\"} ${item.json.customer_message || \"\"} ${item.json.body || \"\"}`.toLowerCase();",
+      "  const topic = text.includes(\"refund\") || text.includes(\"charge\")",
+      "    ? \"billing\"",
+      "    : text.includes(\"login\") || text.includes(\"access\") || text.includes(\"password\")",
+      "      ? \"account_access\"",
+      "      : \"general_support\";",
+      "  const urgency = /urgent|cannot|unable|blocked|down|complaint|threat|refund|charge/.test(text)",
+      "    ? \"high\"",
+      "    : \"normal\";",
+      "",
+      "  return {",
+      "    json: {",
+      "      ...item.json,",
+      "      topic,",
+      "      urgency,",
+      "      priority: urgency,",
+      "      review_status: \"pending\",",
+      "      send_status: \"not_sent\",",
+      "      draft_only: true,",
+      "      requires_human_approval: true",
+      "    }",
+      "  };",
+      "});",
+    ].join("\n");
+  } else if (isClassifyNode) {
     parameters.jsCode = [
       "return items.map((item) => {",
       "  const role = String(item.json.role || \"\").toLowerCase();",
@@ -387,6 +660,42 @@ function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<stri
     ].join("\n");
   }
 
+  if (isDraftReplyNodeName(nodeName)) {
+    parameters.jsCode = [
+      "return items.map((item) => {",
+      "  const issue = String(item.json.issue_summary || item.json.customer_message || \"the support request\");",
+      "  const draftReply = `Thanks for contacting support. We reviewed: ${issue}. A support team lead should review this draft before any reply is sent.`;",
+      "",
+      "  return {",
+      "    json: {",
+      "      ...item.json,",
+      "      draft_reply: draftReply,",
+      "      internal_response_suggestion: draftReply,",
+      "      review_status: \"pending\",",
+      "      send_status: \"not_sent\",",
+      "      draft_only: true,",
+      "      requires_human_approval: true",
+      "    }",
+      "  };",
+      "});",
+    ].join("\n");
+  } else if (isReviewOrApprovalNodeName(nodeName) && isSupportDraftFlowNodeName(nodeName)) {
+    parameters.jsCode = [
+      "return items.map((item) => ({",
+      "  json: {",
+      "    ...item.json,",
+      "    review_owner: item.json.review_owner || \"support team lead\",",
+      "    review_status: \"pending\",",
+      "    send_status: \"not_sent\",",
+      "    draft_only: true,",
+      "    requires_human_approval: true,",
+      "    manual_review_required: true,",
+      "    next_action: \"Support team lead reviews the draft before any reply is sent.\"",
+      "  }",
+      "}));",
+    ].join("\n");
+  }
+
   return {
     ...node,
     parameters,
@@ -401,7 +710,7 @@ function normalizeStickyNoteParameters(node: Record<string, unknown>): Record<st
     || typeof parameters.note === "string";
 
   if (!hasText) {
-    parameters.content = "Manual review required before contacting candidates, sending external messages, or connecting production systems.";
+    parameters.content = "Manual review required before sending external messages, contacting customers or candidates, or connecting production systems.";
   }
 
   return {
@@ -412,15 +721,8 @@ function normalizeStickyNoteParameters(node: Record<string, unknown>): Record<st
 
 function normalizeSetNodeParameters(node: Record<string, unknown>): Record<string, unknown> {
   const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const values = isRecord(parameters.values) ? { ...parameters.values } : null;
-  const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
-
-  if (!values) {
-    return {
-      ...node,
-      parameters,
-    };
-  }
+  const values = isRecord(parameters.values) ? { ...parameters.values } : {};
+  const nodeName = normalizedNodeName(node);
 
   if (nodeName.includes("extract candidate")) {
     parameters.values = {
@@ -432,12 +734,46 @@ function normalizeSetNodeParameters(node: Record<string, unknown>): Record<strin
   }
 
   const currentValues = isRecord(parameters.values) ? parameters.values : values;
+  const shouldAddSupportSafetyFields = isSupportDraftFlowNodeName(nodeName);
 
-  if (nodeName.includes("review") && !currentValues.review_status) {
-    parameters.values = {
+  if (isSampleSupportMessageNodeName(nodeName)) {
+    parameters.values = safeDraftReviewFields({
       ...currentValues,
-      review_status: "pending",
-    };
+      source_channel: currentValues.source_channel || "support inbox sample",
+      customer_name: currentValues.customer_name || "Sample Customer",
+      customer_message: currentValues.customer_message || "Sample support message for safe draft testing only. Do not send.",
+      issue_summary: currentValues.issue_summary || "Customer needs support review.",
+    });
+  } else if (nodeName.includes("extract support")) {
+    parameters.values = safeDraftReviewFields({
+      ...currentValues,
+      customer_name: currentValues.customer_name || "={{ $json.customer_name }}",
+      issue_summary: currentValues.issue_summary || "={{ $json.issue_summary }}",
+      urgency: currentValues.urgency || "={{ $json.urgency }}",
+      account_identifier: currentValues.account_identifier || "={{ $json.account_identifier }}",
+    });
+  } else if (isSupportClassificationNodeName(nodeName)) {
+    parameters.values = safeDraftReviewFields({
+      ...currentValues,
+      topic: currentValues.topic || "={{ $json.topic }}",
+      urgency: currentValues.urgency || "={{ $json.urgency }}",
+      priority: currentValues.priority || "={{ $json.priority }}",
+    });
+  } else if (isDraftReplyNodeName(nodeName)) {
+    parameters.values = safeDraftReviewFields({
+      ...currentValues,
+      draft_reply: currentValues.draft_reply || "Draft reply for support lead review only. Do not send automatically.",
+      internal_response_suggestion: currentValues.internal_response_suggestion || "Draft-only support response suggestion.",
+    });
+  } else if (isReviewOrApprovalNodeName(nodeName)) {
+    parameters.values = safeDraftReviewFields({
+      ...currentValues,
+      review_owner: currentValues.review_owner || "support team lead",
+      manual_review_required: currentValues.manual_review_required ?? true,
+      next_action: currentValues.next_action || "Manual review required before any reply is sent.",
+    });
+  } else if (shouldAddSupportSafetyFields) {
+    parameters.values = safeDraftReviewFields(currentValues);
   }
 
   return {
@@ -456,6 +792,12 @@ export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknow
     nodes: input.nodes.map((node) => {
       if (!isRecord(node) || typeof node.type !== "string") {
         return node;
+      }
+
+      const externalActionPlaceholder = normalizeExternalActionPlaceholderNode(node);
+
+      if (externalActionPlaceholder) {
+        return externalActionPlaceholder;
       }
 
       if (node.type === "n8n-nodes-base.code") {
@@ -823,7 +1165,8 @@ export async function runN8nWorkflowGeneratorAgent(input: {
 
   const parsed = parseStrictJson(rawResponse);
   const named = normalizeGeneratedWorkflowName(parsed, compactInput.workflow_name);
-  const normalizedIds = normalizeGeneratedWorkflowIds(named);
+  const inactive = normalizeGeneratedWorkflowActiveFlag(named);
+  const normalizedIds = normalizeGeneratedWorkflowIds(inactive);
   const normalizedConnections = normalizeGeneratedWorkflowConnections(normalizedIds);
   const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(normalizedConnections);
   const normalizedStickyNotes = normalizeStickyNoteConnections(normalizedParameters);

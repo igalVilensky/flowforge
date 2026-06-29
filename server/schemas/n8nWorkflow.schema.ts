@@ -79,14 +79,58 @@ const dangerousActionMarkers = [
 const safetyGateMarkers = [
   "approval",
   "approve",
+  "blocked",
   "draft",
+  "draft_only",
   "disabled",
   "do not execute",
   "do not send",
   "human",
   "manual review",
+  "manual",
+  "no-op",
+  "noop",
+  "not sent",
+  "not_sent",
+  "pending",
   "placeholder",
+  "requires_human_approval",
   "review",
+];
+
+const safeInertDraftMarkers = [
+  "approval",
+  "approve",
+  "blocked",
+  "draft",
+  "draft_only",
+  "do not send",
+  "human approval",
+  "internal",
+  "manual",
+  "no-op",
+  "noop",
+  "not sent",
+  "not_sent",
+  "pending",
+  "placeholder",
+  "requires_human_approval",
+  "review",
+  "sample",
+];
+
+const executableExternalActionMarkers = [
+  "$http",
+  "axios",
+  "fetch(",
+  "gmail.users.messages",
+  "http.request",
+  "https.request",
+  "nodemailer",
+  "sendmail",
+  "slack.chat.postmessage",
+  "stripe.",
+  "twilio.",
 ];
 
 function safeStringify(value: unknown): string {
@@ -116,6 +160,10 @@ function containsMarker(value: string, markers: string[]): boolean {
   return markers.some((marker) => value.includes(marker));
 }
 
+function nodeTypeSearchText(node: Pick<N8nWorkflowNode, "type">): string {
+  return node.type.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 function credentialValueStrings(value: unknown): string[] {
   if (typeof value === "string") {
     return value.trim() ? [value] : [];
@@ -140,18 +188,60 @@ function credentialsUsePlaceholders(credentials: Record<string, unknown> | undef
   return values.length > 0 && values.every((value) => value.includes("PLACEHOLDER_"));
 }
 
+function hasExecutableExternalActionCode(node: N8nWorkflowNode): boolean {
+  const parametersText = safeStringify(node.parameters).toLowerCase();
+
+  return containsMarker(parametersText, executableExternalActionMarkers);
+}
+
+function hasSafeInertDraftLanguage(node: N8nWorkflowNode): boolean {
+  return containsMarker(nodeSearchText(node), safeInertDraftMarkers);
+}
+
+function nodeNameHasSafeInertDraftLanguage(node: N8nWorkflowNode): boolean {
+  return containsMarker(node.name.toLowerCase(), safeInertDraftMarkers);
+}
+
+function nodeNameLooksLikeExternalActionCommand(node: N8nWorkflowNode): boolean {
+  const nodeName = node.name.toLowerCase();
+  const hasDangerousAction = containsMarker(nodeName, dangerousActionMarkers);
+
+  return hasDangerousAction && !nodeNameHasSafeInertDraftLanguage(node);
+}
+
+function isAllowedInertDraftNode(node: N8nWorkflowNode): boolean {
+  const typeText = nodeTypeSearchText(node);
+
+  return allowedN8nNodeTypeSet.has(node.type)
+    && !containsMarker(typeText, externalConnectorMarkers)
+    && credentialsUsePlaceholders(node.credentials)
+    && hasSafeInertDraftLanguage(node)
+    && !hasExecutableExternalActionCode(node);
+}
+
 function isObviousDangerousExternalAction(node: N8nWorkflowNode): boolean {
   const text = nodeSearchText(node);
-  const typeText = node.type.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const typeText = nodeTypeSearchText(node);
+  const usesExternalConnectorType = containsMarker(typeText, externalConnectorMarkers);
+  const usesExternalConnectorText = containsMarker(text, externalConnectorMarkers);
   const usesExternalConnector =
-    containsMarker(typeText, externalConnectorMarkers)
-    || containsMarker(text, externalConnectorMarkers);
+    usesExternalConnectorType
+    || usesExternalConnectorText;
 
   if (!usesExternalConnector) {
     return false;
   }
 
-  return containsMarker(text, dangerousActionMarkers);
+  if (
+    !usesExternalConnectorType
+    && isAllowedInertDraftNode(node)
+    && !nodeNameLooksLikeExternalActionCommand(node)
+  ) {
+    return false;
+  }
+
+  return containsMarker(text, dangerousActionMarkers)
+    || (usesExternalConnectorText && hasExecutableExternalActionCode(node));
 }
 
 function hasSafetyGateLanguage(node: N8nWorkflowNode): boolean {
