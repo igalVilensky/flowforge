@@ -19,8 +19,8 @@ export async function callGroq(
   const modelEnv = options.modelEnv ?? "GROQ_MODEL";
   const maxTokensEnv = options.maxTokensEnv ?? "GROQ_MAX_TOKENS";
   const apiKey = process.env[apiKeyEnv];
-  const model = process.env[modelEnv] || options.defaultModel || "llama-3.1-8b-instant";
-  const configuredMaxTokens = Number(process.env[maxTokensEnv] || options.defaultMaxTokens || 900);
+  const model = process.env[modelEnv] || options.defaultModel || "openai/gpt-oss-120b";
+  const configuredMaxTokens = Number(process.env[maxTokensEnv] || options.defaultMaxTokens || 10000);
   const maxTokens = options.maxTokensCap
     ? Math.min(configuredMaxTokens, options.maxTokensCap)
     : configuredMaxTokens;
@@ -92,4 +92,14 @@ export async function callGroq(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+export function callGroqAgent(prompt: string, systemPrompt: string): Promise<string> {
+  return callGroq(prompt, systemPrompt, {
+    modelEnv: "GROQ_AGENT_MODEL",
+    maxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
+    defaultModel: "llama-3.1-8b-instant",
+    defaultMaxTokens: 2200,
+    maxTokensCap: 2200,
+  });
 }

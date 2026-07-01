@@ -13,8 +13,8 @@ import {
     clarificationAgentSystemPrompt,
 } from "../prompts/clarificationAgentPrompt";
 import { clarificationAgentOutputSchema } from "../schemas/agentOutputs.schema";
-import { callGemini } from "./geminiProvider";
-import { callGroq } from "./groqProvider";
+import { callGeminiAgent } from "./geminiProvider";
+import { callGroqAgent } from "./groqProvider";
 
 export type RunClarificationAgentInput = {
     processInput: string;
@@ -218,7 +218,7 @@ export async function runClarificationAgent(input: RunClarificationAgentInput): 
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroq(prompt, clarificationAgentSystemPrompt);
+            rawResponse = await callGroqAgent(prompt, clarificationAgentSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "groq", input);
 
@@ -266,7 +266,7 @@ export async function runClarificationAgent(input: RunClarificationAgentInput): 
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGemini(prompt, clarificationAgentSystemPrompt);
+            rawResponse = await callGeminiAgent(prompt, clarificationAgentSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "gemini", input);
 

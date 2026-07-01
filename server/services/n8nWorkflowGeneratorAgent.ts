@@ -201,6 +201,40 @@ export function normalizeGeneratedWorkflowIds(input: unknown): unknown {
   };
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function fallbackNodePosition(index: number): [number, number] {
+  return [(index % 4) * 260, Math.floor(index / 4) * 180];
+}
+
+export function normalizeGeneratedWorkflowNodePositions(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    nodes: input.nodes.map((node, index) => {
+      if (!isRecord(node)) {
+        return node;
+      }
+
+      const fallbackPosition = fallbackNodePosition(index);
+      const position = Array.isArray(node.position) ? node.position : [];
+
+      return {
+        ...node,
+        position: [
+          isFiniteNumber(position[0]) ? position[0] : fallbackPosition[0],
+          isFiniteNumber(position[1]) ? position[1] : fallbackPosition[1],
+        ],
+      };
+    }),
+  };
+}
+
 function buildNodeNameAliases(input: Record<string, unknown>): Map<string, string> {
   const aliases = new Map<string, string>();
   const nodes = Array.isArray(input.nodes) ? input.nodes : [];
@@ -1170,7 +1204,8 @@ export async function runN8nWorkflowGeneratorAgent(input: {
   const normalizedConnections = normalizeGeneratedWorkflowConnections(normalizedIds);
   const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(normalizedConnections);
   const normalizedStickyNotes = normalizeStickyNoteConnections(normalizedParameters);
-  const normalized = normalizeDuplicateReviewSetNodes(normalizedStickyNotes);
+  const normalizedDuplicates = normalizeDuplicateReviewSetNodes(normalizedStickyNotes);
+  const normalized = normalizeGeneratedWorkflowNodePositions(normalizedDuplicates);
   const validation = n8nWorkflowSchema.safeParse(normalized);
 
   if (!validation.success) {

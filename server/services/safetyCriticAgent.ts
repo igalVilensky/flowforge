@@ -22,8 +22,8 @@ import {
     safetyCriticAgentSystemPrompt,
 } from "../prompts/safetyCriticAgentPrompt";
 import { safetyCriticAgentOutputSchema } from "../schemas/agentOutputs.schema";
-import { callGemini } from "./geminiProvider";
-import { callGroq } from "./groqProvider";
+import { callGeminiAgent } from "./geminiProvider";
+import { callGroqAgent } from "./groqProvider";
 
 export type RunSafetyCriticAgentInput = {
     processInput: string;
@@ -316,7 +316,7 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroq(prompt, safetyCriticAgentSystemPrompt);
+            rawResponse = await callGroqAgent(prompt, safetyCriticAgentSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "groq");
 
@@ -367,7 +367,7 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGemini(prompt, safetyCriticAgentSystemPrompt);
+            rawResponse = await callGeminiAgent(prompt, safetyCriticAgentSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "gemini");
 

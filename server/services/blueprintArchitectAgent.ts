@@ -21,8 +21,8 @@ import {
     buildBlueprintArchitectUserPrompt,
 } from "../prompts/blueprintArchitectPrompt";
 import { blueprintArchitectOutputSchema } from "../schemas/agentOutputs.schema";
-import { callGemini } from "./geminiProvider";
-import { callGroq } from "./groqProvider";
+import { callGeminiAgent } from "./geminiProvider";
+import { callGroqAgent } from "./groqProvider";
 
 export type RunBlueprintArchitectAgentInput = {
     processInput: string;
@@ -322,7 +322,7 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroq(prompt, blueprintArchitectSystemPrompt);
+            rawResponse = await callGroqAgent(prompt, blueprintArchitectSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
             const normalized = normalizeAgentOutput(parsedResponse, "groq");
 
@@ -371,7 +371,7 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGemini(prompt, blueprintArchitectSystemPrompt);
+            rawResponse = await callGeminiAgent(prompt, blueprintArchitectSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
             const normalized = normalizeAgentOutput(parsedResponse, "gemini");
 

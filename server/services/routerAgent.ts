@@ -3,8 +3,8 @@ import type { CompileMode, RouterDecision } from "../../shared/types/compileJob"
 import type { AutomationReadinessScore, RiskSummary, SignalSummary } from "../../shared/types/workflow";
 import { buildRouterUserPrompt, routerSystemPrompt } from "../prompts/routerPrompt";
 import { routerDecisionSchema } from "../schemas/router.schema";
-import { callGemini } from "./geminiProvider";
-import { callGroq } from "./groqProvider";
+import { callGeminiAgent } from "./geminiProvider";
+import { callGroqAgent } from "./groqProvider";
 
 export type RouterAttempt = {
   provider: "groq" | "gemini" | "deterministic";
@@ -128,7 +128,7 @@ export async function routeCompileRequest(
   } else {
     try {
       llm_calls_made++;
-      const groqResponse = await callGroq(prompt, routerSystemPrompt);
+      const groqResponse = await callGroqAgent(prompt, routerSystemPrompt);
       const parsed = safeParseJSON(groqResponse);
       const valid = routerDecisionSchema.parse({
         ...parsed as any,
@@ -168,7 +168,7 @@ export async function routeCompileRequest(
   } else {
     try {
       llm_calls_made++;
-      const geminiResponse = await callGemini(prompt, routerSystemPrompt);
+      const geminiResponse = await callGeminiAgent(prompt, routerSystemPrompt);
       const parsed = safeParseJSON(geminiResponse);
       const valid = routerDecisionSchema.parse({
         ...parsed as any,

@@ -28,6 +28,7 @@ export const n8nWorkflowGeneratorSystemPrompt = [
   "- Prefer Schedule Trigger or Manual Trigger, Set nodes for extracted/internal payloads, Code nodes for sample/classification logic, IF only when a branch is useful, and Sticky Notes only for visual safety notes.",
   "- Do not name nodes only \"Prepare Data\", \"Code\", or \"Sticky Note\".",
   "- Every node must include string id, name, type, numeric typeVersion, position array, and parameters object.",
+  "- position must always be exactly two numbers, for example [0, 0] or [260, 0]. Never use [], [0], null, or an object.",
   "- Use short stable node ids based on the domain-specific node names.",
   "- Use compact node parameters. No verbose notes. No huge sample data.",
   "- For sample input, prefer a Code node with jsCode returning [{ json: { subject: 'Job Application', candidate_name: '', role: '', portfolio_link: '', application_source: '' } }].",

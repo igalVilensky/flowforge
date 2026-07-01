@@ -47,6 +47,54 @@ type AgentCard = {
   debugId?: keyof NonNullable<CompileJob["agent_debug"]> | "guided_clarifier";
 };
 
+type OrchestrationStepState = "waiting" | "running" | "completed" | "fallback" | "failed" | "skipped";
+
+type OrchestrationStep = {
+  id: string;
+  label: string;
+  responsibility: string;
+  state: OrchestrationStepState;
+  statusLabel: string;
+};
+
+type CompileAgentDefinition = {
+  id: "router" | "clarification_agent" | "blueprint_architect_agent" | "safety_critic_agent" | "final_guard";
+  label: string;
+  responsibility: string;
+  debugId?: keyof NonNullable<CompileJob["agent_debug"]>;
+};
+
+const compileAgentDefinitions: CompileAgentDefinition[] = [
+  {
+    id: "router",
+    label: "Router",
+    responsibility: "Classifies the request and chooses the safe compile path.",
+  },
+  {
+    id: "clarification_agent",
+    label: "Compile Clarifier",
+    responsibility: "Checks whether the request has enough detail to compile.",
+    debugId: "clarification_agent",
+  },
+  {
+    id: "blueprint_architect_agent",
+    label: "Blueprint Architect",
+    responsibility: "Builds the safe workflow blueprint and human gates.",
+    debugId: "blueprint_architect_agent",
+  },
+  {
+    id: "safety_critic_agent",
+    label: "Safety Critic",
+    responsibility: "Reviews risks, blocked actions, and approval boundaries.",
+    debugId: "safety_critic_agent",
+  },
+  {
+    id: "final_guard",
+    label: "Final Guard",
+    responsibility: "Applies deterministic guardrails before returning the result.",
+  },
+];
+
 const processInput = ref("");
 const mode = ref<CompileMode>("full");
 const job = ref<CompileJob | null>(null);
@@ -74,6 +122,9 @@ const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
 const n8nJsonCopied = ref(false);
+const orchestrationStartedAt = ref<number | null>(null);
+const simulatedActiveAgentIndex = ref(0);
+const orchestrationTimer = ref<number | null>(null);
 
 const examples = [
   {
@@ -125,8 +176,10 @@ const answeredCount = computed(() => clarificationAnswers.value.length);
 const currentQuestionNumber = computed(() => answeredCount.value + 1);
 const clarificationProgressLabel = computed(() => `Question ${currentQuestionNumber.value} · stops when ready`);
 const safetyStatus = computed(() => job.value?.safety_critic?.overall_status ?? null);
+const isOrchestrating = computed(() => runState.value === "compiling");
 const mainStatus = computed(() => {
   if (runState.value === "failed") return "Failed";
+  if (isOrchestrating.value) return "Compiling";
   if (hasClarification.value) return "Clarifying";
   if (!job.value) return "Ready";
 
@@ -140,12 +193,46 @@ const mainStatus = computed(() => {
 
 const mainStatusTone = computed(() => {
   if (runState.value === "failed") return "danger";
+  if (isOrchestrating.value) return "active";
   if (hasClarification.value) return "active";
   if (safetyStatus.value === "not_safe_to_automate") return "danger";
   if (safetyStatus.value === "needs_human_approval") return "warning";
   if (safetyStatus.value === "safe_internal_preview") return "success";
   return "neutral";
 });
+
+function simulatedAgentState(index: number): AgentCard["status"] {
+  if (!isOrchestrating.value || job.value) return "idle";
+  if (index < simulatedActiveAgentIndex.value) return "done";
+  if (index === simulatedActiveAgentIndex.value) return "active";
+  return "idle";
+}
+
+function previewStatusLabel(status: AgentCard["status"]) {
+  if (status === "active") return "Running";
+  if (status === "done") return "Completed";
+  return "Waiting";
+}
+
+function previewStatusReason(status: AgentCard["status"]) {
+  if (status === "active") {
+    return "Previewing this agent while the compile request is in flight. Real provider status will replace it when the response returns.";
+  }
+
+  if (status === "done") {
+    return "Preview completed. Final agent evidence is still pending from the compile response.";
+  }
+
+  return "Waiting for the orchestration preview to reach this step.";
+}
+
+function orchestrationStateFromCardStatus(status: AgentCard["status"]): OrchestrationStepState {
+  if (status === "active") return "running";
+  if (status === "done") return "completed";
+  if (status === "skipped") return "skipped";
+  if (status === "needs_detail") return "failed";
+  return "waiting";
+}
 
 const agentRail = computed(() => [
   {
@@ -158,11 +245,11 @@ const agentRail = computed(() => [
   },
   {
     label: "Compiler",
-    state: runState.value === "compiling" ? "active" : job.value ? "done" : "idle",
+    state: job.value ? "done" : isOrchestrating.value && simulatedActiveAgentIndex.value < 3 ? "active" : isOrchestrating.value ? "done" : "idle",
   },
   {
     label: "Safety",
-    state: job.value?.safety_critic ? "done" : runState.value === "compiling" ? "active" : "idle",
+    state: job.value?.safety_critic ? "done" : isOrchestrating.value && simulatedActiveAgentIndex.value >= 3 ? "active" : "idle",
   },
   {
     label: "Blueprint",
@@ -170,117 +257,206 @@ const agentRail = computed(() => [
   },
 ]);
 
+const orchestrationPreviewSteps = computed<OrchestrationStep[]>(() =>
+  compileAgentDefinitions.map((agent, index) => {
+    const status = simulatedAgentState(index);
 
-const agentCards = computed<AgentCard[]>(() => [
-  {
-    id: "guided_clarifier",
-    label: "Guided Clarifier",
-    status: hasClarification.value ? "active" : clarificationAnswers.value.length > 0 ? "done" : "idle",
-    summary: clarificationSession.value?.reason
-      || clarificationLastResponse.value?.session.reason
-      || (clarificationAnswers.value.length > 0 ? "Clarification answers collected." : "Waiting for a clarification need."),
-    provider: clarificationLastResponse.value?.provider || "standby",
-    statusLabel: guidedClarifierStatusLabel(),
-    statusReason: guidedClarifierStatusReason(),
-    providerTone: guidedClarifierTone(),
-    debugId: "guided_clarifier",
-  },
-  {
-    id: "router",
-    label: "Router",
-    status: job.value?.router_decision ? "done" : runState.value === "compiling" ? "active" : "idle",
-    summary: job.value?.router_decision?.reason || "Routes compile requests when needed.",
-    provider: job.value?.router_decision?.provider || "standby",
-    statusLabel: routerStatusLabel(),
-    statusReason: routerStatusReason(),
-    providerTone: routerProviderTone(),
-  },
-  {
-    id: "clarification_agent",
-    label: "Compile Clarifier",
-    status: job.value?.clarification_agent ? agentOutputStatusToCardStatus(job.value.clarification_agent.status) : runState.value === "compiling" ? "active" : "idle",
-    summary: job.value?.clarification_agent?.rewritten_summary
-      || job.value?.clarification_plan?.reason
-      || "Explains compile-time missing details when needed.",
-    provider: job.value?.clarification_agent?.provider || "standby",
-    statusLabel: agentStatusLabel(
-      job.value?.clarification_agent?.provider,
-      job.value?.clarification_agent?.used_ai,
-      job.value?.clarification_agent?.fallback_used,
-      job.value?.clarification_agent?.status,
-    ),
-    statusReason: agentStatusReason(
-      job.value?.clarification_agent?.provider,
-      job.value?.clarification_agent?.used_ai,
-      job.value?.clarification_agent?.fallback_used,
-      job.value?.clarification_agent?.reason,
-      job.value?.clarification_agent?.status,
-    ),
-    providerTone: providerTone(
-      job.value?.clarification_agent?.provider,
-      job.value?.clarification_agent?.used_ai,
-      job.value?.clarification_agent?.fallback_used,
-      job.value?.clarification_agent?.status,
-    ),
-    debugId: "clarification_agent",
-  },
-  {
-    id: "blueprint_architect_agent",
-    label: "Blueprint Architect",
-    status: job.value?.blueprint_architect_agent ? agentOutputStatusToCardStatus(job.value.blueprint_architect_agent.status) : runState.value === "compiling" ? "active" : "idle",
-    summary: job.value?.blueprint_architect_agent?.summary || job.value?.result?.summary || "Builds the workflow preview.",
-    provider: job.value?.blueprint_architect_agent?.provider || "standby",
-    statusLabel: agentStatusLabel(
-      job.value?.blueprint_architect_agent?.provider,
-      job.value?.blueprint_architect_agent?.used_ai,
-      job.value?.blueprint_architect_agent?.fallback_used,
-      job.value?.blueprint_architect_agent?.status,
-    ),
-    statusReason: agentStatusReason(
-      job.value?.blueprint_architect_agent?.provider,
-      job.value?.blueprint_architect_agent?.used_ai,
-      job.value?.blueprint_architect_agent?.fallback_used,
-      job.value?.blueprint_architect_agent?.reason,
-      job.value?.blueprint_architect_agent?.status,
-    ),
-    providerTone: providerTone(
-      job.value?.blueprint_architect_agent?.provider,
-      job.value?.blueprint_architect_agent?.used_ai,
-      job.value?.blueprint_architect_agent?.fallback_used,
-      job.value?.blueprint_architect_agent?.status,
-    ),
-    debugId: "blueprint_architect_agent",
-  },
-  {
-    id: "safety_critic_agent",
-    label: "Safety Critic",
-    status: job.value?.safety_critic_agent ? agentOutputStatusToCardStatus(job.value.safety_critic_agent.status) : job.value?.safety_critic ? "done" : runState.value === "compiling" ? "active" : "idle",
-    summary: job.value?.safety_critic_agent?.critic_summary
-      || job.value?.safety_critic?.summary
-      || "Checks gates, blocked actions, and next safe action.",
-    provider: job.value?.safety_critic_agent?.provider || (job.value?.safety_critic ? "deterministic" : "standby"),
-    statusLabel: agentStatusLabel(
-      job.value?.safety_critic_agent?.provider,
-      job.value?.safety_critic_agent?.used_ai,
-      job.value?.safety_critic_agent?.fallback_used,
-      job.value?.safety_critic_agent?.status,
-    ),
-    statusReason: agentStatusReason(
-      job.value?.safety_critic_agent?.provider,
-      job.value?.safety_critic_agent?.used_ai,
-      job.value?.safety_critic_agent?.fallback_used,
-      job.value?.safety_critic_agent?.reason,
-      job.value?.safety_critic_agent?.status,
-    ),
-    providerTone: providerTone(
-      job.value?.safety_critic_agent?.provider,
-      job.value?.safety_critic_agent?.used_ai,
-      job.value?.safety_critic_agent?.fallback_used,
-      job.value?.safety_critic_agent?.status,
-    ),
-    debugId: "safety_critic_agent",
-  },
-]);
+    return {
+      id: agent.id,
+      label: agent.label,
+      responsibility: agent.responsibility,
+      state: orchestrationStateFromCardStatus(status),
+      statusLabel: previewStatusLabel(status),
+    };
+  }),
+);
+
+const orchestrationProgressLabel = computed(() => {
+  const completedCount = orchestrationPreviewSteps.value.filter((step) => step.state === "completed").length;
+  return `${completedCount}/${orchestrationPreviewSteps.value.length} stages prepared`;
+});
+
+const currentOrchestrationAgent = computed(() =>
+  orchestrationPreviewSteps.value.find((step) => step.state === "running") ?? orchestrationPreviewSteps.value.at(-1) ?? null,
+);
+
+const simulatedAgentCards = computed<AgentCard[]>(() =>
+  compileAgentDefinitions.map((agent, index) => {
+    const status = simulatedAgentState(index);
+
+    return {
+      id: agent.id,
+      label: agent.label,
+      status,
+      summary: agent.responsibility,
+      provider: status === "idle" ? "standby" : "preview",
+      statusLabel: previewStatusLabel(status),
+      statusReason: previewStatusReason(status),
+      providerTone: status === "idle" ? "standby" : "deterministic",
+      debugId: agent.debugId,
+    };
+  }),
+);
+
+const n8nGeneratorAgentCard = computed<AgentCard | null>(() => {
+  if (n8nGeneratorState.value === "idle" && !n8nWorkflowDraft.value && !n8nGenerateError.value) return null;
+
+  let status: AgentCard["status"] = "idle";
+  let providerToneValue: AgentCard["providerTone"] = "standby";
+  let statusLabel = "Standby";
+  let statusReason = "Waiting for a safe blueprint before generating n8n JSON.";
+
+  if (n8nGeneratorState.value === "generating") {
+    status = "active";
+    providerToneValue = "deterministic";
+    statusLabel = "Generating";
+    statusReason = "Building a draft n8n workflow JSON from the approved blueprint.";
+  } else if (n8nGeneratorState.value === "failed") {
+    status = "needs_detail";
+    providerToneValue = "failed";
+    statusLabel = "Generation failed";
+    statusReason = n8nGenerateError.value || "The n8n JSON draft could not be generated.";
+  } else if (n8nGeneratorState.value === "ready") {
+    status = "done";
+    providerToneValue = n8nFallbackUsed.value ? "fallback" : n8nUsedAi.value ? "ai" : "deterministic";
+    statusLabel = n8nFallbackUsed.value ? "Fallback used" : n8nUsedAi.value ? "AI draft ready" : "Draft ready";
+    statusReason = n8nFallbackUsed.value
+      ? "AI unavailable, rules completed the draft generation step."
+      : "Validated n8n JSON draft is ready for review.";
+  }
+
+  return {
+    id: "n8n_generator",
+    label: "n8n Generator",
+    status,
+    summary: "Generates an importable n8n JSON draft from the safe blueprint.",
+    provider: n8nProvider.value || (n8nGeneratorState.value === "generating" ? "pending" : "standby"),
+    statusLabel,
+    statusReason,
+    providerTone: providerToneValue,
+  };
+});
+
+const agentCards = computed<AgentCard[]>(() => {
+  if (isOrchestrating.value && !job.value) return simulatedAgentCards.value;
+
+  const cards: AgentCard[] = [
+    {
+      id: "guided_clarifier",
+      label: "Guided Clarifier",
+      status: hasClarification.value ? "active" : clarificationAnswers.value.length > 0 ? "done" : "idle",
+      summary: clarificationSession.value?.reason
+        || clarificationLastResponse.value?.session.reason
+        || (clarificationAnswers.value.length > 0 ? "Clarification answers collected." : "Waiting for a clarification need."),
+      provider: clarificationLastResponse.value?.provider || "standby",
+      statusLabel: guidedClarifierStatusLabel(),
+      statusReason: guidedClarifierStatusReason(),
+      providerTone: guidedClarifierTone(),
+      debugId: "guided_clarifier",
+    },
+    {
+      id: "router",
+      label: "Router",
+      status: job.value?.router_decision ? "done" : "idle",
+      summary: job.value?.router_decision?.reason || "Routes compile requests when needed.",
+      provider: job.value?.router_decision?.provider || "standby",
+      statusLabel: routerStatusLabel(),
+      statusReason: routerStatusReason(),
+      providerTone: routerProviderTone(),
+    },
+    {
+      id: "clarification_agent",
+      label: "Compile Clarifier",
+      status: job.value?.clarification_agent ? agentOutputStatusToCardStatus(job.value.clarification_agent.status) : "idle",
+      summary: job.value?.clarification_agent?.rewritten_summary
+        || job.value?.clarification_plan?.reason
+        || "Explains compile-time missing details when needed.",
+      provider: job.value?.clarification_agent?.provider || "standby",
+      statusLabel: agentStatusLabel(
+        job.value?.clarification_agent?.provider,
+        job.value?.clarification_agent?.used_ai,
+        job.value?.clarification_agent?.fallback_used,
+        job.value?.clarification_agent?.status,
+      ),
+      statusReason: agentStatusReason(
+        job.value?.clarification_agent?.provider,
+        job.value?.clarification_agent?.used_ai,
+        job.value?.clarification_agent?.fallback_used,
+        job.value?.clarification_agent?.reason,
+        job.value?.clarification_agent?.status,
+      ),
+      providerTone: providerTone(
+        job.value?.clarification_agent?.provider,
+        job.value?.clarification_agent?.used_ai,
+        job.value?.clarification_agent?.fallback_used,
+        job.value?.clarification_agent?.status,
+      ),
+      debugId: "clarification_agent",
+    },
+    {
+      id: "blueprint_architect_agent",
+      label: "Blueprint Architect",
+      status: job.value?.blueprint_architect_agent ? agentOutputStatusToCardStatus(job.value.blueprint_architect_agent.status) : "idle",
+      summary: job.value?.blueprint_architect_agent?.summary || job.value?.result?.summary || "Builds the workflow preview.",
+      provider: job.value?.blueprint_architect_agent?.provider || "standby",
+      statusLabel: agentStatusLabel(
+        job.value?.blueprint_architect_agent?.provider,
+        job.value?.blueprint_architect_agent?.used_ai,
+        job.value?.blueprint_architect_agent?.fallback_used,
+        job.value?.blueprint_architect_agent?.status,
+      ),
+      statusReason: agentStatusReason(
+        job.value?.blueprint_architect_agent?.provider,
+        job.value?.blueprint_architect_agent?.used_ai,
+        job.value?.blueprint_architect_agent?.fallback_used,
+        job.value?.blueprint_architect_agent?.reason,
+        job.value?.blueprint_architect_agent?.status,
+      ),
+      providerTone: providerTone(
+        job.value?.blueprint_architect_agent?.provider,
+        job.value?.blueprint_architect_agent?.used_ai,
+        job.value?.blueprint_architect_agent?.fallback_used,
+        job.value?.blueprint_architect_agent?.status,
+      ),
+      debugId: "blueprint_architect_agent",
+    },
+    {
+      id: "safety_critic_agent",
+      label: "Safety Critic",
+      status: job.value?.safety_critic_agent ? agentOutputStatusToCardStatus(job.value.safety_critic_agent.status) : job.value?.safety_critic ? "done" : "idle",
+      summary: job.value?.safety_critic_agent?.critic_summary
+        || job.value?.safety_critic?.summary
+        || "Checks gates, blocked actions, and next safe action.",
+      provider: job.value?.safety_critic_agent?.provider || (job.value?.safety_critic ? "deterministic" : "standby"),
+      statusLabel: agentStatusLabel(
+        job.value?.safety_critic_agent?.provider,
+        job.value?.safety_critic_agent?.used_ai,
+        job.value?.safety_critic_agent?.fallback_used,
+        job.value?.safety_critic_agent?.status,
+      ),
+      statusReason: agentStatusReason(
+        job.value?.safety_critic_agent?.provider,
+        job.value?.safety_critic_agent?.used_ai,
+        job.value?.safety_critic_agent?.fallback_used,
+        job.value?.safety_critic_agent?.reason,
+        job.value?.safety_critic_agent?.status,
+      ),
+      providerTone: providerTone(
+        job.value?.safety_critic_agent?.provider,
+        job.value?.safety_critic_agent?.used_ai,
+        job.value?.safety_critic_agent?.fallback_used,
+        job.value?.safety_critic_agent?.status,
+      ),
+      debugId: "safety_critic_agent",
+    },
+    finalGuardCard(),
+  ];
+
+  const n8nCard = n8nGeneratorAgentCard.value;
+  if (n8nCard) cards.push(n8nCard);
+
+  return cards;
+});
 
 const activeAgentCard = computed(() => agentCards.value.find((agent) => agent.id === activeAgentDetailsId.value) ?? null);
 
@@ -313,6 +489,18 @@ const activeAgentOutcome = computed(() => {
   if (id === "blueprint_architect_agent") return job.value?.blueprint_architect_agent ?? null;
   if (id === "safety_critic_agent") return job.value?.safety_critic_agent ?? job.value?.safety_critic ?? null;
   if (id === "router") return job.value?.router_decision ?? null;
+  if (id === "final_guard") return job.value?.safety_critic ?? null;
+  if (id === "n8n_generator") {
+    return {
+      state: n8nGeneratorState.value,
+      provider: n8nProvider.value,
+      used_ai: n8nUsedAi.value,
+      fallback_used: n8nFallbackUsed.value,
+      error: n8nGenerateError.value,
+      warnings: n8nWarnings.value,
+      workflow: n8nWorkflowDraft.value,
+    };
+  }
 
   return null;
 });
@@ -414,7 +602,7 @@ function cleanFallbackReason(reason?: string) {
     return "Fallback used: deterministic review completed because no AI provider key was configured.";
   }
 
-  if (!text) return "Fallback used: deterministic checks completed this step.";
+  if (!text) return "AI unavailable, rules completed this step.";
 
   return compactText(text, 150);
 }
@@ -443,10 +631,10 @@ function providerTone(provider?: string, usedAi?: boolean, fallback?: boolean, s
 
 function agentStatusLabel(provider?: string, usedAi?: boolean, fallback?: boolean, status?: unknown) {
   if (status === "skipped") return "Skipped";
-  if (status === "failed_validation") return "Needs fix";
+  if (status === "failed_validation") return "Validation failed";
   if (!provider || provider === "standby") return "Standby";
   if (usedAi) return "AI used";
-  if (fallback) return "Fallback";
+  if (fallback) return "Fallback used";
   if (provider === "deterministic") return "Rules";
   return "Ready";
 }
@@ -478,7 +666,7 @@ function routerStatusLabel() {
   const decision = job.value?.router_decision;
   if (!decision) return "Standby";
   if (decision.used_ai) return "AI used";
-  if (decision.fallback_used) return "Fallback";
+  if (decision.fallback_used) return "Fallback used";
   if (decision.provider === "deterministic") return "Rules";
   return "Done";
 }
@@ -506,6 +694,48 @@ function guidedClarifierStatusReason() {
   if (hasClarification.value) return "Asking one contextual question before compile.";
   if (clarificationAnswers.value.length > 0) return "Collected clarification answers for this run.";
   return "Only runs when the request is too vague or needs guided detail.";
+}
+
+function finalGuardCard(): AgentCard {
+  const finalStatus = safetyStatus.value;
+  const hasJob = Boolean(job.value);
+  const needsDetail = job.value?.status === "failed" || finalStatus === "needs_clarification";
+  const dangerTone = needsDetail || finalStatus === "not_safe_to_automate";
+
+  return {
+    id: "final_guard",
+    label: "Final Guard",
+    status: !hasJob ? "idle" : needsDetail ? "needs_detail" : "done",
+    summary: job.value?.safety_critic?.summary || "Applies deterministic guardrails before returning the result.",
+    provider: hasJob ? "deterministic" : "standby",
+    statusLabel: finalGuardStatusLabel(),
+    statusReason: finalGuardStatusReason(),
+    providerTone: !hasJob ? "standby" : dangerTone ? "failed" : "deterministic",
+  };
+}
+
+function finalGuardStatusLabel() {
+  if (!job.value) return "Standby";
+  if (job.value.status === "failed") return "Failed";
+  if (safetyStatus.value === "not_safe_to_automate") return "Blocked";
+  if (safetyStatus.value === "needs_clarification") return "Needs detail";
+  if (safetyStatus.value === "needs_human_approval") return "Human gate";
+  if (safetyStatus.value === "safe_internal_preview") return "Passed";
+  return "Passed";
+}
+
+function finalGuardStatusReason() {
+  if (!job.value) return "Waiting for the compiler to finish.";
+  return job.value.safety_critic?.next_safe_action
+    || job.value.safety_critic?.summary
+    || "Final deterministic guardrails completed.";
+}
+
+function cardStatusText(status: AgentCard["status"]) {
+  if (status === "active") return "running";
+  if (status === "done") return "completed";
+  if (status === "needs_detail") return "failed";
+  return status;
 }
 
 function allProviderAttempts() {
@@ -967,6 +1197,7 @@ function apiErrorMessage(error: unknown, fallback: string) {
 async function generateN8nWorkflowDraft() {
   if (!job.value || !canGenerateN8nJson.value) return;
 
+  activePanel.value = "agents";
   n8nGeneratorState.value = "generating";
   n8nGenerateError.value = "";
   n8nJsonCopied.value = false;
@@ -1055,7 +1286,33 @@ function chooseExample(example: { label: string; value: string }) {
   selectedExampleLabel.value = example.label;
 }
 
+function startOrchestrationPreview() {
+  stopOrchestrationPreview();
+  orchestrationStartedAt.value = Date.now();
+  simulatedActiveAgentIndex.value = 0;
+
+  if (typeof window === "undefined") return;
+
+  orchestrationTimer.value = window.setInterval(() => {
+    simulatedActiveAgentIndex.value = Math.min(
+      simulatedActiveAgentIndex.value + 1,
+      compileAgentDefinitions.length - 1,
+    );
+  }, 900);
+}
+
+function stopOrchestrationPreview() {
+  if (orchestrationTimer.value && typeof window !== "undefined") {
+    window.clearInterval(orchestrationTimer.value);
+  }
+
+  orchestrationTimer.value = null;
+  orchestrationStartedAt.value = null;
+  simulatedActiveAgentIndex.value = 0;
+}
+
 function resetRun() {
+  stopOrchestrationPreview();
   job.value = null;
   clarificationSession.value = null;
   clarificationOriginalInput.value = "";
@@ -1127,6 +1384,7 @@ function compileResultNeedsClarification(result: CompileJob): boolean {
 }
 
 async function startClarificationForInput(originalInput: string) {
+  stopOrchestrationPreview();
   clarificationOriginalInput.value = originalInput;
   clarificationAnswers.value = [];
   clarificationSession.value = null;
@@ -1230,6 +1488,7 @@ function extractRetrySeconds(error: unknown): string | null {
 }
 
 function setFriendlyError(error: unknown, fallback: string) {
+  stopOrchestrationPreview();
   const retrySeconds = extractRetrySeconds(error);
 
   if (retrySeconds) {
@@ -1252,7 +1511,9 @@ async function compileDirectly() {
 
 async function compilePrompt(input: string) {
   runState.value = "compiling";
+  activePanel.value = "agents";
   errorMessage.value = "";
+  startOrchestrationPreview();
 
   try {
     const response = await $fetch<CompileJob>("/api/compile", {
@@ -1265,15 +1526,17 @@ async function compilePrompt(input: string) {
 
     if (compileResultNeedsClarification(response)) {
       job.value = null;
+      stopOrchestrationPreview();
       await startClarificationForInput(input);
       return;
     }
 
     job.value = response;
+    stopOrchestrationPreview();
     resetN8nGeneratorState();
     runState.value = response.safety_critic?.overall_status === "not_safe_to_automate" ? "blocked" : "ready";
-    activePanel.value = "context";
   } catch (error) {
+    stopOrchestrationPreview();
     setFriendlyError(error, "Compile failed.");
   }
 }
@@ -1314,6 +1577,10 @@ function isPrimaryDisabled() {
   if (hasClarification.value) return !canContinueClarification.value;
   return !hasInput.value || isBusy.value;
 }
+
+onBeforeUnmount(() => {
+  stopOrchestrationPreview();
+});
 </script>
 
 <template>
@@ -1374,7 +1641,54 @@ function isPrimaryDisabled() {
       </aside>
 
       <section class="workspace-panel">
-        <div v-if="!job && !hasClarification" class="input-stage">
+        <div v-if="isOrchestrating" class="orchestration-stage">
+          <section class="orchestration-panel" aria-live="polite">
+            <div class="orchestration-head">
+              <div>
+                <p class="eyebrow">Agent orchestration</p>
+                <h1>Orchestrating specialist agents</h1>
+                <p>
+                  FlowForge is routing the request, building a safe blueprint, and checking safety gates.
+                </p>
+              </div>
+              <span class="orchestration-count">{{ orchestrationProgressLabel }}</span>
+            </div>
+
+            <div class="orchestration-pipeline">
+              <article
+                v-for="step in orchestrationPreviewSteps"
+                :key="step.id"
+                class="orchestration-step"
+                :class="`orchestration-${step.state}`"
+              >
+                <div class="orchestration-step-marker">
+                  <span class="orchestration-dot" />
+                </div>
+                <div>
+                  <div class="orchestration-step-head">
+                    <h2>{{ step.label }}</h2>
+                    <span>{{ step.statusLabel }}</span>
+                  </div>
+                  <p>{{ step.responsibility }}</p>
+                </div>
+              </article>
+            </div>
+
+            <div class="orchestration-live">
+              <span class="mini-loader" />
+              <span>{{ currentOrchestrationAgent?.label || "Final Guard" }}</span>
+              <strong>{{ currentOrchestrationAgent?.responsibility || "Preparing result." }}</strong>
+            </div>
+          </section>
+        </div>
+
+        <div v-else-if="runState === 'failed'" class="error-panel">
+          <h1>Something failed</h1>
+          <p>{{ errorMessage }}</p>
+          <button type="button" class="ghost-button" @click="backToInput">Back to input</button>
+        </div>
+
+        <div v-else-if="!job && !hasClarification" class="input-stage">
           <div class="input-header">
             <p class="eyebrow">Automation request</p>
             <h1>What do you want FlowForge to plan?</h1>
@@ -1538,6 +1852,18 @@ function isPrimaryDisabled() {
                   {{ n8nStaticSafetyWarning }}
                 </p>
 
+                <div
+                  v-if="n8nGeneratorAgentCard"
+                  class="n8n-agent-inline"
+                  :class="[`agent-${n8nGeneratorAgentCard.status}`, `agent-tone-${n8nGeneratorAgentCard.providerTone}`]"
+                >
+                  <span class="agent-orb" />
+                  <div>
+                    <strong>{{ n8nGeneratorAgentCard.statusLabel }}</strong>
+                    <p>{{ n8nGeneratorAgentCard.statusReason }}</p>
+                  </div>
+                </div>
+
                 <p v-if="n8nGenerateError" class="n8n-error">
                   {{ n8nGenerateError }}
                 </p>
@@ -1566,11 +1892,6 @@ function isPrimaryDisabled() {
           </section>
         </div>
 
-        <div v-else-if="runState === 'failed'" class="error-panel">
-          <h1>Something failed</h1>
-          <p>{{ errorMessage }}</p>
-          <button type="button" class="ghost-button" @click="backToInput">Back to input</button>
-        </div>
       </section>
 
       <aside class="side-panel">
@@ -1649,12 +1970,12 @@ function isPrimaryDisabled() {
                 v-for="agent in agentCards"
                 :key="agent.id"
                 class="agent-card"
-                :class="`agent-${agent.status}`"
+                :class="[`agent-${agent.status}`, `agent-tone-${agent.providerTone}`]"
               >
                 <div class="agent-card-head">
                   <span class="agent-orb" />
                   <strong>{{ agent.label }}</strong>
-                  <small>{{ agent.status }}</small>
+                  <small>{{ cardStatusText(agent.status) }}</small>
                 </div>
 
                 <div class="agent-status-line">
@@ -2225,6 +2546,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .input-stage,
+.orchestration-stage,
 .clarify-stage,
 .result-stage,
 .error-panel {
@@ -2251,6 +2573,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .input-header h1,
+.orchestration-head h1,
 .blueprint-heading h1,
 .blocked-panel h1,
 .error-panel h1 {
@@ -2298,10 +2621,189 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .input-note,
 .muted,
+.orchestration-head p,
 .blueprint-heading p,
 .blocked-panel p,
 .question-card p {
   color: #9ba9d8;
+}
+
+.orchestration-panel {
+  display: grid;
+  gap: 20px;
+  border: 1px solid rgba(102, 227, 255, 0.18);
+  border-radius: 26px;
+  padding: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.12), transparent 24rem),
+    rgba(255, 255, 255, 0.035);
+}
+
+.orchestration-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.orchestration-head h1 {
+  max-width: 760px;
+}
+
+.orchestration-head p {
+  max-width: 720px;
+  margin: 10px 0 0;
+  line-height: 1.5;
+}
+
+.orchestration-count {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid rgba(102, 227, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(102, 227, 255, 0.07);
+  color: #9decff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.orchestration-pipeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.orchestration-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 150px;
+  padding: 13px;
+  border: 1px solid rgba(145, 166, 255, 0.14);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+    rgba(6, 10, 20, 0.72);
+}
+
+.orchestration-step-marker {
+  padding-top: 4px;
+}
+
+.orchestration-dot {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(145, 166, 255, 0.32);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.orchestration-step-head {
+  display: grid;
+  gap: 7px;
+}
+
+.orchestration-step h2 {
+  margin: 0;
+  color: #eef3ff;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.orchestration-step span {
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.orchestration-step p {
+  margin: 10px 0 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.42;
+}
+
+.orchestration-running {
+  border-color: rgba(102, 227, 255, 0.48);
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.12), transparent 10rem),
+    rgba(102, 227, 255, 0.045);
+  box-shadow: 0 0 34px rgba(102, 227, 255, 0.1);
+}
+
+.orchestration-running .orchestration-dot {
+  background: #66e3ff;
+  border-color: #66e3ff;
+  box-shadow: 0 0 18px rgba(102, 227, 255, 0.75);
+  animation: agentPulse 1.2s ease-in-out infinite;
+}
+
+.orchestration-completed {
+  border-color: rgba(67, 224, 166, 0.24);
+  background: rgba(67, 224, 166, 0.04);
+}
+
+.orchestration-completed .orchestration-dot {
+  background: #43e0a6;
+  border-color: #43e0a6;
+}
+
+.orchestration-fallback {
+  border-color: rgba(255, 209, 102, 0.28);
+  background: rgba(255, 209, 102, 0.045);
+}
+
+.orchestration-fallback .orchestration-dot {
+  background: #ffd166;
+  border-color: #ffd166;
+}
+
+.orchestration-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+  background: rgba(255, 107, 107, 0.045);
+}
+
+.orchestration-failed .orchestration-dot {
+  background: #ff6b6b;
+  border-color: #ff6b6b;
+}
+
+.orchestration-waiting,
+.orchestration-skipped {
+  opacity: 0.68;
+}
+
+.orchestration-skipped .orchestration-dot {
+  background: rgba(145, 166, 255, 0.16);
+}
+
+.orchestration-live {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid rgba(102, 227, 255, 0.2);
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.48);
+  color: #9ba9d8;
+  font-size: 13px;
+}
+
+.orchestration-live > span:not(.mini-loader) {
+  color: #9decff;
+  font-weight: 900;
+}
+
+.orchestration-live strong {
+  color: #dbe4ff;
+  font-weight: 600;
 }
 
 .stage-kicker {
@@ -2743,6 +3245,33 @@ The current endpoint returns the agent outcome and raw provider response when av
   color: #ffe7a3;
 }
 
+.n8n-agent-inline {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(145, 166, 255, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.n8n-agent-inline .agent-orb {
+  margin-top: 4px;
+}
+
+.n8n-agent-inline strong {
+  color: #e9efff;
+  font-size: 13px;
+}
+
+.n8n-agent-inline p {
+  margin: 4px 0 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .n8n-error {
   margin: 0;
   padding: 10px 12px;
@@ -3096,6 +3625,8 @@ The current endpoint returns the agent outcome and raw provider response when av
 .primary-action,
 .n8n-generate-button,
 .agent-card,
+.n8n-agent-inline,
+.orchestration-step,
 .flow-node,
 .question-card {
   transition:
@@ -3162,7 +3693,13 @@ The current endpoint returns the agent outcome and raw provider response when av
   color: #e9efff;
 }
 
-.agent-card small,
+.agent-card small {
+  color: #7e8dbd;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 
 .agent-skipped {
   opacity: 0.72;
@@ -3327,6 +3864,55 @@ The current endpoint returns the agent outcome and raw provider response when av
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.agent-tone-ai.agent-done {
+  border-color: rgba(67, 224, 166, 0.24);
+  background: rgba(67, 224, 166, 0.045);
+}
+
+.agent-tone-fallback.agent-done {
+  border-color: rgba(255, 209, 102, 0.3);
+  background: rgba(255, 209, 102, 0.055);
+}
+
+.agent-tone-deterministic.agent-done {
+  border-color: rgba(102, 227, 255, 0.24);
+  background: rgba(102, 227, 255, 0.04);
+}
+
+.agent-tone-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+  background: rgba(255, 107, 107, 0.055);
+}
+
+.agent-card.agent-tone-skipped,
+.agent-card.agent-skipped {
+  opacity: 0.62;
+  border-color: rgba(145, 166, 255, 0.12);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.agent-tone-fallback.agent-done .agent-orb {
+  background: #ffd166;
+  border-color: #ffd166;
+}
+
+.agent-tone-deterministic.agent-done .agent-orb {
+  background: #66e3ff;
+  border-color: #66e3ff;
+}
+
+.agent-tone-failed .agent-orb,
+.agent-needs_detail .agent-orb {
+  background: #ff6b6b;
+  border-color: #ff6b6b;
+}
+
+.agent-tone-skipped .agent-orb,
+.agent-skipped .agent-orb {
+  background: rgba(145, 166, 255, 0.16);
+  border-color: rgba(145, 166, 255, 0.24);
 }
 
 .agent-details-button {
@@ -3585,6 +4171,23 @@ The current endpoint returns the agent outcome and raw provider response when av
 
   .workspace-panel {
     padding: 14px;
+  }
+
+  .orchestration-head {
+    flex-direction: column;
+  }
+
+  .orchestration-pipeline {
+    grid-template-columns: 1fr;
+  }
+
+  .orchestration-live {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .orchestration-live strong {
+    grid-column: 2;
   }
 
   .action-bar {

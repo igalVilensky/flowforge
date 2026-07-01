@@ -14,8 +14,8 @@ import {
     buildClarificationConversationUserPrompt,
     clarificationConversationSystemPrompt,
 } from "../prompts/clarificationConversationPrompt";
-import { callGemini } from "./geminiProvider";
-import { callGroq } from "./groqProvider";
+import { callGeminiAgent } from "./geminiProvider";
+import { callGroqAgent } from "./groqProvider";
 
 type AgentProvider = ClarificationSessionResponse["provider"];
 
@@ -443,8 +443,8 @@ async function tryProvider(
     userPrompt: string,
 ): Promise<{ rawResponse: string; parsedResponse: unknown }> {
     const rawResponse = provider === "groq"
-        ? await callGroq(userPrompt, clarificationConversationSystemPrompt)
-        : await callGemini(userPrompt, clarificationConversationSystemPrompt);
+        ? await callGroqAgent(userPrompt, clarificationConversationSystemPrompt)
+        : await callGeminiAgent(userPrompt, clarificationConversationSystemPrompt);
 
     return {
         rawResponse,
