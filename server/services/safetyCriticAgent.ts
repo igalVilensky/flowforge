@@ -91,6 +91,18 @@ function normalizeProviderFailure(provider: AgentOutputProvider, error: unknown)
     }
 
     if (
+        normalized.includes("truncated")
+        || normalized.includes("max_tokens")
+        || normalized.includes("maxoutputtokens")
+        || normalized.includes("max output tokens")
+    ) {
+        return {
+            summary: rawSummary,
+            rawSummary,
+        };
+    }
+
+    if (
         error instanceof ZodError
         || normalized.includes("schema")
         || normalized.includes("validation")
@@ -316,7 +328,15 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroqAgent(prompt, safetyCriticAgentSystemPrompt);
+            rawResponse = await callGroqAgent(prompt, safetyCriticAgentSystemPrompt, {
+                modelEnv: "GROQ_SAFETY_MODEL",
+                fallbackModelEnv: "GROQ_AGENT_MODEL",
+                maxTokensEnv: "GROQ_SAFETY_MAX_TOKENS",
+                fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
+                defaultMaxTokens: 2400,
+                maxTokensCap: 4000,
+                truncationSuggestion: "Raise GROQ_SAFETY_MAX_TOKENS to around 2400-4000.",
+            });
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "groq");
 
@@ -367,7 +387,15 @@ export async function runSafetyCriticAgent(input: RunSafetyCriticAgentInput): Pr
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGeminiAgent(prompt, safetyCriticAgentSystemPrompt);
+            rawResponse = await callGeminiAgent(prompt, safetyCriticAgentSystemPrompt, {
+                modelEnv: "GEMINI_SAFETY_MODEL",
+                fallbackModelEnv: "GEMINI_AGENT_MODEL",
+                maxOutputTokensEnv: "GEMINI_SAFETY_MAX_OUTPUT_TOKENS",
+                fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+                defaultMaxOutputTokens: 2400,
+                maxOutputTokensCap: 4000,
+                truncationSuggestion: "Raise GEMINI_SAFETY_MAX_OUTPUT_TOKENS to around 2400-4000.",
+            });
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "gemini");
 

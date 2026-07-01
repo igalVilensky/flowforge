@@ -566,6 +566,15 @@ function normalizeProviderFailureMessage(provider: unknown, errorSummary: unknow
   }
 
   if (
+    normalized.includes("truncated")
+    || normalized.includes("max_tokens")
+    || normalized.includes("maxoutputtokens")
+    || normalized.includes("max output tokens")
+  ) {
+    return compactText(rawText, 240);
+  }
+
+  if (
     normalized.includes("schema")
     || normalized.includes("validation")
     || normalized.includes("invalid json")
@@ -576,7 +585,15 @@ function normalizeProviderFailureMessage(provider: unknown, errorSummary: unknow
     return "Invalid AI output rejected by schema.";
   }
 
-  if (normalized.includes("api_key") || normalized.includes("is not set") || normalized.includes("not configured")) {
+  if (
+    normalized.includes("401")
+    || normalized.includes("403")
+    || normalized.includes("unauthorized")
+    || normalized.includes("forbidden")
+    || normalized.includes("api_key")
+    || normalized.includes("is not set")
+    || normalized.includes("not configured")
+  ) {
     return `${providerName} is not configured. Deterministic fallback can still complete the run.`;
   }
 
@@ -1155,12 +1172,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null;
 }
 
-function issueSummaryFromErrorData(data: unknown) {
+function errorIssuesFromData(data: unknown) {
   const record = asRecord(data);
   const nestedData = asRecord(record?.data);
-  const issues = nestedData?.issues;
+  const directIssues = record?.issues;
+  const nestedIssues = nestedData?.issues;
 
-  if (!Array.isArray(issues)) return "";
+  if (Array.isArray(directIssues)) return directIssues;
+  if (Array.isArray(nestedIssues)) return nestedIssues;
+  return [];
+}
+
+function issueSummaryFromErrorData(data: unknown) {
+  const issues = errorIssuesFromData(data);
 
   return issues
     .slice(0, 3)
@@ -1173,10 +1197,21 @@ function issueSummaryFromErrorData(data: unknown) {
     .join("; ");
 }
 
+function detailFromErrorData(data: unknown) {
+  const record = asRecord(data);
+  const nestedData = asRecord(record?.data);
+
+  if (typeof record?.detail === "string" && record.detail.trim()) return record.detail;
+  if (typeof nestedData?.detail === "string" && nestedData.detail.trim()) return nestedData.detail;
+
+  return "";
+}
+
 function apiErrorMessage(error: unknown, fallback: string) {
   const record = asRecord(error);
   const data = asRecord(record?.data);
   const responseData = asRecord(asRecord(record?.response)?._data);
+  const statusCode = Number(record?.statusCode ?? data?.statusCode ?? responseData?.statusCode ?? 0);
   const base =
     (typeof data?.statusMessage === "string" && data.statusMessage)
     || (typeof data?.message === "string" && data.message)
@@ -1184,14 +1219,65 @@ function apiErrorMessage(error: unknown, fallback: string) {
     || (typeof record?.statusMessage === "string" && record.statusMessage)
     || (typeof record?.message === "string" && record.message)
     || fallback;
+  const detail = detailFromErrorData(data) || detailFromErrorData(responseData);
+  const issueSummary = issueSummaryFromErrorData(data) || issueSummaryFromErrorData(responseData);
+  const detailOrBase = detail || base;
+  const fullText = [base, detail].filter(Boolean).join(" ");
+  const normalized = fullText.toLowerCase();
 
-  if (/413|payload too large|rate_limit_exceeded|tpm limit|requested tokens|tokens per minute|groq api error/i.test(base)) {
+  if (issueSummary) return `${base} ${issueSummary}`;
+
+  if (normalized.includes("json_validate_failed")) {
+    return `Groq JSON mode failed before FlowForge could validate the n8n draft. ${compactText(detailOrBase, 320)}`;
+  }
+
+  if (
+    normalized.includes("truncated")
+    || normalized.includes("max_tokens")
+    || normalized.includes("maxoutputtokens")
+    || normalized.includes("max output tokens")
+  ) {
+    return `n8n generator provider failed: ${compactText(detailOrBase, 360)}`;
+  }
+
+  if (
+    statusCode === 401
+    || statusCode === 403
+    || normalized.includes("401")
+    || normalized.includes("403")
+    || normalized.includes("unauthorized")
+    || normalized.includes("forbidden")
+    || normalized.includes("api_key")
+  ) {
+    return `n8n generator provider configuration failed: ${compactText(detailOrBase, 320)}`;
+  }
+
+  if (
+    statusCode === 429
+    || normalized.includes("429")
+    || normalized.includes("too many requests")
+    || normalized.includes("rate limit")
+    || normalized.includes("rate_limit")
+  ) {
+    return `n8n generator provider rate limit reached: ${compactText(detailOrBase, 320)}`;
+  }
+
+  if (
+    normalized.includes("aborted")
+    || normalized.includes("aborterror")
+    || normalized.includes("timed out")
+    || normalized.includes("timeout")
+  ) {
+    return `n8n generator provider timed out: ${compactText(detailOrBase, 320)}`;
+  }
+
+  if (/413|payload too large|rate_limit_exceeded|tpm limit|requested tokens|tokens per minute/i.test(fullText)) {
     return "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact implementation brief, but this request still exceeded the provider limit. Try a shorter workflow or reduce workflow details.";
   }
 
-  const issueSummary = issueSummaryFromErrorData(data);
+  if (detail && !base.includes(detail)) return `${base} ${compactText(detail, 360)}`;
 
-  return issueSummary ? `${base} ${issueSummary}` : base;
+  return base;
 }
 
 async function generateN8nWorkflowDraft() {

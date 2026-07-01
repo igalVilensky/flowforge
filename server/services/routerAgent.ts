@@ -128,7 +128,15 @@ export async function routeCompileRequest(
   } else {
     try {
       llm_calls_made++;
-      const groqResponse = await callGroqAgent(prompt, routerSystemPrompt);
+      const groqResponse = await callGroqAgent(prompt, routerSystemPrompt, {
+        modelEnv: "GROQ_ROUTER_MODEL",
+        fallbackModelEnv: "GROQ_AGENT_MODEL",
+        maxTokensEnv: "GROQ_ROUTER_MAX_TOKENS",
+        fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
+        defaultMaxTokens: 900,
+        maxTokensCap: 1200,
+        truncationSuggestion: "Raise GROQ_ROUTER_MAX_TOKENS to around 900-1200.",
+      });
       const parsed = safeParseJSON(groqResponse);
       const valid = routerDecisionSchema.parse({
         ...parsed as any,
@@ -168,7 +176,15 @@ export async function routeCompileRequest(
   } else {
     try {
       llm_calls_made++;
-      const geminiResponse = await callGeminiAgent(prompt, routerSystemPrompt);
+      const geminiResponse = await callGeminiAgent(prompt, routerSystemPrompt, {
+        modelEnv: "GEMINI_ROUTER_MODEL",
+        fallbackModelEnv: "GEMINI_AGENT_MODEL",
+        maxOutputTokensEnv: "GEMINI_ROUTER_MAX_OUTPUT_TOKENS",
+        fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+        defaultMaxOutputTokens: 900,
+        maxOutputTokensCap: 1200,
+        truncationSuggestion: "Raise GEMINI_ROUTER_MAX_OUTPUT_TOKENS to around 900-1200.",
+      });
       const parsed = safeParseJSON(geminiResponse);
       const valid = routerDecisionSchema.parse({
         ...parsed as any,

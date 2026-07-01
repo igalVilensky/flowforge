@@ -218,7 +218,15 @@ export async function runClarificationAgent(input: RunClarificationAgentInput): 
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroqAgent(prompt, clarificationAgentSystemPrompt);
+            rawResponse = await callGroqAgent(prompt, clarificationAgentSystemPrompt, {
+                modelEnv: "GROQ_CLARIFIER_MODEL",
+                fallbackModelEnv: "GROQ_AGENT_MODEL",
+                maxTokensEnv: "GROQ_CLARIFIER_MAX_TOKENS",
+                fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
+                defaultMaxTokens: 1000,
+                maxTokensCap: 1800,
+                truncationSuggestion: "Raise GROQ_CLARIFIER_MAX_TOKENS to around 1200-1800.",
+            });
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "groq", input);
 
@@ -266,7 +274,15 @@ export async function runClarificationAgent(input: RunClarificationAgentInput): 
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGeminiAgent(prompt, clarificationAgentSystemPrompt);
+            rawResponse = await callGeminiAgent(prompt, clarificationAgentSystemPrompt, {
+                modelEnv: "GEMINI_CLARIFIER_MODEL",
+                fallbackModelEnv: "GEMINI_AGENT_MODEL",
+                maxOutputTokensEnv: "GEMINI_CLARIFIER_MAX_OUTPUT_TOKENS",
+                fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+                defaultMaxOutputTokens: 1000,
+                maxOutputTokensCap: 1800,
+                truncationSuggestion: "Raise GEMINI_CLARIFIER_MAX_OUTPUT_TOKENS to around 1200-1800.",
+            });
             parsedResponse = safeParseJSON(rawResponse);
             const output = normalizeAgentOutput(parsedResponse, "gemini", input);
 

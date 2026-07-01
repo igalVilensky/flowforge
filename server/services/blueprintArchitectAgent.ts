@@ -322,7 +322,15 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroqAgent(prompt, blueprintArchitectSystemPrompt);
+            rawResponse = await callGroqAgent(prompt, blueprintArchitectSystemPrompt, {
+                modelEnv: "GROQ_BLUEPRINT_MODEL",
+                fallbackModelEnv: "GROQ_AGENT_MODEL",
+                maxTokensEnv: "GROQ_BLUEPRINT_MAX_TOKENS",
+                fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
+                defaultMaxTokens: 2400,
+                maxTokensCap: 4000,
+                truncationSuggestion: "Raise GROQ_BLUEPRINT_MAX_TOKENS to around 2400-4000.",
+            });
             parsedResponse = safeParseJSON(rawResponse);
             const normalized = normalizeAgentOutput(parsedResponse, "groq");
 
@@ -371,7 +379,15 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGeminiAgent(prompt, blueprintArchitectSystemPrompt);
+            rawResponse = await callGeminiAgent(prompt, blueprintArchitectSystemPrompt, {
+                modelEnv: "GEMINI_BLUEPRINT_MODEL",
+                fallbackModelEnv: "GEMINI_AGENT_MODEL",
+                maxOutputTokensEnv: "GEMINI_BLUEPRINT_MAX_OUTPUT_TOKENS",
+                fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+                defaultMaxOutputTokens: 2400,
+                maxOutputTokensCap: 4000,
+                truncationSuggestion: "Raise GEMINI_BLUEPRINT_MAX_OUTPUT_TOKENS to around 2400-4000.",
+            });
             parsedResponse = safeParseJSON(rawResponse);
             const normalized = normalizeAgentOutput(parsedResponse, "gemini");
 

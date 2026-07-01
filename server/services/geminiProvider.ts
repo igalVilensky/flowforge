@@ -2,12 +2,56 @@ import process from "node:process";
 
 type GeminiCallOptions = {
   modelEnv?: string;
+  fallbackModelEnv?: string;
   maxOutputTokensEnv?: string;
+  fallbackMaxOutputTokensEnv?: string;
   defaultModel?: string;
   defaultMaxOutputTokens?: number;
   maxOutputTokensCap?: number;
   timeoutMs?: number;
+  truncationSuggestion?: string;
 };
+
+type SelectedEnvValue = {
+  envName?: string;
+  value?: string;
+};
+
+function firstConfiguredEnvValue(primaryEnv?: string, fallbackEnv?: string): SelectedEnvValue {
+  const envNames = [primaryEnv, fallbackEnv].filter(
+    (envName, index, values): envName is string =>
+      Boolean(envName) && values.indexOf(envName) === index,
+  );
+
+  for (const envName of envNames) {
+    const value = process.env[envName];
+
+    if (value !== undefined && value.trim() !== "") {
+      return { envName, value };
+    }
+  }
+
+  return {};
+}
+
+function selectedNumberFromEnv(
+  primaryEnv: string | undefined,
+  fallbackEnv: string | undefined,
+  defaultValue: number,
+): { envName?: string; value: number } {
+  const selected = firstConfiguredEnvValue(primaryEnv, fallbackEnv);
+  const parsedValue = selected.value ? Number(selected.value) : NaN;
+
+  if (Number.isFinite(parsedValue) && parsedValue > 0) {
+    return { envName: selected.envName, value: parsedValue };
+  }
+
+  return { envName: selected.envName ?? primaryEnv ?? fallbackEnv, value: defaultValue };
+}
+
+function outputTokensSettingLabel(envName: string | undefined, maxOutputTokens: number): string {
+  return envName ? `${envName}=${maxOutputTokens}` : `maxOutputTokens=${maxOutputTokens}`;
+}
 
 export async function callGemini(
   prompt: string,
@@ -17,13 +61,16 @@ export async function callGemini(
   const apiKey = process.env.GEMINI_API_KEY;
   const modelEnv = options.modelEnv ?? "GEMINI_MODEL";
   const maxOutputTokensEnv = options.maxOutputTokensEnv ?? "GEMINI_MAX_OUTPUT_TOKENS";
-  const model = process.env[modelEnv] || options.defaultModel || "gemini-1.5-flash";
-  const configuredMaxOutputTokens = Number(
-    process.env[maxOutputTokensEnv] || options.defaultMaxOutputTokens || 1800,
+  const selectedModel = firstConfiguredEnvValue(modelEnv, options.fallbackModelEnv);
+  const model = selectedModel.value || options.defaultModel || "gemini-1.5-flash";
+  const configuredMaxOutputTokens = selectedNumberFromEnv(
+    maxOutputTokensEnv,
+    options.fallbackMaxOutputTokensEnv,
+    options.defaultMaxOutputTokens ?? 1800,
   );
   const maxOutputTokens = options.maxOutputTokensCap
-    ? Math.min(configuredMaxOutputTokens, options.maxOutputTokensCap)
-    : configuredMaxOutputTokens;
+    ? Math.min(configuredMaxOutputTokens.value, options.maxOutputTokensCap)
+    : configuredMaxOutputTokens.value;
 
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not set.");
@@ -88,14 +135,21 @@ export async function callGemini(
     const content = candidate?.content?.parts?.[0]?.text;
     const finishReason = candidate?.finishReason;
 
-    if (!content) {
-      throw new Error("Gemini API returned empty content.");
+    if (finishReason === "MAX_TOKENS") {
+      const tokenSetting = outputTokensSettingLabel(
+        configuredMaxOutputTokens.envName,
+        maxOutputTokens,
+      );
+      const suggestion = options.truncationSuggestion
+        ?? `Raise ${configuredMaxOutputTokens.envName ?? "the Gemini max output token setting"} and retry.`;
+
+      throw new Error(
+        `Gemini response was truncated because ${tokenSetting} was too low for model ${model}. ${suggestion}`,
+      );
     }
 
-    if (finishReason === "MAX_TOKENS") {
-      throw new Error(
-        `Gemini response was truncated because maxOutputTokens=${maxOutputTokens} was too low.`,
-      );
+    if (!content) {
+      throw new Error("Gemini API returned empty content.");
     }
 
     return content;
@@ -104,12 +158,22 @@ export async function callGemini(
   }
 }
 
-export function callGeminiAgent(prompt: string, systemPrompt: string): Promise<string> {
+type GeminiAgentCallOptions = GeminiCallOptions;
+
+export function callGeminiAgent(
+  prompt: string,
+  systemPrompt: string,
+  options: GeminiAgentCallOptions = {},
+): Promise<string> {
   return callGemini(prompt, systemPrompt, {
-    modelEnv: "GEMINI_AGENT_MODEL",
-    maxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
-    defaultModel: "gemini-1.5-flash",
-    defaultMaxOutputTokens: 1400,
-    maxOutputTokensCap: 1800,
+    ...options,
+    modelEnv: options.modelEnv ?? "GEMINI_AGENT_MODEL",
+    fallbackModelEnv: options.fallbackModelEnv ?? "GEMINI_AGENT_MODEL",
+    maxOutputTokensEnv: options.maxOutputTokensEnv ?? "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+    fallbackMaxOutputTokensEnv:
+      options.fallbackMaxOutputTokensEnv ?? "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+    defaultModel: options.defaultModel ?? "gemini-1.5-flash",
+    defaultMaxOutputTokens: options.defaultMaxOutputTokens ?? 2200,
+    maxOutputTokensCap: options.maxOutputTokensCap ?? 4000,
   });
 }
