@@ -145,3 +145,49 @@ export type CompileJob = {
   token_usage: TokenUsage;
   error?: string;
 };
+
+export type CompileProgressStepStatus =
+  | "ai_success"
+  | "deterministic_success"
+  | "fallback_success"
+  | "skipped"
+  | "failed";
+
+export type CompileProgressEvent =
+  | {
+    type: "step_started";
+    step_id: string;
+    label: string;
+    kind: "agent" | "deterministic" | "provider" | "validation";
+    message: string;
+    provider?: string;
+    timestamp: string;
+  }
+  | {
+    type: "step_completed";
+    step_id: string;
+    label: string;
+    status: CompileProgressStepStatus;
+    message: string;
+    provider?: string;
+    timestamp: string;
+  }
+  | {
+    type: "step_failed";
+    step_id: string;
+    label: string;
+    status: "failed" | "fallback_success";
+    message: string;
+    provider?: string;
+    timestamp: string;
+  }
+  | {
+    type: "done";
+    job: CompileJob;
+    timestamp: string;
+  }
+  | {
+    type: "error";
+    message: string;
+    timestamp: string;
+  };

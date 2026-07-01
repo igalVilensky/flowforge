@@ -1,6 +1,7 @@
 import type {
   CompileJob,
   CompileMode,
+  CompileProgressEvent,
   PipelineStep,
   TokenUsage,
 } from "../../shared/types/compileJob";
@@ -26,40 +27,82 @@ const llmCallLimits: Record<CompileMode, number> = {
   full: 4,
 };
 
+export type EmitCompileProgress = (event: CompileProgressEvent) => void | Promise<void>;
+
 type CompileBody = {
   input?: unknown;
   mode?: unknown;
 };
 
-function isCompileMode(value: unknown): value is CompileMode {
+export function isCompileMode(value: unknown): value is CompileMode {
   return typeof value === "string" && compileModes.includes(value as CompileMode);
 }
 
-export default defineEventHandler(async (event): Promise<CompileJob> => {
-  const body = await readBody<CompileBody>(event);
-  const rawInput = typeof body.input === "string" ? body.input : "";
+function progressTimestamp() {
+  return new Date().toISOString();
+}
+
+async function emitProgress(
+  emit: EmitCompileProgress | undefined,
+  event: Record<string, unknown>,
+) {
+  if (!emit) return;
+  await emit({
+    ...event,
+    timestamp: progressTimestamp(),
+  } as CompileProgressEvent);
+}
+
+function agentCompletionStatus(output: { used_ai?: boolean; fallback_used?: boolean; status?: unknown }) {
+  if (output.status === "skipped") return "skipped";
+  if (output.status === "failed_validation") return "failed";
+  if (output.used_ai) return "ai_success";
+  if (output.fallback_used) return "fallback_success";
+  return "deterministic_success";
+}
+
+function routerCompletionStatus(decision: { used_ai?: boolean; fallback_used?: boolean }) {
+  if (decision.used_ai) return "ai_success";
+  if (decision.fallback_used) return "fallback_success";
+  return "deterministic_success";
+}
+
+export async function runCompilePipeline(input: {
+  rawInput: string;
+  mode: CompileMode;
+  emit?: EmitCompileProgress;
+}): Promise<CompileJob> {
+  const { rawInput, mode, emit } = input;
   const trimmedInput = rawInput.trim();
-
-  if (!trimmedInput) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: "Process description is required.",
-    });
-  }
-
-  if (body.mode !== undefined && !isCompileMode(body.mode)) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: "Compile mode must be demo, rule_only, balanced, or full.",
-    });
-  }
-
-  const mode = isCompileMode(body.mode) ? body.mode : "demo";
   const signals = scanSignals(trimmedInput);
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "router",
+    label: "Router",
+    kind: "agent",
+    message: "Routing request with available providers.",
+  });
   const routerResult = await routeCompileRequest(trimmedInput, signals, risks, readiness, mode);
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "router",
+    label: "Router",
+    status: routerCompletionStatus(routerResult.decision),
+    provider: routerResult.decision.provider,
+    message: routerResult.decision.used_ai
+      ? `Router used ${routerResult.decision.provider}.`
+      : routerResult.decision.reason,
+  });
 
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "clarification_planner",
+    label: "Clarification Planner",
+    kind: "deterministic",
+    message: "Checking whether required workflow details are present.",
+  });
   const clarificationPlan = buildClarificationPlan({
     processInput: trimmedInput,
     signals,
@@ -67,13 +110,43 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     readiness,
     route: routerResult.decision.route,
   });
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "clarification_planner",
+    label: "Clarification Planner",
+    status: clarificationPlan.needed ? "deterministic_success" : "skipped",
+    message: clarificationPlan.needed
+      ? `Missing details: ${clarificationPlan.missing_fields.join(", ")}.`
+      : "No clarification needed.",
+  });
 
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "clarification_agent",
+    label: "Compile Clarifier",
+    kind: "agent",
+    message: clarificationPlan.needed
+      ? "Preparing clarification questions."
+      : "Confirming no compile clarification is needed.",
+  });
   const clarificationAgentResult = await runClarificationAgent({
     processInput: trimmedInput,
     mode,
     signals,
     risks,
     clarificationPlan,
+  });
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "clarification_agent",
+    label: "Compile Clarifier",
+    status: !clarificationPlan.needed ? "skipped" : agentCompletionStatus(clarificationAgentResult.output),
+    provider: clarificationAgentResult.output.provider,
+    message: !clarificationPlan.needed
+      ? "No clarification agent work needed."
+      : clarificationAgentResult.output.used_ai
+        ? `Clarifier used ${clarificationAgentResult.output.provider}.`
+        : clarificationAgentResult.output.reason,
   });
 
   // Critical rule:
@@ -115,6 +188,13 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
 
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "deterministic_blueprint",
+    label: "Deterministic Blueprint",
+    kind: "deterministic",
+    message: "Building the safe local blueprint preview.",
+  });
   const result = buildBlueprint({
     jobId,
     processInput: trimmedInput,
@@ -123,7 +203,21 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     readiness,
     mode,
   });
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "deterministic_blueprint",
+    label: "Deterministic Blueprint",
+    status: "deterministic_success",
+    message: `${result.workflow_name} prepared.`,
+  });
 
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "safety_critic_deterministic",
+    label: "Deterministic Safety Review",
+    kind: "deterministic",
+    message: "Checking safety boundaries with deterministic guardrails.",
+  });
   const safetyCriticReview = buildSafetyCriticReview({
     signals,
     risks,
@@ -131,6 +225,13 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     routerDecision: routerResult.decision,
     clarificationPlan,
     blueprint: result,
+  });
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "safety_critic_deterministic",
+    label: "Deterministic Safety Review",
+    status: "deterministic_success",
+    message: safetyCriticReview.summary,
   });
 
   const skippedBlueprintArchitectOutput = {
@@ -229,6 +330,16 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     final_output: skippedBlueprintArchitectOutput,
   };
 
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "blueprint_architect_agent",
+    label: "Blueprint Architect",
+    kind: "agent",
+    message: shouldSkipDesignAgents
+      ? "Skipping AI blueprint design until blocking clarification is answered."
+      : "Drafting a safe workflow blueprint.",
+  });
+
   const blueprintArchitectAgentResult = shouldSkipDesignAgents
     ? {
       output: skippedBlueprintArchitectOutput,
@@ -244,6 +355,19 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       routerDecision: routerResult.decision,
       clarificationPlan,
     });
+
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "blueprint_architect_agent",
+    label: "Blueprint Architect",
+    status: shouldSkipDesignAgents ? "skipped" : agentCompletionStatus(blueprintArchitectAgentResult.output),
+    provider: blueprintArchitectAgentResult.output.provider,
+    message: shouldSkipDesignAgents
+      ? "Blueprint Architect skipped because clarification is needed first."
+      : blueprintArchitectAgentResult.output.used_ai
+        ? `Blueprint Architect used ${blueprintArchitectAgentResult.output.provider}.`
+        : blueprintArchitectAgentResult.output.reason,
+  });
 
   const blueprintArchitectSummary = blueprintArchitectAgentResult.output.used_ai
     ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
@@ -337,6 +461,16 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     };
   }
 
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "safety_critic_agent",
+    label: "Safety Critic",
+    kind: "agent",
+    message: shouldSkipDesignAgents
+      ? "Skipping AI critique until blocking clarification is answered."
+      : "Reviewing the blueprint with the Safety Critic agent.",
+  });
+
   const safetyCriticAgentResult = shouldSkipDesignAgents
     ? {
       output: skippedSafetyCriticAgentOutput,
@@ -355,9 +489,30 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
       blueprintArchitectOutput: blueprintArchitectAgentResult.output,
     });
 
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "safety_critic_agent",
+    label: "Safety Critic",
+    status: shouldSkipDesignAgents ? "skipped" : agentCompletionStatus(safetyCriticAgentResult.output),
+    provider: safetyCriticAgentResult.output.provider,
+    message: shouldSkipDesignAgents
+      ? "Safety Critic skipped because clarification is needed first."
+      : safetyCriticAgentResult.output.used_ai
+        ? `Safety Critic used ${safetyCriticAgentResult.output.provider}.`
+        : safetyCriticAgentResult.output.reason,
+  });
+
   const safetyCriticAgentSummary = safetyCriticAgentResult.output.used_ai
     ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
     : `Safety Critic Agent fallback: ${safetyCriticAgentResult.output.reason}`;
+
+  await emitProgress(emit, {
+    type: "step_started",
+    step_id: "final_guard",
+    label: "Final Guard",
+    kind: "validation",
+    message: "Preparing and validating the final compile result.",
+  });
 
   const steps: PipelineStep[] = [
     {
@@ -616,6 +771,14 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
   const validation = safeValidateCompileJob(compileJob);
 
   if (!validation.success) {
+    await emitProgress(emit, {
+      type: "step_failed",
+      step_id: "final_guard",
+      label: "Final Guard",
+      status: "failed",
+      message: "Compile job failed schema validation.",
+    });
+
     throw createError({
       statusCode: 500,
       statusMessage: "Compile job failed schema validation.",
@@ -625,5 +788,44 @@ export default defineEventHandler(async (event): Promise<CompileJob> => {
     });
   }
 
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "final_guard",
+    label: "Final Guard",
+    status: "deterministic_success",
+    message: validation.data.safety_critic?.next_safe_action || "Final guard completed.",
+  });
+  await emitProgress(emit, {
+    type: "done",
+    job: validation.data,
+  });
+
   return validation.data;
+}
+
+export default defineEventHandler(async (event): Promise<CompileJob> => {
+  const body = await readBody<CompileBody>(event);
+  const rawInput = typeof body.input === "string" ? body.input : "";
+  const trimmedInput = rawInput.trim();
+
+  if (!trimmedInput) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Process description is required.",
+    });
+  }
+
+  if (body.mode !== undefined && !isCompileMode(body.mode)) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Compile mode must be demo, rule_only, balanced, or full.",
+    });
+  }
+
+  const mode = isCompileMode(body.mode) ? body.mode : "demo";
+
+  return runCompilePipeline({
+    rawInput,
+    mode,
+  });
 });

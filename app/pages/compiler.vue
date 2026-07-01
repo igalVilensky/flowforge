@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CompileJob, CompileMode } from "../../shared/types/compileJob";
+import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
 import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
 import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
 import type {
@@ -47,51 +47,84 @@ type AgentCard = {
   debugId?: keyof NonNullable<CompileJob["agent_debug"]> | "guided_clarifier";
 };
 
-type OrchestrationStepState = "waiting" | "running" | "completed" | "fallback" | "failed" | "skipped";
+type AgentUiState =
+  | "waiting"
+  | "running"
+  | "ai_success"
+  | "deterministic_success"
+  | "fallback_success"
+  | "skipped"
+  | "failed";
 
-type OrchestrationStep = {
+type AgentUiCard = {
   id: string;
   label: string;
-  responsibility: string;
-  state: OrchestrationStepState;
-  statusLabel: string;
+  state: AgentUiState;
+  provider?: string;
+  shortStatus: string;
+  lastMessage?: string;
+  updatedAt?: string;
+  debugId?: keyof NonNullable<CompileJob["agent_debug"]> | "guided_clarifier";
 };
 
-type CompileAgentDefinition = {
-  id: "router" | "clarification_agent" | "blueprint_architect_agent" | "safety_critic_agent" | "final_guard";
+type CompileStepDefinition = {
+  id:
+    | "router"
+    | "clarification_planner"
+    | "clarification_agent"
+    | "blueprint_architect_agent"
+    | "deterministic_blueprint"
+    | "safety_critic_deterministic"
+    | "safety_critic_agent"
+    | "final_guard";
   label: string;
-  responsibility: string;
+  waitingStatus: string;
   debugId?: keyof NonNullable<CompileJob["agent_debug"]>;
 };
 
-const compileAgentDefinitions: CompileAgentDefinition[] = [
+const compileStepDefinitions: CompileStepDefinition[] = [
   {
     id: "router",
     label: "Router",
-    responsibility: "Classifies the request and chooses the safe compile path.",
+    waitingStatus: "Waiting",
+  },
+  {
+    id: "clarification_planner",
+    label: "Clarification Planner",
+    waitingStatus: "Waiting",
   },
   {
     id: "clarification_agent",
     label: "Compile Clarifier",
-    responsibility: "Checks whether the request has enough detail to compile.",
+    waitingStatus: "Waiting",
     debugId: "clarification_agent",
   },
   {
     id: "blueprint_architect_agent",
     label: "Blueprint Architect",
-    responsibility: "Builds the safe workflow blueprint and human gates.",
+    waitingStatus: "Waiting",
     debugId: "blueprint_architect_agent",
+  },
+  {
+    id: "deterministic_blueprint",
+    label: "Deterministic Blueprint",
+    waitingStatus: "Waiting",
+  },
+  {
+    id: "safety_critic_deterministic",
+    label: "Safety Review",
+    waitingStatus: "Waiting",
   },
   {
     id: "safety_critic_agent",
     label: "Safety Critic",
-    responsibility: "Reviews risks, blocked actions, and approval boundaries.",
+    waitingStatus: "Waiting",
     debugId: "safety_critic_agent",
   },
   {
     id: "final_guard",
     label: "Final Guard",
-    responsibility: "Applies deterministic guardrails before returning the result.",
+    waitingStatus: "Waiting",
   },
 ];
 
@@ -122,9 +155,8 @@ const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
 const n8nJsonCopied = ref(false);
-const orchestrationStartedAt = ref<number | null>(null);
-const simulatedActiveAgentIndex = ref(0);
-const orchestrationTimer = ref<number | null>(null);
+const compileProgressEvents = ref<CompileProgressEvent[]>([]);
+const compileAgentStateMap = ref<Record<string, AgentUiCard>>({});
 
 const examples = [
   {
@@ -201,39 +233,6 @@ const mainStatusTone = computed(() => {
   return "neutral";
 });
 
-function simulatedAgentState(index: number): AgentCard["status"] {
-  if (!isOrchestrating.value || job.value) return "idle";
-  if (index < simulatedActiveAgentIndex.value) return "done";
-  if (index === simulatedActiveAgentIndex.value) return "active";
-  return "idle";
-}
-
-function previewStatusLabel(status: AgentCard["status"]) {
-  if (status === "active") return "Running";
-  if (status === "done") return "Completed";
-  return "Waiting";
-}
-
-function previewStatusReason(status: AgentCard["status"]) {
-  if (status === "active") {
-    return "Previewing this agent while the compile request is in flight. Real provider status will replace it when the response returns.";
-  }
-
-  if (status === "done") {
-    return "Preview completed. Final agent evidence is still pending from the compile response.";
-  }
-
-  return "Waiting for the orchestration preview to reach this step.";
-}
-
-function orchestrationStateFromCardStatus(status: AgentCard["status"]): OrchestrationStepState {
-  if (status === "active") return "running";
-  if (status === "done") return "completed";
-  if (status === "skipped") return "skipped";
-  if (status === "needs_detail") return "failed";
-  return "waiting";
-}
-
 const agentRail = computed(() => [
   {
     label: "Input",
@@ -245,11 +244,11 @@ const agentRail = computed(() => [
   },
   {
     label: "Compiler",
-    state: job.value ? "done" : isOrchestrating.value && simulatedActiveAgentIndex.value < 3 ? "active" : isOrchestrating.value ? "done" : "idle",
+    state: job.value ? "done" : isOrchestrating.value ? "active" : "idle",
   },
   {
     label: "Safety",
-    state: job.value?.safety_critic ? "done" : isOrchestrating.value && simulatedActiveAgentIndex.value >= 3 ? "active" : "idle",
+    state: job.value?.safety_critic ? "done" : currentCompileStep.value?.id.includes("safety") ? "active" : "idle",
   },
   {
     label: "Blueprint",
@@ -257,46 +256,151 @@ const agentRail = computed(() => [
   },
 ]);
 
-const orchestrationPreviewSteps = computed<OrchestrationStep[]>(() =>
-  compileAgentDefinitions.map((agent, index) => {
-    const status = simulatedAgentState(index);
+function defaultAgentUiCard(definition: CompileStepDefinition): AgentUiCard {
+  return {
+    id: definition.id,
+    label: definition.label,
+    state: "waiting",
+    shortStatus: definition.waitingStatus,
+    debugId: definition.debugId,
+  };
+}
+
+function resetCompileProgressState() {
+  compileProgressEvents.value = [];
+  compileAgentStateMap.value = Object.fromEntries(
+    compileStepDefinitions.map((definition) => [definition.id, defaultAgentUiCard(definition)]),
+  );
+}
+
+function progressStatusLabel(state: AgentUiState) {
+  if (state === "running") return "Running";
+  if (state === "ai_success") return "AI";
+  if (state === "deterministic_success") return "Rules";
+  if (state === "fallback_success") return "Fallback";
+  if (state === "skipped") return "Skipped";
+  if (state === "failed") return "Failed";
+  return "Waiting";
+}
+
+function progressStateToAgentStatus(state: AgentUiState): AgentCard["status"] {
+  if (state === "running") return "active";
+  if (state === "waiting") return "idle";
+  if (state === "skipped") return "skipped";
+  if (state === "failed") return "needs_detail";
+  return "done";
+}
+
+function progressStateToProviderTone(state: AgentUiState): AgentCard["providerTone"] {
+  if (state === "running") return "deterministic";
+  if (state === "ai_success") return "ai";
+  if (state === "fallback_success") return "fallback";
+  if (state === "deterministic_success") return "deterministic";
+  if (state === "skipped") return "skipped";
+  if (state === "failed") return "failed";
+  return "standby";
+}
+
+function applyCompileProgressEvent(event: CompileProgressEvent) {
+  compileProgressEvents.value = [...compileProgressEvents.value, event].slice(-40);
+
+  if (event.type !== "step_started" && event.type !== "step_completed" && event.type !== "step_failed") return;
+
+  const existing = compileAgentStateMap.value[event.step_id];
+  const definition = compileStepDefinitions.find((step) => step.id === event.step_id);
+  const state: AgentUiState = event.type === "step_started" ? "running" : event.status;
+
+  compileAgentStateMap.value = {
+    ...compileAgentStateMap.value,
+    [event.step_id]: {
+      id: event.step_id,
+      label: existing?.label || definition?.label || event.label,
+      state,
+      provider: event.provider,
+      shortStatus: progressStatusLabel(state),
+      lastMessage: event.message,
+      updatedAt: event.timestamp,
+      debugId: existing?.debugId || definition?.debugId,
+    },
+  };
+}
+
+const compileProgressAgentCards = computed<AgentCard[]>(() =>
+  compileStepDefinitions.map((definition) => {
+    const card = compileAgentStateMap.value[definition.id] ?? defaultAgentUiCard(definition);
+    const status = progressStateToAgentStatus(card.state);
+    const providerToneValue = progressStateToProviderTone(card.state);
 
     return {
-      id: agent.id,
-      label: agent.label,
-      responsibility: agent.responsibility,
-      state: orchestrationStateFromCardStatus(status),
-      statusLabel: previewStatusLabel(status),
+      id: card.id,
+      label: card.label,
+      status,
+      summary: card.lastMessage || definition.waitingStatus,
+      provider: card.provider || (card.state === "waiting" ? "standby" : "system"),
+      statusLabel: card.shortStatus,
+      statusReason: card.lastMessage || definition.waitingStatus,
+      providerTone: providerToneValue,
+      debugId: card.debugId,
     };
   }),
 );
 
-const orchestrationProgressLabel = computed(() => {
-  const completedCount = orchestrationPreviewSteps.value.filter((step) => step.state === "completed").length;
-  return `${completedCount}/${orchestrationPreviewSteps.value.length} stages prepared`;
+const currentCompileStep = computed(() =>
+  Object.values(compileAgentStateMap.value).find((card) => card.state === "running") ?? null,
+);
+
+const recentCompileEvents = computed(() =>
+  compileProgressEvents.value
+    .filter((event) => event.type === "step_started" || event.type === "step_completed" || event.type === "step_failed")
+    .slice(-4),
+);
+
+const currentProcessStatus = computed(() => {
+  const current = currentCompileStep.value;
+
+  if (current) {
+    return {
+      label: current.label,
+      message: current.lastMessage || "Running this compiler step.",
+      stateLabel: current.shortStatus,
+      state: current.state,
+    };
+  }
+
+  const lastEvent = [...compileProgressEvents.value].reverse().find((event) => event.type !== "done");
+
+  return {
+    label: lastEvent && "label" in lastEvent ? lastEvent.label : "Preparing compile",
+    message: lastEvent && "message" in lastEvent ? lastEvent.message : "Starting the compiler.",
+    stateLabel: "Running",
+    state: "running" as AgentUiState,
+  };
 });
 
-const currentOrchestrationAgent = computed(() =>
-  orchestrationPreviewSteps.value.find((step) => step.state === "running") ?? orchestrationPreviewSteps.value.at(-1) ?? null,
-);
+function progressEventState(event: CompileProgressEvent): AgentUiState {
+  if (event.type === "step_started") return "running";
+  if (event.type === "step_completed" || event.type === "step_failed") return event.status;
+  if (event.type === "error") return "failed";
+  return "deterministic_success";
+}
 
-const simulatedAgentCards = computed<AgentCard[]>(() =>
-  compileAgentDefinitions.map((agent, index) => {
-    const status = simulatedAgentState(index);
+function progressEventLabel(event: CompileProgressEvent) {
+  if ("label" in event) return event.label;
+  if (event.type === "done") return "Final Guard";
+  return "Compiler";
+}
 
-    return {
-      id: agent.id,
-      label: agent.label,
-      status,
-      summary: agent.responsibility,
-      provider: status === "idle" ? "standby" : "preview",
-      statusLabel: previewStatusLabel(status),
-      statusReason: previewStatusReason(status),
-      providerTone: status === "idle" ? "standby" : "deterministic",
-      debugId: agent.debugId,
-    };
-  }),
-);
+function progressEventMessage(event: CompileProgressEvent) {
+  if (event.type === "step_started") return event.provider ? `Running · ${providerDisplayName(event.provider)}` : "Running";
+  if (event.type === "step_completed") {
+    const status = progressStatusLabel(event.status);
+    return event.provider ? `${status} · ${providerDisplayName(event.provider)}` : status;
+  }
+
+  if (event.type === "step_failed") return event.message;
+  if (event.type === "done") return "Compile ready";
+  return event.message;
+}
 
 const n8nGeneratorAgentCard = computed<AgentCard | null>(() => {
   if (n8nGeneratorState.value === "idle" && !n8nWorkflowDraft.value && !n8nGenerateError.value) return null;
@@ -338,10 +442,7 @@ const n8nGeneratorAgentCard = computed<AgentCard | null>(() => {
 });
 
 const agentCards = computed<AgentCard[]>(() => {
-  if (isOrchestrating.value && !job.value) return simulatedAgentCards.value;
-
-  const cards: AgentCard[] = [
-    {
+  const guidedClarifierCard: AgentCard = {
       id: "guided_clarifier",
       label: "Guided Clarifier",
       status: hasClarification.value ? "active" : clarificationAnswers.value.length > 0 ? "done" : "idle",
@@ -353,7 +454,17 @@ const agentCards = computed<AgentCard[]>(() => {
       statusReason: guidedClarifierStatusReason(),
       providerTone: guidedClarifierTone(),
       debugId: "guided_clarifier",
-    },
+  };
+
+  if (isOrchestrating.value && !job.value) {
+    const cards = [guidedClarifierCard, ...compileProgressAgentCards.value];
+    const n8nCard = n8nGeneratorAgentCard.value;
+    if (n8nCard) cards.push(n8nCard);
+    return cards;
+  }
+
+  const cards: AgentCard[] = [
+    guidedClarifierCard,
     {
       id: "router",
       label: "Router",
@@ -363,6 +474,18 @@ const agentCards = computed<AgentCard[]>(() => {
       statusLabel: routerStatusLabel(),
       statusReason: routerStatusReason(),
       providerTone: routerProviderTone(),
+    },
+    {
+      id: "clarification_planner",
+      label: "Clarification Planner",
+      status: job.value?.clarification_plan ? job.value.clarification_plan.needed ? "done" : "skipped" : "idle",
+      summary: job.value?.clarification_plan?.reason || "Checks whether deterministic clarification is needed.",
+      provider: job.value ? "deterministic" : "standby",
+      statusLabel: job.value?.clarification_plan?.needed ? "Rules" : job.value ? "Skipped" : "Waiting",
+      statusReason: job.value?.clarification_plan?.needed
+        ? `Missing: ${job.value.clarification_plan.missing_fields.join(", ")}`
+        : job.value ? "No clarification needed." : "Waiting for a compile run.",
+      providerTone: job.value?.clarification_plan?.needed ? "deterministic" : job.value ? "skipped" : "standby",
     },
     {
       id: "clarification_agent",
@@ -419,6 +542,26 @@ const agentCards = computed<AgentCard[]>(() => {
         job.value?.blueprint_architect_agent?.status,
       ),
       debugId: "blueprint_architect_agent",
+    },
+    {
+      id: "deterministic_blueprint",
+      label: "Deterministic Blueprint",
+      status: job.value?.result ? "done" : "idle",
+      summary: job.value?.result?.summary || "Builds the local safe blueprint preview.",
+      provider: job.value ? "deterministic" : "standby",
+      statusLabel: job.value ? "Rules" : "Waiting",
+      statusReason: job.value?.result?.workflow_name || "Waiting for a compile run.",
+      providerTone: job.value ? "deterministic" : "standby",
+    },
+    {
+      id: "safety_critic_deterministic",
+      label: "Safety Review",
+      status: job.value?.safety_critic ? "done" : "idle",
+      summary: job.value?.safety_critic?.summary || "Runs deterministic safety guardrails.",
+      provider: job.value ? "deterministic" : "standby",
+      statusLabel: job.value ? "Rules" : "Waiting",
+      statusReason: job.value?.safety_critic?.next_safe_action || "Waiting for a compile run.",
+      providerTone: job.value ? "deterministic" : "standby",
     },
     {
       id: "safety_critic_agent",
@@ -487,6 +630,9 @@ const activeAgentOutcome = computed(() => {
 
   if (id === "clarification_agent") return job.value?.clarification_agent ?? null;
   if (id === "blueprint_architect_agent") return job.value?.blueprint_architect_agent ?? null;
+  if (id === "clarification_planner") return job.value?.clarification_plan ?? null;
+  if (id === "deterministic_blueprint") return job.value?.result ?? null;
+  if (id === "safety_critic_deterministic") return job.value?.safety_critic ?? null;
   if (id === "safety_critic_agent") return job.value?.safety_critic_agent ?? job.value?.safety_critic ?? null;
   if (id === "router") return job.value?.router_decision ?? null;
   if (id === "final_guard") return job.value?.safety_critic ?? null;
@@ -1372,33 +1518,7 @@ function chooseExample(example: { label: string; value: string }) {
   selectedExampleLabel.value = example.label;
 }
 
-function startOrchestrationPreview() {
-  stopOrchestrationPreview();
-  orchestrationStartedAt.value = Date.now();
-  simulatedActiveAgentIndex.value = 0;
-
-  if (typeof window === "undefined") return;
-
-  orchestrationTimer.value = window.setInterval(() => {
-    simulatedActiveAgentIndex.value = Math.min(
-      simulatedActiveAgentIndex.value + 1,
-      compileAgentDefinitions.length - 1,
-    );
-  }, 900);
-}
-
-function stopOrchestrationPreview() {
-  if (orchestrationTimer.value && typeof window !== "undefined") {
-    window.clearInterval(orchestrationTimer.value);
-  }
-
-  orchestrationTimer.value = null;
-  orchestrationStartedAt.value = null;
-  simulatedActiveAgentIndex.value = 0;
-}
-
 function resetRun() {
-  stopOrchestrationPreview();
   job.value = null;
   clarificationSession.value = null;
   clarificationOriginalInput.value = "";
@@ -1410,6 +1530,7 @@ function resetRun() {
   activeAgentDetailsId.value = null;
   runState.value = "idle";
   showAnswered.value = false;
+  resetCompileProgressState();
   resetN8nGeneratorState();
 }
 
@@ -1470,7 +1591,6 @@ function compileResultNeedsClarification(result: CompileJob): boolean {
 }
 
 async function startClarificationForInput(originalInput: string) {
-  stopOrchestrationPreview();
   clarificationOriginalInput.value = originalInput;
   clarificationAnswers.value = [];
   clarificationSession.value = null;
@@ -1574,7 +1694,6 @@ function extractRetrySeconds(error: unknown): string | null {
 }
 
 function setFriendlyError(error: unknown, fallback: string) {
-  stopOrchestrationPreview();
   const retrySeconds = extractRetrySeconds(error);
 
   if (retrySeconds) {
@@ -1595,34 +1714,138 @@ async function compileDirectly() {
   await compilePrompt(trimmedInput.value);
 }
 
+async function applyCompileJobResponse(response: CompileJob, input: string) {
+  if (compileResultNeedsClarification(response)) {
+    job.value = null;
+    await startClarificationForInput(input);
+    return;
+  }
+
+  job.value = response;
+  resetN8nGeneratorState();
+  runState.value = response.safety_critic?.overall_status === "not_safe_to_automate" ? "blocked" : "ready";
+}
+
+function compileProgressEventsFromBlock(block: string): CompileProgressEvent[] {
+  const data = block
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+
+  if (!data) return [];
+
+  return [JSON.parse(data) as CompileProgressEvent];
+}
+
+async function compileWithStream(input: string): Promise<boolean> {
+  const response = await fetch("/api/compile-stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+    },
+    body: JSON.stringify({
+      input,
+      mode: mode.value,
+    }),
+  });
+
+  if (!response.ok || !response.body) return false;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalJob: CompileJob | null = null;
+  let streamError = "";
+  let receivedProgress = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    let separatorIndex = buffer.indexOf("\n\n");
+    while (separatorIndex >= 0) {
+      const block = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+
+      for (const event of compileProgressEventsFromBlock(block)) {
+        receivedProgress = true;
+        applyCompileProgressEvent(event);
+
+        if (event.type === "done") {
+          finalJob = event.job;
+        } else if (event.type === "error") {
+          streamError = event.message;
+        }
+      }
+
+      separatorIndex = buffer.indexOf("\n\n");
+    }
+  }
+
+  const finalChunk = decoder.decode();
+  if (finalChunk) buffer += finalChunk;
+
+  if (buffer.trim()) {
+    for (const event of compileProgressEventsFromBlock(buffer)) {
+      receivedProgress = true;
+      applyCompileProgressEvent(event);
+
+      if (event.type === "done") {
+        finalJob = event.job;
+      } else if (event.type === "error") {
+        streamError = event.message;
+      }
+    }
+  }
+
+  if (streamError) throw new Error(streamError);
+  if (!receivedProgress || !finalJob) return false;
+
+  await applyCompileJobResponse(finalJob, input);
+  return true;
+}
+
+async function compileWithFallback(input: string) {
+  const response = await $fetch<CompileJob>("/api/compile", {
+    method: "POST",
+    body: {
+      input,
+      mode: mode.value,
+    },
+  });
+
+  await applyCompileJobResponse(response, input);
+}
+
 async function compilePrompt(input: string) {
   runState.value = "compiling";
   activePanel.value = "agents";
   errorMessage.value = "";
-  startOrchestrationPreview();
+  resetCompileProgressState();
 
   try {
-    const response = await $fetch<CompileJob>("/api/compile", {
-      method: "POST",
-      body: {
-        input,
-        mode: mode.value,
-      },
-    });
+    const streamed = await compileWithStream(input);
 
-    if (compileResultNeedsClarification(response)) {
-      job.value = null;
-      stopOrchestrationPreview();
-      await startClarificationForInput(input);
-      return;
+    if (!streamed) {
+      await compileWithFallback(input);
+    }
+  } catch (error) {
+    if (compileProgressEvents.value.length === 0) {
+      try {
+        await compileWithFallback(input);
+        return;
+      } catch (fallbackError) {
+        setFriendlyError(fallbackError, "Compile failed.");
+        return;
+      }
     }
 
-    job.value = response;
-    stopOrchestrationPreview();
-    resetN8nGeneratorState();
-    runState.value = response.safety_critic?.overall_status === "not_safe_to_automate" ? "blocked" : "ready";
-  } catch (error) {
-    stopOrchestrationPreview();
     setFriendlyError(error, "Compile failed.");
   }
 }
@@ -1663,10 +1886,6 @@ function isPrimaryDisabled() {
   if (hasClarification.value) return !canContinueClarification.value;
   return !hasInput.value || isBusy.value;
 }
-
-onBeforeUnmount(() => {
-  stopOrchestrationPreview();
-});
 </script>
 
 <template>
@@ -1728,42 +1947,43 @@ onBeforeUnmount(() => {
 
       <section class="workspace-panel">
         <div v-if="isOrchestrating" class="orchestration-stage">
-          <section class="orchestration-panel" aria-live="polite">
-            <div class="orchestration-head">
+          <section class="process-status-panel" aria-live="polite">
+            <div class="process-status-head">
               <div>
-                <p class="eyebrow">Agent orchestration</p>
-                <h1>Orchestrating specialist agents</h1>
-                <p>
-                  FlowForge is routing the request, building a safe blueprint, and checking safety gates.
-                </p>
+                <p class="eyebrow">Compiler</p>
+                <h1>Compiling workflow</h1>
               </div>
-              <span class="orchestration-count">{{ orchestrationProgressLabel }}</span>
+              <span :class="`process-state-pill state-${currentProcessStatus.state}`">{{ currentProcessStatus.stateLabel }}</span>
             </div>
 
-            <div class="orchestration-pipeline">
+            <div class="current-process-card">
+              <span class="process-orb" />
+              <div>
+                <span>Current step</span>
+                <strong>{{ currentProcessStatus.label }}</strong>
+                <p>{{ currentProcessStatus.message }}</p>
+              </div>
+            </div>
+
+            <div class="recent-events">
+              <div class="recent-events-title">
+                <span>Recent events</span>
+              </div>
               <article
-                v-for="step in orchestrationPreviewSteps"
-                :key="step.id"
-                class="orchestration-step"
-                :class="`orchestration-${step.state}`"
+                v-for="(event, index) in recentCompileEvents"
+                :key="`${index}-${progressEventLabel(event)}`"
+                class="recent-event"
+                :class="`state-${progressEventState(event)}`"
               >
-                <div class="orchestration-step-marker">
-                  <span class="orchestration-dot" />
-                </div>
-                <div>
-                  <div class="orchestration-step-head">
-                    <h2>{{ step.label }}</h2>
-                    <span>{{ step.statusLabel }}</span>
-                  </div>
-                  <p>{{ step.responsibility }}</p>
-                </div>
+                <span class="recent-event-dot" />
+                <strong>{{ progressEventLabel(event) }}</strong>
+                <span>{{ progressEventMessage(event) }}</span>
               </article>
-            </div>
-
-            <div class="orchestration-live">
-              <span class="mini-loader" />
-              <span>{{ currentOrchestrationAgent?.label || "Final Guard" }}</span>
-              <strong>{{ currentOrchestrationAgent?.responsibility || "Preparing result." }}</strong>
+              <article v-if="recentCompileEvents.length === 0" class="recent-event state-running">
+                <span class="recent-event-dot" />
+                <strong>Compiler</strong>
+                <span>Opening stream</span>
+              </article>
             </div>
           </section>
         </div>
@@ -2058,37 +2278,30 @@ onBeforeUnmount(() => {
                 class="agent-card"
                 :class="[`agent-${agent.status}`, `agent-tone-${agent.providerTone}`]"
               >
-                <div class="agent-card-head">
+                <div class="agent-row-main">
                   <span class="agent-orb" />
-                  <strong>{{ agent.label }}</strong>
-                  <small>{{ cardStatusText(agent.status) }}</small>
+                  <div class="agent-row-copy">
+                    <strong>{{ agent.label }}</strong>
+                    <small>{{ cardStatusText(agent.status) }}</small>
+                  </div>
                 </div>
 
-                <div class="agent-status-line">
+                <div class="agent-row-meta">
                   <span :class="`agent-provider-pill tone-${agent.providerTone}`">{{ agent.statusLabel }}</span>
-                  <span>{{ agent.provider }}</span>
-                </div>
-
-                <p>{{ agent.summary }}</p>
-                <p v-if="shouldShowAgentReason(agent)" class="agent-status-reason">{{ agent.statusReason }}</p>
-
-                <footer>
-                  <span>{{ agent.providerTone }}</span>
                   <button
-                    v-if="agent.debugId || agent.id === 'router'"
                     type="button"
                     class="agent-details-button"
                     @click="openAgentDetails(agent.id)"
                   >
                     Details
                   </button>
-                </footer>
+                </div>
+
+                <div v-if="agent.provider && agent.provider !== 'standby'" class="agent-provider-chip">
+                  {{ providerDisplayName(agent.provider) }}
+                </div>
               </article>
             </div>
-
-            <p class="muted agent-note">
-              Agents are visible here while they work. Full raw debug can stay hidden, but the user should always see which agent is active.
-            </p>
           </section>
 
           <section v-else-if="activePanel === 'details'" class="side-section">
@@ -2185,6 +2398,28 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="agent-modal-grid">
+          <article class="modal-section">
+            <h3>Status</h3>
+            <div class="modal-status-list">
+              <div>
+                <span>State</span>
+                <strong>{{ activeAgentCard?.statusLabel || "Unknown" }}</strong>
+              </div>
+              <div>
+                <span>Provider</span>
+                <strong>{{ providerDisplayName(activeAgentCard?.provider) }}</strong>
+              </div>
+              <div>
+                <span>Summary</span>
+                <p>{{ activeAgentCard?.summary || "No summary available." }}</p>
+              </div>
+              <div>
+                <span>Reason</span>
+                <p>{{ activeAgentCard?.statusReason || "No status reason available." }}</p>
+              </div>
+            </div>
+          </article>
+
           <article class="modal-section">
             <h3>Prompt</h3>
             <template v-if="activeAgentDebug">
@@ -2660,12 +2895,175 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .input-header h1,
 .orchestration-head h1,
+.process-status-head h1,
 .blueprint-heading h1,
 .blocked-panel h1,
 .error-panel h1 {
   margin: 0;
   font-size: clamp(22px, 3vw, 38px);
   letter-spacing: -0.04em;
+}
+
+.process-status-panel {
+  display: grid;
+  gap: 18px;
+  margin: auto 0;
+  padding: 24px;
+  border: 1px solid rgba(102, 227, 255, 0.22);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.12), transparent 18rem),
+    rgba(255, 255, 255, 0.035);
+}
+
+.process-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.process-state-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(102, 227, 255, 0.3);
+  border-radius: 999px;
+  background: rgba(102, 227, 255, 0.08);
+  color: #9decff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.process-state-pill.state-ai_success {
+  border-color: rgba(67, 224, 166, 0.28);
+  background: rgba(67, 224, 166, 0.08);
+  color: #43e0a6;
+}
+
+.process-state-pill.state-fallback_success {
+  border-color: rgba(255, 209, 102, 0.3);
+  background: rgba(255, 209, 102, 0.08);
+  color: #ffd166;
+}
+
+.process-state-pill.state-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+  background: rgba(255, 107, 107, 0.08);
+  color: #ff9a9a;
+}
+
+.current-process-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid rgba(145, 166, 255, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.process-orb {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #66e3ff;
+  box-shadow:
+    0 0 0 9px rgba(102, 227, 255, 0.08),
+    0 0 28px rgba(102, 227, 255, 0.55);
+  animation: agentPulse 1.2s ease-in-out infinite;
+}
+
+.current-process-card span:not(.process-orb),
+.recent-events-title span {
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.current-process-card strong {
+  display: block;
+  margin-top: 3px;
+  color: #eef3ff;
+  font-size: 22px;
+  font-weight: 950;
+}
+
+.current-process-card p {
+  margin: 5px 0 0;
+  color: #9ba9d8;
+  font-size: 13px;
+}
+
+.recent-events {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-event {
+  display: grid;
+  grid-template-columns: 12px minmax(110px, 0.5fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid rgba(145, 166, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.026);
+}
+
+.recent-event-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(145, 166, 255, 0.35);
+}
+
+.recent-event strong {
+  color: #e9efff;
+  font-size: 12px;
+}
+
+.recent-event span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  color: #9ba9d8;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-event.state-running .recent-event-dot {
+  background: #66e3ff;
+  box-shadow: 0 0 16px rgba(102, 227, 255, 0.7);
+  animation: agentPulse 1.2s ease-in-out infinite;
+}
+
+.recent-event.state-ai_success .recent-event-dot {
+  background: #43e0a6;
+}
+
+.recent-event.state-deterministic_success .recent-event-dot {
+  background: #66e3ff;
+}
+
+.recent-event.state-fallback_success .recent-event-dot {
+  background: #ffd166;
+}
+
+.recent-event.state-skipped .recent-event-dot {
+  background: rgba(145, 166, 255, 0.28);
+}
+
+.recent-event.state-failed .recent-event-dot {
+  background: #ff6b6b;
 }
 
 .process-input,
@@ -3753,10 +4151,29 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .agent-card {
-  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px 8px;
+  align-items: center;
+  min-height: 50px;
+  padding: 9px 10px;
   border: 1px solid rgba(145, 166, 255, 0.13);
-  border-radius: 16px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.035);
+}
+
+.agent-row-main {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-row-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .agent-card-head {
@@ -3775,8 +4192,12 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .agent-card strong {
+  min-width: 0;
+  overflow: hidden;
   font-size: 13px;
   color: #e9efff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-card small {
@@ -3785,6 +4206,28 @@ The current endpoint returns the agent outcome and raw provider response when av
   font-weight: 900;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.agent-row-meta {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 6px;
+}
+
+.agent-provider-chip {
+  grid-column: 1 / -1;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: 22px;
+  overflow: hidden;
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .agent-skipped {
@@ -4089,6 +4532,36 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .modal-section.full {
   grid-column: 1 / -1;
+}
+
+.modal-status-list {
+  display: grid;
+  gap: 10px;
+}
+
+.modal-status-list div {
+  display: grid;
+  gap: 4px;
+}
+
+.modal-status-list span {
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.modal-status-list strong {
+  color: #e9efff;
+  font-size: 14px;
+}
+
+.modal-status-list p {
+  margin: 0;
+  color: #9ba9d8;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .modal-section h3,
