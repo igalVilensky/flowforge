@@ -474,6 +474,31 @@ Expected:
 - frontend and backend types stay aligned
 - `CompileJob` includes safety, agent, trace/debug, and observability data
 
+## Deploy to Netlify
+
+Connect the GitHub repo to Netlify and deploy it as a Nuxt/Nitro server app, not a static export.
+
+Use these build settings:
+
+```text
+Build command: npm run build
+Publish directory: dist
+Environment: NITRO_PRESET=netlify
+```
+
+The repository includes `netlify.toml` with those settings. The installed Nitro Netlify preset emits public assets to `dist` and generated server functions under Netlify's internal functions output; do not use `npm run generate` for this app because `/api/compile`, `/api/clarify`, and `/api/n8n-generate` must stay server-backed.
+
+Add provider keys and tuning values from `.env.example` in Netlify Dashboard -> Site settings -> Environment variables. Never use `NUXT_PUBLIC_` for `GROQ_API_KEY`, `GROQ_N8N_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`; these are server-only secrets. If provider keys are missing, start with demo/rule-only mode.
+
+After deploy, smoke test:
+
+- `/` and `/compiler` load
+- compile in rule mode
+- compile in full mode, if provider keys are configured
+- n8n JSON generation, if `GROQ_N8N_API_KEY` is configured
+
+`/api/compile-stream` uses SSE when available, and the compiler page falls back to `/api/compile` if streaming is unavailable. The n8n generator uses a 45 second provider timeout, so long provider calls can still hit serverless plan/runtime limits.
+
 ## Provider Environment
 
 FlowForge can run without AI in `rule_only` mode.
