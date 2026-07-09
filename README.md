@@ -33,7 +33,7 @@ FlowForge currently includes:
 - run observability summary
 - human approval gates and blocked actions
 - risk/safety outcomes
-- horizontal blueprint flow visualization
+- compact clickable blueprint workflow nodes with local horizontal scrolling
 - n8n implementation handoff prompt
 - experimental n8n workflow JSON draft generation
 
@@ -127,6 +127,8 @@ Boundary: no reply is sent automatically
 ### 3. FlowForge compiles a blueprint
 
 When the session is ready, the page calls `/api/compile` with the clarified prompt. The compiler returns a `CompileJob` with a safe blueprint, safety outcome, agent outputs, trace/debug data, and observability details.
+
+Compiled blueprint steps appear as compact clickable workflow nodes in one horizontal row. Step descriptions, automation policy, execution boundaries, approval requirements, safety notes, suggested n8n role, and raw step JSON are available on click instead of being shown in every node. When there are many steps, only the workflow map section scrolls horizontally.
 
 ### 4. FlowForge prepares implementation handoff
 

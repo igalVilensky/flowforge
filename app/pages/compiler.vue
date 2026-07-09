@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronRight, X } from "lucide-vue-next";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
 import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
 import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
@@ -19,8 +20,21 @@ type FlowStepLike = {
   name?: string;
   description?: string;
   primitive?: string;
+  actor?: string;
+  input?: string;
+  output?: string;
   automation_policy?: string;
   real_world_execution?: string;
+  approval_required?: boolean;
+  risk_level?: string;
+  risk_categories?: string[];
+  suggested_n8n_role?: string;
+  suggested_n8n_node_role?: string;
+  n8n_role?: string;
+  n8n_node_role?: string;
+  safety_notes?: string[] | string;
+  notes?: string[] | string;
+  [key: string]: unknown;
 };
 
 type DetailItem = {
@@ -143,6 +157,7 @@ const selectedExampleLabel = ref<string | null>(null);
 const clarificationRateLimitMessage = ref("");
 const clarificationLastResponse = ref<ClarificationSessionResponse | null>(null);
 const activeAgentDetailsId = ref<string | null>(null);
+const activeWorkflowStepIndex = ref<number | null>(null);
 const showModeMenu = ref(false);
 const handoffCopied = ref(false);
 const n8nGeneratorState = ref<N8nGeneratorState>("idle");
@@ -652,6 +667,7 @@ const activeAgentOutcome = computed(() => {
 });
 
 function openAgentDetails(agentId: string) {
+  activeWorkflowStepIndex.value = null;
   activeAgentDetailsId.value = agentId;
 }
 
@@ -1056,6 +1072,93 @@ const workflowSteps = computed<FlowStepLike[]>(() => {
   return Array.isArray(result?.steps) ? result.steps : [];
 });
 
+const activeWorkflowStep = computed(() => {
+  const index = activeWorkflowStepIndex.value;
+  return index === null ? null : workflowSteps.value[index] ?? null;
+});
+
+const activeWorkflowStepNumber = computed(() => {
+  return activeWorkflowStepIndex.value === null ? "" : String(activeWorkflowStepIndex.value + 1);
+});
+
+const activeWorkflowStepLabel = computed(() => {
+  const step = activeWorkflowStep.value;
+  const index = activeWorkflowStepIndex.value ?? 0;
+  return step ? workflowStepLabel(step, index) : "Workflow step";
+});
+
+const activeWorkflowStepDescription = computed(() => {
+  return activeWorkflowStep.value?.description || "No description provided.";
+});
+
+const activeWorkflowStepApprovalGates = computed(() => {
+  const stepId = activeWorkflowStep.value?.id;
+  const gates = job.value?.result?.human_approval_gates ?? [];
+
+  if (!stepId) return [];
+
+  return gates.filter((gate) => gate.applies_to_step_ids.includes(stepId));
+});
+
+const activeWorkflowStepDetailItems = computed<DetailItem[]>(() => {
+  const step = activeWorkflowStep.value;
+  if (!step) return [];
+
+  const items: DetailItem[] = [];
+  addStepDetail(items, "Primitive / step type", primitiveLabel(step.primitive));
+  addStepDetail(items, "Suggested n8n role", suggestedN8nRoleLabel(step));
+  addStepDetail(items, "Automation policy", automationPolicyLabel(step.automation_policy));
+  addStepDetail(items, "Execution boundary", executionBoundaryLabel(step.real_world_execution));
+  addStepDetail(items, "Human approval", approvalRequirementLabel(step));
+  addStepDetail(items, "Actor", step.actor ? formatStepValue(step.actor) : "");
+  addStepDetail(items, "Input", step.input);
+  addStepDetail(items, "Output", step.output);
+
+  return items;
+});
+
+const activeWorkflowStepSafetyNotes = computed(() => {
+  const step = activeWorkflowStep.value;
+  if (!step) return [];
+
+  const stepId = step.id;
+  const notes: string[] = [];
+
+  appendStepNote(notes, step.safety_notes);
+  appendStepNote(notes, step.notes);
+
+  if (step.risk_level) {
+    notes.push(`Risk level: ${formatStepValue(step.risk_level)}.`);
+  }
+
+  if (Array.isArray(step.risk_categories) && step.risk_categories.length > 0) {
+    notes.push(`Risk categories: ${step.risk_categories.map(formatStepValue).join(", ")}.`);
+  }
+
+  for (const gate of activeWorkflowStepApprovalGates.value) {
+    notes.push(`Human gate: ${gate.label}${gate.reason ? ` - ${gate.reason}` : ""}`);
+  }
+
+  if (stepId) {
+    for (const risk of job.value?.result?.risks ?? []) {
+      if (!risk.step_ids.includes(stepId)) continue;
+      notes.push(`${risk.label}: ${risk.reason} Recommendation: ${risk.recommendation}`);
+    }
+
+    for (const finding of job.value?.safety_critic?.findings ?? []) {
+      if (!finding.related_step_ids.includes(stepId)) continue;
+      notes.push(`${finding.title}: ${finding.explanation} Recommendation: ${finding.recommendation}`);
+    }
+
+    for (const concern of job.value?.safety_critic_agent?.concerns ?? []) {
+      if (!concern.related_step_ids.includes(stepId)) continue;
+      notes.push(`${concern.title}: ${concern.explanation} Recommendation: ${concern.recommendation}`);
+    }
+  }
+
+  return uniqueStrings(notes);
+});
+
 function workflowStepLabel(step: FlowStepLike, index: number) {
   return step.label || step.title || step.name || `Step ${index + 1}`;
 }
@@ -1108,6 +1211,89 @@ function executionBoundaryLabel(value?: string) {
 
 function primitiveLabel(value?: string) {
   return formatStepValue(value || "workflow step");
+}
+
+function openWorkflowStepDetails(index: number) {
+  activeAgentDetailsId.value = null;
+  activeWorkflowStepIndex.value = index;
+}
+
+function closeWorkflowStepDetails() {
+  activeWorkflowStepIndex.value = null;
+}
+
+function addStepDetail(items: DetailItem[], label: string, value: unknown) {
+  const text = detailValueText(value);
+
+  if (text) {
+    items.push({ label, value: text });
+  }
+}
+
+function detailValueText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "Required" : "Not required";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(detailValueText).filter(Boolean).join(", ");
+  return "";
+}
+
+function approvalRequirementLabel(step: FlowStepLike) {
+  if (typeof step.approval_required === "boolean") {
+    return step.approval_required ? "Required" : "Not required";
+  }
+
+  return activeWorkflowStepApprovalGates.value.length > 0 ? "Required" : "";
+}
+
+function suggestedN8nRoleLabel(step: FlowStepLike) {
+  const explicit =
+    step.suggested_n8n_role
+    || step.suggested_n8n_node_role
+    || step.n8n_role
+    || step.n8n_node_role;
+
+  if (typeof explicit === "string" && explicit.trim()) return explicit.trim();
+
+  if (!step.primitive) return "";
+
+  const roleByPrimitive: Record<string, string> = {
+    intake: "Trigger or Set node for captured input",
+    classification: "Code node for classification logic",
+    extraction: "Set or Code node for structured fields",
+    risk_detection: "Code node for risk checks",
+    routing: "IF node or Set node for internal routing",
+    drafting: "Set node for draft-only content",
+    approval: "Manual review handoff marker",
+    validation: "Code node for validation checks",
+    notification: "Set node for notification draft",
+    record_creation: "Set node for internal task fields",
+    monitoring: "Schedule or Manual Trigger with review output",
+    escalation: "Set node for escalation task",
+    summarization: "Code node for summary output",
+    reporting: "Set node for report fields",
+    export: "Set node for draft export payload",
+  };
+
+  return roleByPrimitive[step.primitive] ?? primitiveLabel(step.primitive);
+}
+
+function appendStepNote(notes: string[], value: unknown) {
+  if (!value) return;
+
+  if (Array.isArray(value)) {
+    for (const item of value) appendStepNote(notes, item);
+    return;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    notes.push(value.trim());
+  }
+}
+
+function uniqueStrings(items: string[]) {
+  return [...new Set(items.map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean))];
 }
 
 
@@ -1528,6 +1714,7 @@ function resetRun() {
   clarificationRateLimitMessage.value = "";
   clarificationLastResponse.value = null;
   activeAgentDetailsId.value = null;
+  activeWorkflowStepIndex.value = null;
   runState.value = "idle";
   showAnswered.value = false;
   resetCompileProgressState();
@@ -2080,34 +2267,28 @@ function isPrimaryDisabled() {
               </div>
             </div>
 
-            <div v-if="workflowSteps.length" class="flow-map">
-              <article
-                v-for="(step, index) in workflowSteps"
-                :key="step.id || step.label || step.title || step.name || index"
-                class="flow-node"
-                :class="`flow-${workflowStepTone(step)}`"
-                :style="`--flow-index: ${index}`"
-              >
-                <div class="node-index">{{ index + 1 }}</div>
-                <div class="node-body">
-                  <h3>{{ workflowStepLabel(step, index) }}</h3>
-                  <p>{{ step.description || "Safe workflow step." }}</p>
-                  <dl class="node-meta">
-                    <div v-if="step.primitive">
-                      <dt>Step type</dt>
-                      <dd>{{ primitiveLabel(step.primitive) }}</dd>
-                    </div>
-                    <div v-if="step.automation_policy">
-                      <dt>Automation policy</dt>
-                      <dd>{{ automationPolicyLabel(step.automation_policy) }}</dd>
-                    </div>
-                    <div>
-                      <dt>Execution boundary</dt>
-                      <dd>{{ executionBoundaryLabel(step.real_world_execution) }}</dd>
-                    </div>
-                  </dl>
+            <div v-if="workflowSteps.length" class="flow-map-shell">
+              <div class="flow-map-scroll" tabindex="0" aria-label="Compiled workflow map">
+                <div class="flow-map">
+                  <button
+                    v-for="(step, index) in workflowSteps"
+                    :key="step.id || step.label || step.title || step.name || index"
+                    type="button"
+                    class="flow-node"
+                    :class="`flow-${workflowStepTone(step)}`"
+                    :style="`--flow-index: ${index}`"
+                    :aria-label="`Open details for ${workflowStepLabel(step, index)}`"
+                    @click="openWorkflowStepDetails(index)"
+                  >
+                    <span class="node-index">{{ index + 1 }}</span>
+                    <span class="node-body">
+                      <span class="node-marker" aria-hidden="true" />
+                      <span class="node-title">{{ workflowStepLabel(step, index) }}</span>
+                      <ChevronRight class="node-chevron" :size="16" :stroke-width="2.4" aria-hidden="true" />
+                    </span>
+                  </button>
                 </div>
-              </article>
+              </div>
             </div>
 
             <div v-else class="empty-flow">
@@ -2386,6 +2567,65 @@ function isPrimaryDisabled() {
       </aside>
     </section>
 
+
+    <div v-if="activeWorkflowStep" class="agent-modal-backdrop" @click.self="closeWorkflowStepDetails">
+      <section class="agent-modal step-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-step-modal-title">
+        <header class="agent-modal-header">
+          <div>
+            <p class="eyebrow">Workflow step {{ activeWorkflowStepNumber }}</p>
+            <h2 id="workflow-step-modal-title">{{ activeWorkflowStepLabel }}</h2>
+          </div>
+          <button type="button" class="modal-close" aria-label="Close step details" @click="closeWorkflowStepDetails">
+            <X :size="18" :stroke-width="2.4" aria-hidden="true" />
+          </button>
+        </header>
+
+        <div class="agent-modal-grid step-modal-grid">
+          <article class="modal-section full">
+            <h3>Description</h3>
+            <p class="step-description">{{ activeWorkflowStepDescription }}</p>
+          </article>
+
+          <article class="modal-section">
+            <h3>Step metadata</h3>
+            <div class="modal-status-list step-detail-list">
+              <div v-for="item in activeWorkflowStepDetailItems" :key="item.label">
+                <span>{{ item.label }}</span>
+                <p>{{ item.value }}</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="modal-section">
+            <h3>Safety notes</h3>
+            <ul v-if="activeWorkflowStepSafetyNotes.length" class="step-note-list">
+              <li v-for="note in activeWorkflowStepSafetyNotes" :key="note">{{ note }}</li>
+            </ul>
+            <p v-else class="step-empty-note">No step-specific safety notes were returned.</p>
+          </article>
+
+          <article v-if="activeWorkflowStepApprovalGates.length" class="modal-section full">
+            <h3>Human approval gates</h3>
+            <div class="step-gate-list">
+              <article v-for="gate in activeWorkflowStepApprovalGates" :key="gate.id" class="step-gate-item">
+                <strong>{{ gate.label }}</strong>
+                <p>{{ gate.reason }}</p>
+                <ul v-if="gate.review_checklist.length">
+                  <li v-for="item in gate.review_checklist" :key="item">{{ item }}</li>
+                </ul>
+              </article>
+            </div>
+          </article>
+
+          <article class="modal-section full">
+            <details class="step-raw-json">
+              <summary>Raw step JSON</summary>
+              <pre>{{ formatDebugValue(activeWorkflowStep) }}</pre>
+            </details>
+          </article>
+        </div>
+      </section>
+    </div>
 
     <div v-if="activeAgentDetailsId" class="agent-modal-backdrop" @click.self="closeAgentDetails">
       <section class="agent-modal" role="dialog" aria-modal="true">
@@ -3350,10 +3590,15 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .blocked-panel,
 .blueprint-panel {
+  min-width: 0;
   border-radius: 26px;
   border: 1px solid rgba(145, 166, 255, 0.16);
   background: rgba(255, 255, 255, 0.035);
   padding: 22px;
+}
+
+.blueprint-panel {
+  overflow: hidden;
 }
 
 .blocked-panel {
@@ -3392,25 +3637,51 @@ The current endpoint returns the agent outcome and raw provider response when av
   margin-bottom: 6px;
 }
 
-.flow-map {
-  --connector-gap: 34px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 28px var(--connector-gap);
+.flow-map-shell {
   margin-top: 20px;
-  padding: 8px;
-  overflow: visible;
+  min-width: 0;
+}
+
+.flow-map-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 10px 8px 14px;
+  border: 1px solid rgba(145, 166, 255, 0.12);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015)),
+    rgba(4, 8, 16, 0.34);
+}
+
+.flow-map {
+  --connector-gap: 46px;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--connector-gap);
+  width: max-content;
+  min-width: 100%;
+  padding: 2px 4px;
 }
 
 .flow-node {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: 30px 180px;
+  align-items: center;
   gap: 10px;
-  flex: 1 1 240px;
+  flex: 0 0 220px;
+  width: 220px;
   min-width: 220px;
-  max-width: 300px;
+  max-width: 220px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
 }
 
 /* n8n-style cable between nodes. No arrows. */
@@ -3418,7 +3689,7 @@ The current endpoint returns the agent outcome and raw provider response when av
   content: "";
   position: absolute;
   z-index: 0;
-  top: calc(50% + 26px);
+  top: 50%;
   left: 100%;
   width: var(--connector-gap);
   height: 2px;
@@ -3431,7 +3702,7 @@ The current endpoint returns the agent outcome and raw provider response when av
   content: "";
   position: absolute;
   z-index: 1;
-  top: calc(50% + 26px);
+  top: 50%;
   left: 100%;
   width: var(--connector-gap);
   height: 2px;
@@ -3454,55 +3725,54 @@ The current endpoint returns the agent outcome and raw provider response when av
   z-index: 2;
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
-  border: 1px solid rgba(102, 227, 255, 0.28);
-  border-radius: 15px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(102, 227, 255, 0.32);
+  border-radius: 999px;
   color: #07101c;
   font-weight: 900;
+  font-size: 12px;
   background: linear-gradient(135deg, #66e3ff, #8c7dff);
-  box-shadow: 0 0 22px rgba(102, 227, 255, 0.14);
+  box-shadow: 0 0 18px rgba(102, 227, 255, 0.16);
 }
 
 .node-body {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-rows: auto minmax(76px, 1fr) auto;
-  min-height: 220px;
-  border: 1px solid rgba(145, 166, 255, 0.15);
-  border-radius: 18px;
-  padding: 14px;
-  background:
-    radial-gradient(circle at top right, rgba(102, 227, 255, 0.07), transparent 10rem),
-    rgba(6, 10, 20, 0.88);
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.18);
+  grid-template-columns: 10px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  min-height: 76px;
+  border: 1px solid rgba(145, 166, 255, 0.17);
+  border-radius: 15px;
+  padding: 0 12px;
+  background: rgba(6, 10, 20, 0.9);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 14px 34px rgba(0, 0, 0, 0.18);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .flow-safe .node-body {
-  border-color: rgba(67, 224, 166, 0.25);
+  border-color: rgba(67, 224, 166, 0.22);
 }
 
 .flow-assist .node-body,
 .flow-draft .node-body {
-  border-color: rgba(255, 209, 102, 0.25);
-  background:
-    radial-gradient(circle at top right, rgba(255, 209, 102, 0.08), transparent 10rem),
-    rgba(6, 10, 20, 0.88);
+  border-color: rgba(255, 209, 102, 0.24);
 }
 
 .flow-approval .node-body {
   border-color: rgba(140, 125, 255, 0.34);
-  background:
-    radial-gradient(circle at top right, rgba(140, 125, 255, 0.11), transparent 10rem),
-    rgba(6, 10, 20, 0.88);
 }
 
 .flow-blocked .node-body {
   border-color: rgba(255, 107, 107, 0.3);
-  background:
-    radial-gradient(circle at top right, rgba(255, 107, 107, 0.09), transparent 10rem),
-    rgba(6, 10, 20, 0.88);
 }
 
 .flow-assist .node-index,
@@ -3518,48 +3788,61 @@ The current endpoint returns the agent outcome and raw provider response when av
   background: linear-gradient(135deg, #ff6b6b, #ffd166);
 }
 
-.node-body h3 {
-  margin: 0 0 6px;
-  font-size: 15px;
-  line-height: 1.18;
+.node-marker {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #43e0a6;
+  box-shadow: 0 0 14px rgba(67, 224, 166, 0.4);
 }
 
-.node-body p {
-  margin: 0;
-  color: #9ba9d8;
-  font-size: 12px;
-  line-height: 1.42;
+.flow-assist .node-marker,
+.flow-draft .node-marker {
+  background: #ffd166;
+  box-shadow: 0 0 14px rgba(255, 209, 102, 0.35);
 }
 
-.node-meta {
-  display: grid;
-  gap: 7px;
-  margin: 12px 0 0;
+.flow-approval .node-marker {
+  background: #8c7dff;
+  box-shadow: 0 0 14px rgba(140, 125, 255, 0.42);
 }
 
-.node-meta div {
-  display: grid;
-  gap: 3px;
-  padding: 7px 8px;
-  border: 1px solid rgba(145, 166, 255, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
+.flow-blocked .node-marker {
+  background: #ff6b6b;
+  box-shadow: 0 0 14px rgba(255, 107, 107, 0.38);
 }
 
-.node-meta dt {
-  color: #7d8cff;
-  font-size: 9px;
+.node-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #eef3ff;
+  font-size: 13px;
   font-weight: 900;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  line-height: 1.24;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
 }
 
-.node-meta dd {
-  margin: 0;
-  color: #dbe4ff;
-  font-size: 11px;
-  line-height: 1.2;
-  text-transform: capitalize;
+.node-chevron {
+  justify-self: end;
+  color: #7d8cff;
+  opacity: 0.82;
+}
+
+.flow-node:hover .node-body,
+.flow-node:focus-visible .node-body {
+  transform: translateY(-2px);
+  border-color: rgba(102, 227, 255, 0.56);
+  background: rgba(9, 16, 31, 0.96);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 18px 42px rgba(0, 0, 0, 0.28),
+    0 0 0 3px rgba(102, 227, 255, 0.08);
+}
+
+.flow-node:focus-visible {
+  outline: none;
 }
 
 @keyframes flowSignal {
@@ -4502,8 +4785,11 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .modal-close {
+  display: grid;
+  place-items: center;
   width: 36px;
   height: 36px;
+  padding: 0;
   border: 1px solid rgba(145, 166, 255, 0.2);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.05);
@@ -4590,6 +4876,90 @@ The current endpoint returns the agent outcome and raw provider response when av
   border-radius: 14px;
   background: rgba(0, 0, 0, 0.22);
   padding: 12px;
+}
+
+.step-modal {
+  width: min(940px, calc(100vw - 32px));
+}
+
+.step-modal-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+.step-description,
+.step-empty-note {
+  margin: 0;
+  color: #dbe4ff;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.step-detail-list p {
+  color: #dbe4ff;
+}
+
+.step-note-list,
+.step-gate-item ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: #dbe4ff;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.step-empty-note {
+  color: #9ba9d8;
+}
+
+.step-gate-list {
+  display: grid;
+  gap: 10px;
+}
+
+.step-gate-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(140, 125, 255, 0.18);
+  border-radius: 14px;
+  background: rgba(140, 125, 255, 0.055);
+}
+
+.step-gate-item strong {
+  color: #e9efff;
+  font-size: 14px;
+}
+
+.step-gate-item p {
+  margin: 0;
+  color: #9ba9d8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.step-raw-json {
+  border: 1px solid rgba(145, 166, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.step-raw-json summary {
+  padding: 12px;
+  color: #cbd6ff;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.step-raw-json pre {
+  border-radius: 0;
+  border-top: 1px solid rgba(145, 166, 255, 0.12);
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .provider-attempts {
@@ -4769,18 +5139,34 @@ The current endpoint returns the agent outcome and raw provider response when av
     display: none;
   }
 
-  .flow-node {
-    min-width: 100%;
-    max-width: none;
+  .flow-map {
+    --connector-gap: 36px;
   }
 
-  .flow-node:not(:last-child)::before,
-  .flow-node:not(:last-child)::after {
-    display: none;
+  .flow-node {
+    grid-template-columns: 28px 166px;
+    flex-basis: 204px;
+    width: 204px;
+    min-width: 204px;
+    max-width: 204px;
   }
 
   .node-body {
-    min-height: 170px;
+    min-height: 68px;
+  }
+
+  .agent-modal {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .agent-modal-header h2 {
+    font-size: 20px;
+  }
+
+  .agent-modal-grid,
+  .step-modal-grid {
+    grid-template-columns: 1fr;
   }
 
   .handoff-head {
