@@ -1213,6 +1213,33 @@ function primitiveLabel(value?: string) {
   return formatStepValue(value || "workflow step");
 }
 
+function normalizedWheelDelta(event: WheelEvent, pageSize: number) {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * pageSize;
+  return event.deltaY;
+}
+
+function handleFlowMapWheel(event: WheelEvent) {
+  if (event.ctrlKey) return;
+
+  const scroller = event.currentTarget as HTMLElement | null;
+  if (!scroller) return;
+
+  const maxScrollLeft = scroller.scrollWidth - scroller.clientWidth;
+  if (maxScrollLeft <= 1) return;
+
+  if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+
+  const delta = normalizedWheelDelta(event, scroller.clientWidth);
+  if (delta === 0) return;
+
+  const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, scroller.scrollLeft + delta));
+  if (nextScrollLeft === scroller.scrollLeft) return;
+
+  scroller.scrollLeft = nextScrollLeft;
+  event.preventDefault();
+}
+
 function openWorkflowStepDetails(index: number) {
   activeAgentDetailsId.value = null;
   activeWorkflowStepIndex.value = index;
@@ -2268,7 +2295,12 @@ function isPrimaryDisabled() {
             </div>
 
             <div v-if="workflowSteps.length" class="flow-map-shell">
-              <div class="flow-map-scroll" tabindex="0" aria-label="Compiled workflow map">
+              <div
+                class="flow-map-scroll"
+                tabindex="0"
+                aria-label="Compiled workflow map"
+                @wheel="handleFlowMapWheel"
+              >
                 <div class="flow-map">
                   <button
                     v-for="(step, index) in workflowSteps"
@@ -2280,9 +2312,8 @@ function isPrimaryDisabled() {
                     :aria-label="`Open details for ${workflowStepLabel(step, index)}`"
                     @click="openWorkflowStepDetails(index)"
                   >
-                    <span class="node-index">{{ index + 1 }}</span>
                     <span class="node-body">
-                      <span class="node-marker" aria-hidden="true" />
+                      <span class="node-index">{{ index + 1 }}</span>
                       <span class="node-title">{{ workflowStepLabel(step, index) }}</span>
                       <ChevronRight class="node-chevron" :size="16" :stroke-width="2.4" aria-hidden="true" />
                     </span>
@@ -3656,7 +3687,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .flow-map {
-  --connector-gap: 46px;
+  --connector-gap: 44px;
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
@@ -3669,13 +3700,10 @@ The current endpoint returns the agent outcome and raw provider response when av
 .flow-node {
   position: relative;
   display: grid;
-  grid-template-columns: 30px 180px;
-  align-items: center;
-  gap: 10px;
-  flex: 0 0 220px;
-  width: 220px;
-  min-width: 220px;
-  max-width: 220px;
+  flex: 0 0 272px;
+  width: 272px;
+  min-width: 272px;
+  max-width: 272px;
   padding: 0;
   border: 0;
   color: inherit;
@@ -3722,31 +3750,37 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 .node-index {
+  grid-area: index;
+  align-self: start;
   z-index: 2;
-  display: grid;
+  display: inline-grid;
   place-items: center;
   width: 28px;
-  height: 28px;
-  border: 1px solid rgba(102, 227, 255, 0.32);
+  height: 24px;
+  border: 1px solid rgba(145, 166, 255, 0.22);
   border-radius: 999px;
-  color: #07101c;
+  color: #b9c7ff;
   font-weight: 900;
-  font-size: 12px;
-  background: linear-gradient(135deg, #66e3ff, #8c7dff);
-  box-shadow: 0 0 18px rgba(102, 227, 255, 0.16);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .node-body {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) 18px;
-  align-items: center;
-  gap: 10px;
-  min-height: 76px;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  grid-template-areas:
+    "index chevron"
+    "title chevron";
+  align-items: start;
+  row-gap: 12px;
+  column-gap: 12px;
+  min-height: 112px;
   border: 1px solid rgba(145, 166, 255, 0.17);
   border-radius: 15px;
-  padding: 0 12px;
+  padding: 14px;
   background: rgba(6, 10, 20, 0.9);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.045),
@@ -3775,56 +3809,58 @@ The current endpoint returns the agent outcome and raw provider response when av
   border-color: rgba(255, 107, 107, 0.3);
 }
 
+.flow-safe .node-index {
+  border-color: rgba(67, 224, 166, 0.52);
+  color: #8ff5cc;
+  background: rgba(67, 224, 166, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 16px rgba(67, 224, 166, 0.2);
+}
+
 .flow-assist .node-index,
 .flow-draft .node-index {
-  background: linear-gradient(135deg, #ffd166, #8c7dff);
+  border-color: rgba(255, 209, 102, 0.56);
+  color: #ffe29a;
+  background: rgba(255, 209, 102, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 16px rgba(255, 209, 102, 0.18);
 }
 
 .flow-approval .node-index {
-  background: linear-gradient(135deg, #8c7dff, #66e3ff);
+  border-color: rgba(140, 125, 255, 0.58);
+  color: #d8d2ff;
+  background: rgba(140, 125, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 16px rgba(140, 125, 255, 0.22);
 }
 
 .flow-blocked .node-index {
-  background: linear-gradient(135deg, #ff6b6b, #ffd166);
-}
-
-.node-marker {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #43e0a6;
-  box-shadow: 0 0 14px rgba(67, 224, 166, 0.4);
-}
-
-.flow-assist .node-marker,
-.flow-draft .node-marker {
-  background: #ffd166;
-  box-shadow: 0 0 14px rgba(255, 209, 102, 0.35);
-}
-
-.flow-approval .node-marker {
-  background: #8c7dff;
-  box-shadow: 0 0 14px rgba(140, 125, 255, 0.42);
-}
-
-.flow-blocked .node-marker {
-  background: #ff6b6b;
-  box-shadow: 0 0 14px rgba(255, 107, 107, 0.38);
+  border-color: rgba(255, 107, 107, 0.58);
+  color: #ffb7b7;
+  background: rgba(255, 107, 107, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 16px rgba(255, 107, 107, 0.2);
 }
 
 .node-title {
-  display: -webkit-box;
-  overflow: hidden;
+  grid-area: title;
+  display: block;
+  overflow: visible;
   color: #eef3ff;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 900;
-  line-height: 1.24;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  line-height: 1.32;
   overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .node-chevron {
+  grid-area: chevron;
+  align-self: center;
   justify-self: end;
   color: #7d8cff;
   opacity: 0.82;
@@ -5140,19 +5176,23 @@ The current endpoint returns the agent outcome and raw provider response when av
   }
 
   .flow-map {
-    --connector-gap: 36px;
+    --connector-gap: 34px;
   }
 
   .flow-node {
-    grid-template-columns: 28px 166px;
-    flex-basis: 204px;
-    width: 204px;
-    min-width: 204px;
-    max-width: 204px;
+    flex-basis: 236px;
+    width: 236px;
+    min-width: 236px;
+    max-width: 236px;
   }
 
   .node-body {
-    min-height: 68px;
+    min-height: 104px;
+    padding: 13px;
+  }
+
+  .node-title {
+    font-size: 13px;
   }
 
   .agent-modal {
