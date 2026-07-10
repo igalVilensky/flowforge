@@ -17,6 +17,7 @@ import { scanSignals } from "../services/signalScanner";
 import { routeCompileRequest } from "../services/routerAgent";
 import { runSafetyCriticAgent } from "../services/safetyCriticAgent";
 import { buildSafetyCriticReview } from "../services/safetyCritic";
+import { parseCompileAnalysisInput } from "../services/structuredCompileInput";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
 
@@ -73,8 +74,9 @@ export async function runCompilePipeline(input: {
   emit?: EmitCompileProgress;
 }): Promise<CompileJob> {
   const { rawInput, mode, emit } = input;
-  const trimmedInput = rawInput.trim();
-  const signals = scanSignals(trimmedInput);
+  const analysisInput = parseCompileAnalysisInput(rawInput);
+  const semanticInput = analysisInput.intent;
+  const signals = scanSignals(semanticInput);
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
   await emitProgress(emit, {
@@ -84,7 +86,7 @@ export async function runCompilePipeline(input: {
     kind: "agent",
     message: "Routing request with available providers.",
   });
-  const routerResult = await routeCompileRequest(trimmedInput, signals, risks, readiness, mode);
+  const routerResult = await routeCompileRequest(semanticInput, signals, risks, readiness, mode);
   await emitProgress(emit, {
     type: "step_completed",
     step_id: "router",
@@ -104,7 +106,7 @@ export async function runCompilePipeline(input: {
     message: "Checking whether required workflow details are present.",
   });
   const clarificationPlan = buildClarificationPlan({
-    processInput: trimmedInput,
+    processInput: semanticInput,
     signals,
     risks,
     readiness,
@@ -130,7 +132,7 @@ export async function runCompilePipeline(input: {
       : "Confirming no compile clarification is needed.",
   });
   const clarificationAgentResult = await runClarificationAgent({
-    processInput: trimmedInput,
+    processInput: semanticInput,
     mode,
     signals,
     risks,
@@ -197,12 +199,20 @@ export async function runCompilePipeline(input: {
   });
   const result = buildBlueprint({
     jobId,
-    processInput: trimmedInput,
+    processInput: semanticInput,
     signals,
     risks,
     readiness,
     mode,
   });
+
+  for (const constraint of analysisInput.safetyConstraints) {
+    const assumption = `Clarification safety constraint: ${constraint}`;
+
+    if (!result.assumptions.includes(assumption)) {
+      result.assumptions.push(assumption);
+    }
+  }
   await emitProgress(emit, {
     type: "step_completed",
     step_id: "deterministic_blueprint",
@@ -347,7 +357,7 @@ export async function runCompilePipeline(input: {
       debug: skippedBlueprintArchitectDebug,
     }
     : await runBlueprintArchitectAgent({
-      processInput: trimmedInput,
+      processInput: semanticInput,
       mode,
       signals,
       risks,
@@ -478,7 +488,7 @@ export async function runCompilePipeline(input: {
       debug: skippedSafetyCriticDebug,
     }
     : await runSafetyCriticAgent({
-      processInput: trimmedInput,
+      processInput: semanticInput,
       mode,
       signals,
       risks,
@@ -606,7 +616,7 @@ export async function runCompilePipeline(input: {
     mode,
     llm_calls_used: totalAgentLlmCalls,
     llm_calls_limit: llmCallLimits[mode],
-    estimated_input_tokens: Math.max(1, Math.ceil(trimmedInput.length / 4)),
+    estimated_input_tokens: Math.max(1, Math.ceil(semanticInput.length / 4)),
     rule_based_checks: 6,
     skipped_ai_calls: routerResult.attempts.filter((attempt) => {
       return attempt.provider !== "deterministic" && !attempt.attempted;
@@ -621,7 +631,7 @@ export async function runCompilePipeline(input: {
     updated_at: now,
     input: {
       raw: rawInput,
-      trimmed: trimmedInput,
+      trimmed: semanticInput,
     },
     steps,
     signals,
@@ -732,6 +742,7 @@ export async function runCompilePipeline(input: {
         metadata: {
           readiness_score: readiness.score,
           risk_count: risks.categories.length,
+          separated_safety_constraint_count: analysisInput.safetyConstraints.length,
         },
       },
       {

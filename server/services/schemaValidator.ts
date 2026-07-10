@@ -89,10 +89,11 @@ export function safeValidateCompileJob(input: unknown): SafeSchemaValidationResu
 }
 
 export async function validateFixtures(): Promise<FixtureValidationSummary> {
-  const [{ validBlueprint }, { invalidBlueprint }, { validCompileJob }] = await Promise.all([
+  const [{ validBlueprint }, { invalidBlueprint }, { validCompileJob }, { buildPipelineRegressionChecks }] = await Promise.all([
     import("../fixtures/validBlueprint"),
     import("../fixtures/invalidBlueprint"),
     import("../fixtures/validCompileJob"),
+    import("../fixtures/pipelineRegression"),
   ]);
 
   const validBlueprintResult = safeValidateBlueprint(validBlueprint);
@@ -126,6 +127,7 @@ export async function validateFixtures(): Promise<FixtureValidationSummary> {
       success: validCompileJobResult.success,
       issues: validCompileJobResult.success ? [] : validCompileJobResult.issues,
     },
+    ...buildPipelineRegressionChecks(),
   ];
 
   return {

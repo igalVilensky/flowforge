@@ -70,12 +70,14 @@ function hasNamedDataSource(input: string): boolean {
   return /\b(?:support|admissions|sales|shared|email|customer|student)?\s*inbox\b/.test(input)
     || /\b(?:zendesk|intercom|hubspot|salesforce|crm|database|spreadsheet|google sheet|form|queue|channel)\b/.test(input)
     || /\b(?:arrives?|comes?|lands?|received|submitted|created)\s+(?:in|from|via|through)\s+(?:the\s+)?[a-z0-9 -]{2,60}\b/.test(input)
-    || /\b(?:read|collect|get|pull|fetch)\s+(?:new\s+)?[a-z0-9 -]{2,60}\s+(?:from|in)\s+(?:the\s+)?[a-z0-9 -]{2,60}\b/.test(input);
+    || /\b(?:read|collect|get|pull|fetch)\s+(?:new\s+)?[a-z0-9 -]{2,60}\s+(?:from|in)\s+(?:the\s+)?[a-z0-9 -]{2,60}\b/.test(input)
+    || /\b(?:source material|campaign brief|product description|blog post|image assets|brand assets|marketing points)\b/.test(input);
 }
 
 function hasNamedInputData(input: string): boolean {
   return /\b(?:customer|student|support|inbound|new)\s+(?:message|messages|email|emails|ticket|tickets|request|requests|application|applications)\b/.test(input)
-    || /\b(?:message|messages|email|emails|ticket|tickets|request|requests|record|records|form submission|submits)\b/.test(input);
+    || /\b(?:message|messages|email|emails|ticket|tickets|request|requests|record|records|form submission|submits)\b/.test(input)
+    || /\b(?:source material|campaign brief|product description|blog post|image assets|brand assets|marketing points)\b/.test(input);
 }
 
 function hasApprovalOwner(input: string): boolean {
@@ -95,7 +97,8 @@ function hasExternalActionBoundary(input: string): boolean {
     || /\bbefore\s+sending\b/.test(input)
     || /\bwithout\s+(?:automatically\s+)?(?:sending|send|updating|update|charging|charge|refunding|refund|deleting|delete)\b/.test(input)
     || /\b(?:no|never|do not|don't)\s+(?:automatically\s+)?(?:send|message|email|update|charge|refund|delete)\b/.test(input)
-    || /\b(?:draft only|draft-only|human-approved before sending|review before sending)\b/.test(input);
+    || /\b(?:draft only|draft-only|human-approved before sending|review before sending|before posting|before publishing)\b/.test(input)
+    || /\bexternal action is blocked until explicit human approval\b/.test(input);
 }
 
 function hasSuccessCriteria(input: string): boolean {

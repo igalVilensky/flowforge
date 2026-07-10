@@ -65,6 +65,13 @@ const dataSourcePhrases = [
   "support email",
   "customer email",
   "student email",
+  "source material",
+  "campaign brief",
+  "product description",
+  "blog post",
+  "image assets",
+  "brand assets",
+  "marketing points",
 ] as const;
 
 const inputDataPhrases = [
@@ -88,6 +95,13 @@ const inputDataPhrases = [
   "records",
   "form submission",
   "submits",
+  "source material",
+  "campaign brief",
+  "product description",
+  "blog post",
+  "image assets",
+  "brand assets",
+  "marketing points",
 ] as const;
 
 const externalBoundaryPhrases = [
@@ -108,6 +122,11 @@ const externalBoundaryPhrases = [
   "review before sending",
   "for review before any reply is sent",
   "for review before any message is sent",
+  "before posting",
+  "before publishing",
+  "approval before posting",
+  "approval before publishing",
+  "external action is blocked until explicit human approval",
 ] as const;
 
 function normalizeInput(input: string): string {
@@ -148,11 +167,53 @@ function addUnique<T>(items: T[], item: T): void {
   }
 }
 
+function clauseHasPositiveWorkflowCue(clause: string, matchedPhrase: string): boolean {
+  const phrase = escapeRegExp(matchedPhrase);
+  const actionBeforePhrase = new RegExp(
+    `\\b(?:automate|process|handle|review|triage|evaluate|calculate|draft|generate|create|collect|receive|route|respond|send|publish|post|issue|make|apply|perform|execute|access|update|change|delete|remove|cancel)\\b.{0,50}\\b${phrase}\\b`,
+  );
+  const actionPhrase = new RegExp(
+    `\\b${phrase}\\b.{0,35}\\b(?:request|requests|workflow|process|case|cases|decision|decisions|draft|action|actions|record|records|customer|user)\\b`,
+  );
+
+  return actionBeforePhrase.test(clause)
+    || actionPhrase.test(clause)
+    || /\b(?:asks?|asked) for (?:a |an )?(?:refund|payment|account change|deletion)\b/.test(clause);
+}
+
+function phraseIsOnlySafetyBoundary(clause: string, phrase: string): boolean {
+  const phraseIndex = clause.indexOf(phrase);
+  const prefix = phraseIndex >= 0 ? clause.slice(Math.max(0, phraseIndex - 70), phraseIndex) : clause;
+  const explicitlyNegated = /\b(?:do not|don't|never|must not|should not|without|no automatic|block|prevent)\b/.test(prefix);
+
+  if (explicitlyNegated) {
+    return true;
+  }
+
+  const boundaryLanguage = /\b(?:human[- ]reviewed|human review|human approval|manual approval|draft[- ]only|requires? approval|keep .* reviewed|blocked until|not automatic)\b/.test(clause);
+  return boundaryLanguage && !clauseHasPositiveWorkflowCue(clause, phrase);
+}
+
+function riskRuleMatches(input: string, rule: MatchableRule): boolean {
+  if (rule.patterns?.some((pattern) => pattern.test(input))) {
+    return true;
+  }
+
+  const clauses = input.split(/[.!?;]+|\b(?:but|however)\b/).map((clause) => clause.trim()).filter(Boolean);
+
+  return rule.phrases.some((phrase) => {
+    const normalizedPhrase = normalizeInput(phrase);
+
+    return clauses.some((clause) => phraseMatches(clause, normalizedPhrase)
+      && !phraseIsOnlySafetyBoundary(clause, normalizedPhrase));
+  });
+}
+
 function detectRiskFlags(input: string): RiskCategory[] {
   const riskFlags: RiskCategory[] = [];
 
   for (const rule of riskRules) {
-    if (!ruleMatches(input, rule)) {
+    if (!riskRuleMatches(input, rule)) {
       continue;
     }
 
@@ -176,6 +237,10 @@ function detectWorkflowPrimitives(input: string, riskFlags: RiskCategory[]): Wor
   }
 
   for (const rule of primitiveRules) {
+    if (rule.primitive === "risk_detection") {
+      continue;
+    }
+
     if (ruleMatches(input, rule)) {
       addUnique(primitives, rule.primitive);
     }
@@ -252,7 +317,8 @@ function hasApprovalOwner(input: string): boolean {
 function hasExternalActionBoundary(input: string): boolean {
   return matchesAny(input, externalBoundaryPhrases)
     || /\bbefore\s+any\s+(?:reply|message|email|response|refund|charge|account update|update|change)\s+(?:is\s+)?(?:sent|made|issued|executed|applied)\b/.test(input)
-    || /\b(?:without|never)\s+(?:automatically\s+)?(?:send|sending|update|updating|charge|charging|refund|refunding|delete|deleting)\b/.test(input);
+    || /\b(?:without|never)\s+(?:automatically\s+)?(?:send|sending|update|updating|charge|charging|refund|refunding|delete|deleting|post|posting|publish|publishing)\b/.test(input)
+    || /\bexternal action is blocked until explicit human approval\b/.test(input);
 }
 
 function getMissingCriticalInfo(

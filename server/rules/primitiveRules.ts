@@ -23,6 +23,9 @@ export const triggerPhrases = [
   "once",
   "upon receipt",
   "as soon as",
+  "on demand",
+  "on-demand",
+  "manually",
 ] as const;
 
 export const schedulePhrases = [
@@ -65,6 +68,10 @@ export const externalActionPhrases = [
   "client",
   "partner",
   "applicant",
+  "publish",
+  "post to social media",
+  "social media post",
+  "social media",
 ] as const;
 
 export const clearOutputPhrases = [
@@ -91,6 +98,11 @@ export const clearOutputPhrases = [
   "approve",
   "validate",
   "verify",
+  "generate",
+  "caption",
+  "script",
+  "social post",
+  "post package",
 ] as const;
 
 export const decisionPointPhrases = [
@@ -169,7 +181,27 @@ export const primitiveRules: readonly PrimitiveRule[] = [
   },
   {
     primitive: "drafting",
-    phrases: ["draft", "write", "compose", "reply", "propose response", "prepare response"],
+    phrases: [
+      "draft",
+      "write",
+      "compose",
+      "reply",
+      "propose response",
+      "prepare response",
+      "content generation",
+      "generate content",
+      "generate posts",
+      "generate social posts",
+      "marketing content",
+      "social media content",
+      "social post",
+      "caption",
+      "script",
+      "generate image",
+      "image generation",
+      "voice generation",
+      "video generation",
+    ],
     rough_action: "Draft a proposed response or task",
     possible_tool: "draft generator",
   },

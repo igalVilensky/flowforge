@@ -19,6 +19,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
-    "jiti": "^2.7.0"
+    "jiti": "^2.7.0",
+    "typescript": "5.9.3",
+    "vue-tsc": "3.0.7"
   }
 }

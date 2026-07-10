@@ -24,6 +24,7 @@ FlowForge is intentionally conservative. The useful output is not "automation ha
 FlowForge currently includes:
 
 - guided clarification for vague requests
+- concrete-fact clarification readiness that rejects placeholder/default values
 - compile modes: `rule_only`, `balanced`, and `full`
 - agent-assisted routing, clarification, blueprint generation, and safety review
 - agent status explanations
@@ -50,6 +51,7 @@ FlowForge can preview workflows such as:
 - human-reviewed refund or payment workflows
 - internal review task creation
 - safe alternatives for risky automation requests
+- draft-only social media and content-generation workflows with approval before publishing
 
 The compiler focuses on one primary outcome:
 
@@ -111,7 +113,7 @@ What kind of tasks should FlowForge help with first: emails, tickets, documents,
 
 ### 2. FlowForge clarifies until the request is useful
 
-The clarification session tracks previous answers and stops when enough practical detail is known.
+The clarification session tracks previous answers and stops when enough practical detail is known. Readiness requires concrete user-provided or provider-extracted facts; placeholder text such as "the source mentioned by the user" does not resolve a missing field. A valid provider response with `status="needs_answer"`, `ready_to_compile=false`, and a new question is preserved unless the question limit is reached or the question was already answered.
 
 Example collected facts:
 
@@ -126,7 +128,7 @@ Boundary: no reply is sent automatically
 
 ### 3. FlowForge compiles a blueprint
 
-When the session is ready, the page calls `/api/compile` with the clarified prompt. The compiler returns a `CompileJob` with a safe blueprint, safety outcome, agent outputs, trace/debug data, and observability details.
+When the session is ready, the page calls `/api/compile` with the clarified prompt. Guided clarification uses a versioned structured compile envelope: intent, concrete known facts, and answer values feed semantic scanning, while generic safety constraints remain separate for the final non-executing guard. Safety boilerplate therefore cannot choose a finance, account-access, or destructive workflow domain. The compiler returns a `CompileJob` with a safe blueprint, safety outcome, agent outputs, trace/debug data, and observability details.
 
 Compiled blueprint steps appear as compact horizontal workflow nodes with readable step titles and color-coded index markers for quick safety/status recognition. Detailed metadata stays hidden from the first-glance node view; descriptions, automation policy, execution boundaries, approval requirements, safety notes, suggested n8n role, and raw step JSON are available on click. When there are many steps, only the workflow map section scrolls horizontally.
 
@@ -142,7 +144,7 @@ FlowForge exposes the agent path instead of hiding it behind a single answer.
 
 ### Guided Clarifier
 
-Reads a vague automation idea, extracts known facts, asks one contextual question at a time, and can produce a rewritten compile prompt.
+Reads a vague automation idea, extracts concrete facts from answer IDs/kinds and answer values, asks one contextual question at a time, and can produce a structured rewritten compile prompt. Valid provider `needs_answer` responses remain open, while duplicate-question and maximum-question protections prevent loops.
 
 ### Router
 
@@ -420,6 +422,7 @@ server/
 
 ```text
 POST /api/compile
+  -> structuredCompileInput (intent/safety separation)
   -> signalScanner
   -> riskScanner
   -> readinessScorer
@@ -432,7 +435,7 @@ POST /api/compile
   -> CompileJob response
 ```
 
-Provider-backed agents are mode-dependent and fallback-aware. Deterministic scanners, schema validation, and safety boundaries remain part of the compiler path.
+Provider-backed agents are mode-dependent and fallback-aware. Deterministic scanners, schema validation, and safety boundaries remain part of the compiler path. The deterministic fallback recognizes admissions, support, finance, content/media generation, and generic workflows. Content fallback output stays draft-only, requires channel-owner approval before posting, blocks automatic publishing, and never claims production media or social-platform integrations.
 
 ## Install
 
@@ -473,6 +476,7 @@ Expected:
 - TypeScript passes
 - production build completes
 - fixture validates against the Zod schema
+- regression fixtures preserve missing-source clarification, ignore safety boilerplate during domain detection, retain real refund detection, exercise provider fallback, and prevent duplicate clarification loops
 - frontend and backend types stay aligned
 - `CompileJob` includes safety, agent, trace/debug, and observability data
 

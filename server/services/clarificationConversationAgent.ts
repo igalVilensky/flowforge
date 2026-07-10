@@ -14,8 +14,14 @@ import {
     buildClarificationConversationUserPrompt,
     clarificationConversationSystemPrompt,
 } from "../prompts/clarificationConversationPrompt";
+import {
+    getClarificationAnswerKind,
+    getConcreteKnownFacts,
+    isConcreteKnownFact,
+} from "./clarificationFacts";
 import { callGeminiAgent } from "./geminiProvider";
 import { callGroqAgent } from "./groqProvider";
+import { serializeStructuredCompileInput } from "./structuredCompileInput";
 
 type AgentProvider = ClarificationSessionResponse["provider"];
 
@@ -73,10 +79,10 @@ function buildSessionId(originalInput: string, answers: ClarificationSessionAnsw
     return `clarify_${Math.abs(hash).toString(36)}`;
 }
 
-function allText(input: RunClarificationConversationAgentInput): string {
+function intentText(input: RunClarificationConversationAgentInput): string {
     return [
         input.originalInput,
-        ...input.answers.flatMap((answer) => [answer.question, answer.answer]),
+        ...input.answers.map((answer) => answer.answer),
     ].join("\n").toLowerCase();
 }
 
@@ -84,53 +90,102 @@ function hasAny(text: string, patterns: RegExp[]): boolean {
     return patterns.some((pattern) => pattern.test(text));
 }
 
-function inferKnownFacts(input: RunClarificationConversationAgentInput): ClarificationKnownFacts {
-    const text = allText(input);
+export function inferKnownFacts(input: RunClarificationConversationAgentInput): ClarificationKnownFacts {
+    const text = intentText(input);
     const answerText = input.answers.map((answer) => answer.answer).join(" ").trim();
+    const answersByKind = new Map<string, ClarificationSessionAnswer[]>();
+
+    for (const answer of input.answers) {
+        const kind = getClarificationAnswerKind(answer);
+
+        if (!kind || !isConcreteKnownFact(answer.answer, kind)) continue;
+        answersByKind.set(kind, [...(answersByKind.get(kind) ?? []), answer]);
+    }
+
+    const answerFor = (kind: string) => answersByKind.get(kind)?.at(-1)?.answer;
+    const taskType = answerFor("task_type");
+    const explicitGoal = answerFor("workflow_goal");
+    const trigger = answerFor("trigger");
+    const dataSource = answerFor("data_source");
+    const inputData = answerFor("input_data");
+    const desiredOutput = answerFor("desired_output");
+    const humanOwner = answerFor("human_owner");
+    const approvalBoundary = answerFor("approval_boundary");
+    const externalActionBoundary = answerFor("external_action_boundary");
+    const successCriteria = answerFor("success_criteria");
 
     const knownFacts: ClarificationKnownFacts = {
-        workflow_goal: normalizeText(input.originalInput),
+        workflow_goal: explicitGoal ?? (taskType ? `Create a workflow for ${normalizeText(taskType)}.` : normalizeText(input.originalInput)),
     };
 
-    if (hasAny(text, [/email|inbox|message|support ticket|ticket/])) {
-        knownFacts.task_type = "email or support ticket management";
+    if (taskType) {
+        knownFacts.task_type = normalizeText(taskType);
+    } else if (!isVeryVagueTaskRequest(input.originalInput) && input.answers.length === 0) {
+        knownFacts.task_type = normalizeText(input.originalInput);
     }
 
-    if (hasAny(text, [/when a new|new .*created|new .*arrives|created|arrives|every|daily|weekly|friday|monday|schedule/])) {
-        const triggerAnswer = input.answers.find((answer) => /when|start|trigger/i.test(answer.question + " " + answer.answer));
-        knownFacts.trigger = triggerAnswer?.answer ?? "A new item arrives or a scheduled review runs.";
+    if (trigger) {
+        knownFacts.trigger = normalizeText(trigger);
+    } else if (hasAny(input.originalInput.toLowerCase(), [
+        /\bon[ -]?demand\b/,
+        /\bmanually\b/,
+        /\bwhen\b/,
+        /\bwhenever\b/,
+        /\bevery\b/,
+        /\bdaily\b/,
+        /\bweekly\b/,
+        /\bschedule(?:d)?\b/,
+    ])) {
+        knownFacts.trigger = normalizeText(input.originalInput);
     }
 
-    if (hasAny(text, [/inbox|zendesk|intercom|hubspot|salesforce|gmail|email|ticketing system|database|spreadsheet|queue/])) {
-        const sourceAnswer = input.answers.find((answer) => /where|source|come from|data source|read/i.test(answer.question));
-        knownFacts.data_source = sourceAnswer?.answer ?? "The source mentioned by the user.";
+    if (dataSource) {
+        knownFacts.data_source = normalizeText(dataSource);
+    } else if (input.answers.length === 0 && hasAny(text, [
+        /support inbox|admissions inbox|shared inbox|zendesk|intercom|hubspot|salesforce|gmail/,
+        /google sheet|spreadsheet|database|campaign brief|product description|source material|brand assets/,
+    ])) {
+        knownFacts.data_source = normalizeText(input.originalInput);
     }
 
-    if (hasAny(text, [/subject|description|customer name|priority|order id|amount|email body|sender|ticket/])) {
-        knownFacts.input_data = ["ticket or message details mentioned by the user"];
+    if (inputData) {
+        knownFacts.input_data = [normalizeText(inputData)];
+    } else if (dataSource && /source material|brief|description|blog|asset|marketing point|product/i.test(dataSource)) {
+        knownFacts.input_data = [normalizeText(dataSource)];
     }
 
-    if (hasAny(text, [/summary|draft|reply|tag|tags|task|classify|route|extract/])) {
-        const outputAnswer = input.answers.find((answer) => /produce|happen|output|what should/i.test(answer.question));
-        knownFacts.desired_output = outputAnswer?.answer ?? "A summary, draft, tags, routing, or internal task.";
+    if (desiredOutput) {
+        knownFacts.desired_output = normalizeText(desiredOutput);
+    } else if (taskType && /content generation|social media content|generate (?:social )?posts?|marketing content|social posts?/i.test(taskType)) {
+        knownFacts.desired_output = "Draft social media content and a reviewable post package.";
+    } else if (taskType && /\b(?:draft|summarize|classify|extract|route|generate|create)\b/i.test(taskType)) {
+        knownFacts.desired_output = normalizeText(taskType);
+    } else if (input.answers.length === 0 && hasAny(text, [/\bdraft\b|\bsummarize\b|\bclassify\b|\bextract\b|\bgenerate\b/])) {
+        knownFacts.desired_output = normalizeText(input.originalInput);
     }
 
-    const ruleAnswers = input.answers.filter((answer) =>
-        /rule|priority|vip|condition|determine|decide|route/i.test(answer.question + " " + answer.answer),
-    );
+    const ruleAnswers = answersByKind.get("decision_rules") ?? [];
 
     if (ruleAnswers.length > 0) {
         knownFacts.decision_rules = ruleAnswers.map((answer) => answer.answer);
     }
 
-    if (hasAny(text, [/support lead|manager|human|reviewer|owner|team lead|finance|legal|advisor|approver/])) {
-        const ownerAnswer = input.answers.find((answer) => /who|review|owner|approve/i.test(answer.question + " " + answer.answer));
-        knownFacts.human_owner = ownerAnswer?.answer ?? "A human reviewer mentioned by the user.";
+    if (humanOwner) {
+        knownFacts.human_owner = normalizeText(humanOwner);
     }
 
-    if (hasAny(text, [/before sending|before anything|review every|reviews every|approval|approve|human review|draft before/i])) {
-        knownFacts.approval_boundary = "Human review is required before external actions.";
-        knownFacts.external_action_boundary = "No external message, update, charge, refund, deletion, or execution happens automatically.";
+    if (approvalBoundary) {
+        knownFacts.approval_boundary = normalizeText(approvalBoundary);
+    }
+
+    if (externalActionBoundary) {
+        knownFacts.external_action_boundary = normalizeText(externalActionBoundary);
+    } else if (approvalBoundary && /before (?:posting|publishing|sending)|no automatic|draft.only|external/i.test(approvalBoundary)) {
+        knownFacts.external_action_boundary = "External action is blocked until explicit human approval.";
+    }
+
+    if (successCriteria) {
+        knownFacts.success_criteria = normalizeText(successCriteria);
     }
 
     if (answerText.length > 0) {
@@ -140,20 +195,22 @@ function inferKnownFacts(input: RunClarificationConversationAgentInput): Clarifi
     return knownFacts;
 }
 
-function hasEnoughInformation(knownFacts: ClarificationKnownFacts): boolean {
+export function hasEnoughInformation(knownFacts: ClarificationKnownFacts): boolean {
+    const concrete = getConcreteKnownFacts(knownFacts);
+
     return Boolean(
-        knownFacts.workflow_goal
-        && knownFacts.task_type
-        && knownFacts.trigger
-        && knownFacts.data_source
-        && knownFacts.desired_output,
+        isConcreteKnownFact(concrete.workflow_goal, "workflow_goal")
+        && isConcreteKnownFact(concrete.task_type, "task_type")
+        && isConcreteKnownFact(concrete.trigger, "trigger")
+        && (isConcreteKnownFact(concrete.data_source, "data_source") || isConcreteKnownFact(concrete.input_data, "input_data"))
+        && isConcreteKnownFact(concrete.desired_output, "desired_output"),
     );
 }
 
 function needsHumanBoundary(input: RunClarificationConversationAgentInput): boolean {
-    const text = allText(input);
+    const text = intentText(input);
     return hasAny(text, [
-        /send|reply|email|message|external/,
+        /send|reply|email|message|external|publish|posting|social media/,
         /refund|payment|charge|invoice|billing/,
         /legal|medical|visa|immigration|employment/,
         /delete|remove|account|access|update/,
@@ -161,35 +218,27 @@ function needsHumanBoundary(input: RunClarificationConversationAgentInput): bool
 }
 
 function hasHumanBoundary(knownFacts: ClarificationKnownFacts): boolean {
-    return Boolean(knownFacts.human_owner && (knownFacts.approval_boundary || knownFacts.external_action_boundary));
+    return isConcreteKnownFact(knownFacts.human_owner, "human_owner")
+        && (isConcreteKnownFact(knownFacts.approval_boundary, "approval_boundary")
+            || isConcreteKnownFact(knownFacts.external_action_boundary, "external_action_boundary"));
 }
 
 function buildCompilePrompt(input: RunClarificationConversationAgentInput, knownFacts: ClarificationKnownFacts): string {
-    const answers = input.answers
-        .map((answer, index) => `${index + 1}. ${answer.question}\nAnswer: ${answer.answer}`)
-        .join("\n\n");
+    const concreteFacts = getConcreteKnownFacts(knownFacts);
 
-    const facts = [
-        knownFacts.task_type ? `Task type: ${knownFacts.task_type}` : undefined,
-        knownFacts.trigger ? `Trigger: ${knownFacts.trigger}` : undefined,
-        knownFacts.data_source ? `Source: ${knownFacts.data_source}` : undefined,
-        knownFacts.input_data?.length ? `Input data: ${knownFacts.input_data.join(", ")}` : undefined,
-        knownFacts.desired_output ? `Desired output: ${knownFacts.desired_output}` : undefined,
-        knownFacts.decision_rules?.length ? `Decision rules: ${knownFacts.decision_rules.join("; ")}` : undefined,
-        knownFacts.human_owner ? `Human reviewer: ${knownFacts.human_owner}` : undefined,
-        knownFacts.approval_boundary ? `Approval boundary: ${knownFacts.approval_boundary}` : undefined,
-        knownFacts.external_action_boundary ? `External action boundary: ${knownFacts.external_action_boundary}` : undefined,
-    ].filter(Boolean).join("\n");
-
-    return normalizeText(`Original request: ${input.originalInput}
-
-Clarified workflow facts:
-${facts}
-
-Clarification answers:
-${answers}
-
-Build a non-executing FlowForge workflow blueprint. Keep all external sending, account changes, payments, refunds, deletions, and high-stakes decisions human-reviewed or draft-only. Do not execute anything.`);
+    return serializeStructuredCompileInput({
+        original_input: normalizeText(input.originalInput),
+        clarified_intent: buildCurrentSummary(input, concreteFacts),
+        known_facts: concreteFacts,
+        clarification_answers: input.answers,
+        safety_constraints: [
+            concreteFacts.approval_boundary,
+            concreteFacts.external_action_boundary,
+            "Build a non-executing FlowForge workflow blueprint.",
+            "Keep external actions human-reviewed or draft-only.",
+            "Do not connect production credentials or execute real-world actions.",
+        ].filter((constraint): constraint is string => Boolean(constraint)),
+    });
 }
 
 function buildReadySession(
@@ -239,12 +288,14 @@ function questionWasAlreadyAnswered(input: RunClarificationConversationAgentInpu
     return input.answers.some((answer) => {
         const previousQuestion = answer.question.toLowerCase();
         const previousAnswer = answer.answer.toLowerCase();
+        const previousKind = getClarificationAnswerKind(answer);
 
         if (answer.question_id === question.id) return true;
         if (previousQuestion === q) return true;
+        if (previousKind === question.kind && isConcreteKnownFact(answer.answer, question.kind)) return true;
 
         if (question.kind === "human_owner" || question.kind === "approval_boundary" || question.kind === "external_action_boundary") {
-            return /support lead|manager|human|review|approve|before sending|before anything/.test(previousAnswer);
+            return /support lead|channel owner|manager|human|review|approve|before sending|before posting|before publishing|before anything/.test(previousAnswer);
         }
 
         if (question.kind === "decision_rules") {
@@ -273,7 +324,7 @@ function createFallbackQuestion(
     input: RunClarificationConversationAgentInput,
     knownFacts: ClarificationKnownFacts,
 ): ClarificationNextQuestion {
-    if (!knownFacts.task_type || (input.answers.length === 0 && isVeryVagueTaskRequest(input.originalInput))) {
+    if (!isConcreteKnownFact(knownFacts.task_type, "task_type") || (input.answers.length === 0 && isVeryVagueTaskRequest(input.originalInput))) {
         return {
             id: "choose_task_category",
             kind: "task_type",
@@ -283,7 +334,7 @@ function createFallbackQuestion(
         };
     }
 
-    if (!knownFacts.desired_output || (input.answers.length === 0 && isVagueEmailRequest(input.originalInput))) {
+    if (!isConcreteKnownFact(knownFacts.desired_output, "desired_output") || (input.answers.length === 0 && isVagueEmailRequest(input.originalInput))) {
         return {
             id: "desired_output",
             kind: "desired_output",
@@ -293,7 +344,7 @@ function createFallbackQuestion(
         };
     }
 
-    if (!knownFacts.trigger) {
+    if (!isConcreteKnownFact(knownFacts.trigger, "trigger")) {
         return {
             id: "workflow_trigger",
             kind: "trigger",
@@ -303,7 +354,21 @@ function createFallbackQuestion(
         };
     }
 
-    if (!knownFacts.data_source) {
+    if (!isConcreteKnownFact(knownFacts.data_source, "data_source") && !isConcreteKnownFact(knownFacts.input_data, "input_data")) {
+        const isContentWorkflow = /social media|content generation|generate (?:social )?posts?|marketing content|social post/i.test(
+            `${knownFacts.task_type ?? ""} ${knownFacts.desired_output ?? ""}`,
+        );
+
+        if (isContentWorkflow) {
+            return {
+                id: "content_source_material",
+                kind: "data_source",
+                question: "What source material should the workflow use to generate the social media content, such as a product description, campaign brief, blog post, image assets, or key marketing points?",
+                why_it_matters: "The workflow needs concrete source material before it can generate an accurate content draft.",
+                example_answer: "A product description, campaign brief, brand assets, and the key marketing points for the post.",
+            };
+        }
+
         return {
             id: "workflow_source",
             kind: "data_source",
@@ -313,7 +378,7 @@ function createFallbackQuestion(
         };
     }
 
-    if (needsHumanBoundary(input) && !knownFacts.human_owner) {
+    if (needsHumanBoundary(input) && !isConcreteKnownFact(knownFacts.human_owner, "human_owner")) {
         return {
             id: "human_reviewer",
             kind: "human_owner",
@@ -342,11 +407,15 @@ function createFallbackQuestion(
     };
 }
 
-function buildFallbackSession(
+export function buildDeterministicClarificationSession(
     input: RunClarificationConversationAgentInput,
     reason: string,
+    providedFacts?: ClarificationKnownFacts,
 ): ClarificationSession {
-    const knownFacts = inferKnownFacts(input);
+    const knownFacts = {
+        ...(providedFacts ?? {}),
+        ...inferKnownFacts(input),
+    };
 
     if (hasEnoughInformation(knownFacts) && (!needsHumanBoundary(input) || hasHumanBoundary(knownFacts))) {
         return buildReadySession(input, knownFacts, "Enough clarification has been collected to compile a safe preview.");
@@ -375,7 +444,7 @@ function buildFallbackSession(
     };
 }
 
-function normalizeAgentSession(
+export function normalizeAgentSession(
     parsed: unknown,
     input: RunClarificationConversationAgentInput,
 ): ClarificationSession {
@@ -390,8 +459,8 @@ function normalizeAgentSession(
         original_input: normalizeText(input.originalInput),
         current_summary: raw.current_summary || buildCurrentSummary(input, inferredFacts),
         known_facts: {
-            ...inferredFacts,
             ...(raw.known_facts && typeof raw.known_facts === "object" ? raw.known_facts : {}),
+            ...inferredFacts,
         },
         answers: input.answers,
         next_question: raw.next_question ?? null,
@@ -403,16 +472,50 @@ function normalizeAgentSession(
 
     let parsedSession = clarificationSessionSchema.parse(candidate);
 
+    if (input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
+        return buildReadySession(
+            input,
+            parsedSession.known_facts,
+            "Question limit reached; compiling with the best available clarified facts.",
+        );
+    }
+
+    const isExplicitNeedsAnswer = parsedSession.status === "needs_answer"
+        && parsedSession.ready_to_compile === false
+        && parsedSession.next_question !== null;
+
+    if (isExplicitNeedsAnswer) {
+        if (
+            questionWasAlreadyAnswered(input, parsedSession.next_question!)
+            || hasAlreadyAskedKind(input, parsedSession.next_question!.kind)
+        ) {
+            return buildReadySession(
+                input,
+                parsedSession.known_facts,
+                "The agent repeated an answered question; compiling with the best available clarified facts.",
+            );
+        }
+
+        return {
+            ...parsedSession,
+            rewritten_compile_prompt: undefined,
+        };
+    }
+
     const enoughInfo = hasEnoughInformation(parsedSession.known_facts);
     const boundaryOk = !needsHumanBoundary(input) || hasHumanBoundary(parsedSession.known_facts);
 
-    if ((enoughInfo && boundaryOk) || input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
+    if (parsedSession.ready_to_compile && parsedSession.status === "ready_to_compile" && enoughInfo && boundaryOk) {
         parsedSession = buildReadySession(
             input,
             parsedSession.known_facts,
-            input.answers.length >= MAX_CLARIFICATION_QUESTIONS
-                ? "Question limit reached; compiling with the best available clarified facts."
-                : "Enough clarification has been collected to compile a safe preview.",
+            "Enough concrete clarification has been collected to compile a safe preview.",
+        );
+    } else if (parsedSession.ready_to_compile || parsedSession.status === "ready_to_compile") {
+        return buildDeterministicClarificationSession(
+            input,
+            "The provider marked the session ready without enough concrete facts; deterministic clarification continues.",
+            parsedSession.known_facts,
         );
     }
 
@@ -514,7 +617,7 @@ export async function runClarificationConversationAgent(
         }
     }
 
-    const session = buildFallbackSession(
+    const session = buildDeterministicClarificationSession(
         input,
         providerErrors.length > 0
             ? `Clarification agent fallback used. ${providerErrors.join(" | ")}`

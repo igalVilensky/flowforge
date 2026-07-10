@@ -48,7 +48,7 @@ type StepDefinition = {
   real_world_execution?: RealWorldExecutionPolicy;
 };
 
-type BlueprintDomain = "admissions" | "support" | "finance" | "generic";
+export type BlueprintDomain = "admissions" | "support" | "finance" | "content" | "generic";
 
 type DomainStepContext = {
   domain: BlueprintDomain;
@@ -322,24 +322,61 @@ function joinList(items: readonly string[]): string {
   return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
 }
 
-function detectDomain(processInput: string, risks: RiskSummary): BlueprintDomain {
+function hasAffirmativeFinanceIntent(input: string): boolean {
+  const clauses = input.split(/[.!?;]+|\b(?:but|however)\b/).map((clause) => clause.trim()).filter(Boolean);
+  const financePhrase = /\b(?:refunds?|payments?|billing|charges?|invoices?|receipts?|finance workflow|finance review)\b/;
+
+  return clauses.some((clause) => {
+    const match = financePhrase.exec(clause);
+
+    if (!match || match.index === undefined) return false;
+
+    const prefix = clause.slice(Math.max(0, match.index - 70), match.index);
+
+    if (/\b(?:do not|don't|never|must not|should not|without|no automatic|block|prevent)\b/.test(prefix)) {
+      return false;
+    }
+
+    const boundaryOnly = /\b(?:human[- ]reviewed|human review|human approval|manual approval|draft[- ]only|requires? approval|keep .* reviewed|blocked until)\b/.test(clause);
+    const workflowCue = /\b(?:refund|payment|billing|charge|invoice|finance)\s+(?:request|requests|workflow|process|case|cases|review|decision|decisions|task)\b/.test(clause)
+      || /\b(?:automate|process|handle|review|triage|evaluate|calculate|collect|receive|route|prepare|approve|issue|make|apply)\b.{0,50}\b(?:refund|payment|billing|charge|invoice|finance)\b/.test(clause)
+      || /\b(?:customer|user)\s+(?:asks?|submits?|requests?)\b.{0,35}\b(?:refund|payment|billing)\b/.test(clause);
+
+    return !boundaryOnly || workflowCue;
+  });
+}
+
+export function detectBlueprintDomain(processInput: string): BlueprintDomain {
   const input = normalizeForDetection(processInput);
+
+  if (hasAny(input, [
+    "social media content",
+    "content generation",
+    "generate posts",
+    "generate social posts",
+    "marketing content",
+    "product promotion",
+    "social post",
+    "post to social media",
+    "publish to social media",
+    "generate image",
+    "image generation",
+    "voice generation",
+    "video generation",
+    "avatar",
+  ])) {
+    return "content";
+  }
 
   if (hasAny(input, ["admissions", "candidate", "applicant", "job application", "application email", "portfolio"])) {
     return "admissions";
   }
 
-  if (
-    hasAny(input, ["refund", "billing", "payment", "charge", "invoice", "receipt"])
-    || hasAnyRisk(risks.categories, financialRiskCategories)
-  ) {
+  if (hasAffirmativeFinanceIntent(input)) {
     return "finance";
   }
 
-  if (
-    hasAny(input, ["support", "ticket", "customer", "helpdesk", "zendesk", "intercom", "complaint", "angry"])
-    || hasRisk(risks.categories, "complaint_or_angry_user")
-  ) {
+  if (hasAny(input, ["support", "ticket", "customer", "helpdesk", "zendesk", "intercom", "complaint", "angry"])) {
     return "support";
   }
 
@@ -347,6 +384,10 @@ function detectDomain(processInput: string, risks: RiskSummary): BlueprintDomain
 }
 
 function detectTriggerTiming(input: string, signals: SignalSummary): string {
+  if (hasAny(input, ["on demand", "on-demand", "manually", "manual trigger"])) {
+    return "when requested on demand";
+  }
+
   if (hasAny(input, ["every morning", "each morning"])) {
     return "on the morning schedule";
   }
@@ -379,6 +420,27 @@ function detectTriggerTiming(input: string, signals: SignalSummary): string {
 }
 
 function detectSource(input: string, domain: BlueprintDomain): string {
+  if (domain === "content") {
+    const labeledSource = input.match(/\bsource material:\s*([^\n.]{2,160})/i)?.[1];
+
+    if (labeledSource) {
+      return truncateText(cleanDomainPhrase(labeledSource), 160);
+    }
+
+    const contentSource = [
+      "campaign brief",
+      "product description",
+      "blog post",
+      "image assets",
+      "brand assets",
+      "key marketing points",
+      "marketing points",
+      "source material",
+    ].find((source) => input.includes(source));
+
+    return contentSource ? `the provided ${contentSource}` : "the clarified source material";
+  }
+
   const knownSources = [
     "admissions inbox",
     "support inbox",
@@ -423,6 +485,10 @@ function detectSource(input: string, domain: BlueprintDomain): string {
 }
 
 function detectSourceItem(input: string, domain: BlueprintDomain): string {
+  if (domain === "content") {
+    return "source material or campaign brief";
+  }
+
   if (domain === "admissions") {
     return input.includes("email") ? "job application emails" : "job application items";
   }
@@ -517,6 +583,7 @@ function detectInternalOutput(input: string, domain: BlueprintDomain): string {
   if (domain === "admissions") return "admissions review task";
   if (domain === "support") return "support review task";
   if (domain === "finance") return "finance review task";
+  if (domain === "content") return "social media post package";
 
   if (hasAny(input, ["task", "ticket", "review task"])) return "internal review task";
   if (hasAny(input, ["report", "dashboard", "digest"])) return "internal report";
@@ -526,6 +593,12 @@ function detectInternalOutput(input: string, domain: BlueprintDomain): string {
 }
 
 function detectApprovalOwner(input: string, domain: BlueprintDomain): string {
+  const labeledOwner = input.match(/\bhuman reviewer:\s*([^\n.]{2,80})/i)?.[1];
+
+  if (labeledOwner) {
+    return truncateText(cleanDomainPhrase(labeledOwner), 80);
+  }
+
   const ownerMatch = input.match(
     /\b(?:the\s+)?([a-z0-9][a-z0-9 -]{1,60}?(?:team lead|lead|team|manager|owner|reviewer|approver|human))\s+(?:must|should|will|reviews?|approves?)\b/,
   );
@@ -538,10 +611,12 @@ function detectApprovalOwner(input: string, domain: BlueprintDomain): string {
   if (input.includes("support lead")) return "support lead";
   if (input.includes("admissions team")) return "admissions team";
   if (input.includes("finance")) return "finance";
+  if (input.includes("channel owner")) return "channel owner";
 
   if (domain === "admissions") return "admissions reviewer";
   if (domain === "support") return "support lead";
   if (domain === "finance") return "finance reviewer";
+  if (domain === "content") return "channel owner";
 
   return "human reviewer";
 }
@@ -552,7 +627,7 @@ function buildDomainStepContext(
   risks: RiskSummary,
 ): DomainStepContext {
   const normalizedInput = normalizeForDetection(processInput);
-  const domain = detectDomain(processInput, risks);
+  const domain = detectBlueprintDomain(processInput);
 
   return {
     domain,
@@ -670,7 +745,17 @@ function getWorkflowDomain(categories: readonly RiskCategory[]): string {
   return "";
 }
 
-function buildWorkflowName(signals: SignalSummary, risks: RiskSummary): string {
+function buildWorkflowName(processInput: string, signals: SignalSummary, risks: RiskSummary): string {
+  const intentDomain = detectBlueprintDomain(processInput);
+
+  if (intentDomain === "content") {
+    return "Social Media Content Draft Workflow";
+  }
+
+  if (intentDomain === "finance") {
+    return "Refund or Payment Review Workflow";
+  }
+
   const domain = getWorkflowDomain(risks.categories);
 
   if (domain) {
@@ -765,6 +850,14 @@ function inferTrigger(processInput: string, signals: SignalSummary): WorkflowTri
   const normalizedInput = processInput.toLowerCase();
   const preview = normalizeForPreview(processInput);
 
+  if (hasAny(normalizedInput, ["on demand", "on-demand", "manually", "manual trigger"])) {
+    return {
+      type: "manual_input",
+      source: "on_demand_request",
+      description: `Rule-based on-demand trigger inferred from: ${preview}`,
+    };
+  }
+
   if (normalizedInput.includes("webhook") || normalizedInput.includes("api")) {
     return {
       type: "webhook",
@@ -829,8 +922,149 @@ function getAutomationBoundary(
   return "partially_automatable";
 }
 
+function buildContentWorkflowSteps(
+  processInput: string,
+  context: DomainStepContext,
+  risks: RiskSummary,
+): WorkflowStep[] {
+  const input = normalizeForDetection(processInput);
+  const categories = risks.categories;
+  const draftRiskCategories = categoriesFrom(categories, ["external_communication", "personal_data"]);
+  const steps: WorkflowStep[] = [
+    buildStep({
+      id: "content_collect_source_material",
+      label: "Collect source material or campaign brief",
+      description: `Use ${context.source} as the approved input ${context.triggerTiming}; do not fetch from an unconfigured external provider.`,
+      primitive: "intake",
+      actor: "system",
+      input: "On-demand request and clarified source material",
+      output: "Reviewed content brief",
+      automation_policy: "assist_only",
+      risk_categories: categoriesFrom(categories, ["personal_data", "account_access"]),
+      real_world_execution: "none",
+    }),
+    buildStep({
+      id: "content_define_message_and_audience",
+      label: "Define message and target audience",
+      description: "Turn the approved source into an internal product, campaign, message, audience, tone, and channel brief for review.",
+      primitive: "classification",
+      actor: "rules_and_ai",
+      input: "Reviewed content brief",
+      output: "Internal creative direction",
+      automation_policy: "assist_only",
+      real_world_execution: "none",
+    }),
+  ];
+
+  if (hasAny(input, ["avatar", "image", "visual", "product promotion"])) {
+    steps.push(buildStep({
+      id: "content_generate_visual_draft",
+      label: "Generate visual concept draft",
+      description: "Prepare an image, avatar, or visual concept as a draft only without claiming a connected generation provider.",
+      primitive: "drafting",
+      actor: "ai",
+      input: "Internal creative direction and approved assets",
+      output: "Draft visual concept",
+      automation_policy: "draft_only",
+      risk_categories: draftRiskCategories,
+      real_world_execution: "draft_only",
+    }));
+  }
+
+  steps.push(buildStep({
+    id: "content_generate_copy_draft",
+    label: "Generate script or caption draft",
+    description: "Draft the requested script, caption, and post copy from the approved source material for human review.",
+    primitive: "drafting",
+    actor: "ai",
+    input: "Internal creative direction",
+    output: "Draft script, caption, and post copy",
+    automation_policy: "draft_only",
+    risk_categories: draftRiskCategories,
+    real_world_execution: "draft_only",
+  }));
+
+  if (hasAny(input, ["voice generation", "voice draft", "voiceover", "voice-over"])) {
+    steps.push(buildStep({
+      id: "content_generate_voice_draft",
+      label: "Generate voice draft",
+      description: "Prepare a reviewable voice or voice-over draft without claiming a connected voice provider or publishing it.",
+      primitive: "drafting",
+      actor: "ai",
+      input: "Approved script draft",
+      output: "Draft voice asset",
+      automation_policy: "draft_only",
+      risk_categories: draftRiskCategories,
+      real_world_execution: "draft_only",
+    }));
+  }
+
+  if (hasAny(input, ["video generation", "generate video", "video draft", "assemble video"])) {
+    steps.push(buildStep({
+      id: "content_assemble_video_draft",
+      label: "Assemble video content draft",
+      description: "Describe a draft video assembly from approved visual, script, and voice assets without connecting a video provider.",
+      primitive: "drafting",
+      actor: "ai",
+      input: "Approved draft content assets",
+      output: "Draft video concept",
+      automation_policy: "draft_only",
+      risk_categories: draftRiskCategories,
+      real_world_execution: "draft_only",
+    }));
+  }
+
+  steps.push(
+    buildStep({
+      id: "content_prepare_post_package",
+      label: "Prepare social media post package",
+      description: "Assemble the selected drafts, caption, asset references, channel notes, and publishing checklist into an internal package.",
+      primitive: "record_creation",
+      actor: "system",
+      input: "Reviewed content drafts",
+      output: "Social media post package",
+      automation_policy: "assist_only",
+      risk_categories: draftRiskCategories,
+      real_world_execution: "none",
+    }),
+    buildStep({
+      id: "content_require_channel_owner_approval",
+      label: `Require ${context.approvalOwner} approval`,
+      description: `Hold the post package until the ${context.approvalOwner} explicitly reviews and approves it.`,
+      primitive: "approval",
+      actor: "human",
+      input: "Social media post package",
+      output: "Recorded human approval decision",
+      automation_policy: "human_approval",
+      approval_required: true,
+      risk_categories: categoriesFrom(categories, ["external_communication", "personal_data"]),
+      real_world_execution: "requires_human_trigger",
+    }),
+    buildStep({
+      id: "content_block_automatic_publishing",
+      label: "Block automatic social publishing",
+      description: "Do not publish or post to any social platform automatically; the blueprint stays non-executing even after approval.",
+      primitive: "approval",
+      actor: "human",
+      input: "Human-reviewed post package",
+      output: "Blocked automatic publishing boundary",
+      automation_policy: "human_approval",
+      approval_required: true,
+      risk_categories: categoriesFrom(categories, ["external_communication", "real_world_execution"]),
+      real_world_execution: "requires_human_trigger",
+    }),
+  );
+
+  return steps;
+}
+
 function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks: RiskSummary): WorkflowStep[] {
   const context = buildDomainStepContext(processInput, signals, risks);
+
+  if (context.domain === "content") {
+    return buildContentWorkflowSteps(processInput, context, risks);
+  }
+
   const categories = risks.categories;
   const requiresApprovalStep =
     needsBlueprintHumanReview(categories, risks)
@@ -884,6 +1118,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
     admissions: "Collect application emails",
     support: context.sourceItem.includes("email") ? "Collect support email" : "Collect support request",
     finance: context.sourceItem.includes("refund") ? "Collect refund request" : "Collect finance request",
+    content: "Collect source material",
     generic: "Collect source item",
   };
 
@@ -910,6 +1145,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
       admissions: "Extract candidate details",
       support: "Extract support request details",
       finance: "Extract refund details",
+      content: "Extract content brief details",
       generic: "Extract requested fields",
     };
 
@@ -935,6 +1171,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
       admissions: "Assign an internal triage priority for admissions review only.",
       support: "Assign an internal issue priority using urgency, customer impact, and complaint signals.",
       finance: "Assign an internal refund or billing risk label for finance review only.",
+      content: "Define an internal content category and audience for review only.",
       generic: "Classify or summarize the item for internal review only.",
     };
 
@@ -973,12 +1210,14 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
       admissions: "Draft internal note for review",
       support: "Draft reply for review",
       finance: "Draft finance note for review",
+      content: "Draft content for review",
       generic: "Draft output for review",
     };
     const draftDescriptionByDomain: Record<BlueprintDomain, string> = {
       admissions: "Draft internal admissions notes only; do not message candidates automatically.",
       support: "Draft a customer reply for review without sending it.",
       finance: "Draft an internal finance note without issuing refunds, payments, or billing changes.",
+      content: "Draft content assets without publishing them or connecting production providers.",
       generic: "Draft the requested output for human review without sending or applying it.",
     };
 
@@ -1016,6 +1255,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
       admissions: "Prepare admissions review task",
       support: "Prepare support review task",
       finance: "Prepare finance review task",
+      content: "Prepare social media post package",
       generic: "Prepare internal review output",
     };
 
@@ -1112,12 +1352,14 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
         ? "Require support lead approval"
         : "Require support approval",
       finance: "Require finance approval",
+      content: "Require channel owner approval",
       generic: "Require human review",
     };
     const approvalDescriptionByDomain: Record<BlueprintDomain, string> = {
       admissions: "Mark the task as pending human review before any follow-up action.",
       support: `Hold every draft reply and review task until the ${context.approvalOwner} approves it.`,
       finance: "Hold the finance task for approval before any refund, payment, or billing change.",
+      content: `Hold every content draft until the ${context.approvalOwner} approves it for the requested channel.`,
       generic: "Keep the output pending human review before any external, sensitive, or production action.",
     };
 
@@ -1167,6 +1409,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
       admissions: "Block external messaging",
       support: "Block automatic sending",
       finance: "Block external messaging",
+      content: "Block automatic social publishing",
       generic: "Block external messaging",
     };
 
@@ -1786,7 +2029,7 @@ export function buildBlueprint({
 
   return {
     id: `blueprint_${jobId}`,
-    workflow_name: buildWorkflowName(signals, risks),
+    workflow_name: buildWorkflowName(processInput, signals, risks),
     summary: buildSummary(signals, risks, readiness),
     automation_boundary: getAutomationBoundary(signals, risks, readiness),
     trigger: inferTrigger(processInput, signals),

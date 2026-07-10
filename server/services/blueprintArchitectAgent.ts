@@ -23,6 +23,7 @@ import {
 import { blueprintArchitectOutputSchema } from "../schemas/agentOutputs.schema";
 import { callGeminiAgent } from "./geminiProvider";
 import { callGroqAgent } from "./groqProvider";
+import { buildBlueprint, detectBlueprintDomain } from "./blueprintBuilder";
 
 export type RunBlueprintArchitectAgentInput = {
     processInput: string;
@@ -128,7 +129,11 @@ function safeParseJSON(rawText: string): unknown {
     }
 }
 
-function buildFallbackOutput(input: RunBlueprintArchitectAgentInput, provider: AgentOutputProvider, reason: string): BlueprintArchitectOutput {
+export function buildDeterministicBlueprintArchitectFallback(
+    input: RunBlueprintArchitectAgentInput,
+    provider: AgentOutputProvider,
+    reason: string,
+): BlueprintArchitectOutput {
     const needsHumanApproval = input.risks.requires_human_review || input.signals.has_external_action;
     const hasBlocker =
         input.routerDecision.route === "reject"
@@ -141,6 +146,67 @@ function buildFallbackOutput(input: RunBlueprintArchitectAgentInput, provider: A
                 "delete_or_destructive_action",
             ].includes(category),
         );
+
+    if (detectBlueprintDomain(input.processInput) === "content") {
+        const blueprint = buildBlueprint({
+            jobId: "blueprint_architect_fallback",
+            processInput: input.processInput,
+            signals: input.signals,
+            risks: input.risks,
+            readiness: input.readiness,
+            mode: input.mode,
+        });
+
+        return {
+            provider,
+            used_ai: false,
+            fallback_used: true,
+            confidence: "high",
+            status: "fallback_used",
+            reason,
+            workflow_name: blueprint.workflow_name,
+            summary: "Deterministic content-generation fallback prepared draft assets, a review package, channel-owner approval, and a hard block on automatic publishing.",
+            proposed_steps: blueprint.steps.map((step) => ({
+                id: step.id,
+                label: step.label,
+                primitive: step.primitive,
+                description: step.description,
+                input: step.input,
+                output: step.output,
+                automation_policy: step.automation_policy,
+                risk_level: step.risk_level,
+                approval_required: step.approval_required,
+            })),
+            proposed_human_approval_gates: blueprint.human_approval_gates.map((gate) => ({
+                id: gate.id,
+                label: gate.label,
+                reason: gate.reason,
+                applies_to_step_ids: gate.applies_to_step_ids,
+                required: gate.required,
+            })),
+            proposed_risks: input.risks.categories.map((category) => ({
+                id: `risk_${category}`,
+                category,
+                label: category.replaceAll("_", " "),
+                risk_level: input.risks.risk_level,
+                reason: "Detected from the intent-only workflow analysis.",
+                recommendation: "Keep generated assets draft-only and require explicit approval before external publishing.",
+            })),
+            safe_to_automate: blueprint.safe_to_automate,
+            must_remain_draft_only: [
+                "Generated images, voice, video, captions, scripts, and post copy remain drafts.",
+                "No social platform or media-generation provider is connected by this preview.",
+            ],
+            requires_human_approval: ["The channel owner must approve the post package before any external publishing."],
+            blocked_or_not_recommended: [
+                "Automatic social publishing is blocked.",
+                "Production credentials and provider integrations must not be invented or connected.",
+            ],
+            assumptions: blueprint.assumptions,
+            open_questions: input.clarificationPlan.questions.map((question) => question.question),
+            safer_alternative: "Prepare draft content and an internal post package, then let the channel owner review and publish manually.",
+        };
+    }
 
     return {
         provider,
@@ -290,7 +356,7 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
     });
 
     if (!shouldUseAi(input.mode)) {
-        const output = buildFallbackOutput(input, "deterministic", `Blueprint Architect Agent skipped in ${input.mode} mode.`);
+        const output = buildDeterministicBlueprintArchitectFallback(input, "deterministic", `Blueprint Architect Agent skipped in ${input.mode} mode.`);
         const providerAttempts: AgentProviderDebugAttempt[] = [
             {
                 provider: "deterministic",
@@ -439,7 +505,7 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
             ? `Blueprint Architect Agent provider output failed validation or parsing. ${providerErrors.join(" | ")}`
             : "No Blueprint Architect Agent provider key was configured. Deterministic fallback was used.";
 
-    const output = buildFallbackOutput(input, "deterministic", reason);
+    const output = buildDeterministicBlueprintArchitectFallback(input, "deterministic", reason);
 
     providerAttempts.push({
         provider: "deterministic",
