@@ -7,6 +7,11 @@ import type {
   RiskSummary,
   SignalSummary,
 } from "../../shared/types/workflow";
+import type { StructuredWorkflowIntent } from "../../shared/types/structuredWorkflowIntent";
+import {
+  buildSafetyConstraintsSection,
+  buildWorkflowIntentSection,
+} from "../services/structuredCompileInput";
 
 export const blueprintArchitectSystemPrompt = `You are the FlowForge Blueprint Architect Agent.
 
@@ -137,22 +142,19 @@ Rules:
 - Do not invent integrations, credentials, or production connectors.`;
 
 export function buildBlueprintArchitectUserPrompt(input: {
-  processInput: string;
+  intent: StructuredWorkflowIntent;
+  safetyConstraints: string[];
   signals: SignalSummary;
   risks: RiskSummary;
   readiness: AutomationReadinessScore;
   routerDecision: RouterDecision;
   clarificationPlan: ClarificationPlan;
 }): string {
-  return JSON.stringify(
-    {
+  const context = JSON.stringify({
       task: "Propose a compact safe non-executing automation blueprint.",
-      process_input: input.processInput.slice(0, 900),
       router_decision: {
         route: input.routerDecision.route,
         confidence: input.routerDecision.confidence,
-        reason: input.routerDecision.reason,
-        safety_note: input.routerDecision.safety_note,
       },
       signal_summary: {
         has_trigger: input.signals.has_trigger,
@@ -184,10 +186,6 @@ export function buildBlueprintArchitectUserPrompt(input: {
       clarification_plan: {
         needed: input.clarificationPlan.needed,
         missing_fields: input.clarificationPlan.missing_fields,
-        questions: input.clarificationPlan.questions.slice(0, 4).map((question) => ({
-          field: question.field,
-          question: question.question,
-        })),
       },
       output_requirements: {
         return_json_only: true,
@@ -197,8 +195,12 @@ export function buildBlueprintArchitectUserPrompt(input: {
         max_gates: 2,
         max_risks: 3,
       },
-    },
-    null,
-    2,
-  );
+    }, null, 2);
+
+  return [
+    buildWorkflowIntentSection(input.intent),
+    buildSafetyConstraintsSection(input.safetyConstraints),
+    "ARCHITECT CONTEXT",
+    context,
+  ].join("\n\n");
 }

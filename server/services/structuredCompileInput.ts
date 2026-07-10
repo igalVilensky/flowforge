@@ -1,122 +1,214 @@
+import type { ClarificationSessionAnswer } from "../../shared/types/clarificationSession";
 import type {
-  ClarificationKnownFacts,
-  ClarificationSessionAnswer,
-} from "../../shared/types/clarificationSession";
+  StructuredCompileRequest,
+  StructuredWorkflowIntent,
+} from "../../shared/types/structuredWorkflowIntent";
 import {
-  getConcreteKnownFacts,
+  createEmptyStructuredWorkflowIntent,
+  getConcreteStructuredWorkflowIntent,
+  inferStructuredWorkflowIntent,
   isConcreteKnownFact,
-  isSafetyBoundaryAnswer,
 } from "./clarificationFacts";
 
-export type StructuredCompileInput = {
+export const STRUCTURED_COMPILE_INPUT_PREFIX = "FLOWFORGE_COMPILE_INPUT_V2\n";
+export const LEGACY_STRUCTURED_COMPILE_INPUT_PREFIX = "FLOWFORGE_COMPILE_INPUT_V1\n";
+
+export type NormalizedCompileRequest = StructuredCompileRequest & {
+  semantic_intent: string;
+  source: "canonical" | "legacy" | "plain_text";
+};
+
+type LegacyStructuredCompileInput = {
   original_input: string;
   clarified_intent: string;
-  known_facts: ClarificationKnownFacts;
+  known_facts: Record<string, unknown>;
   clarification_answers: ClarificationSessionAnswer[];
   safety_constraints: string[];
 };
-
-export type CompileAnalysisInput = {
-  intent: string;
-  safetyConstraints: string[];
-  structuredInput?: StructuredCompileInput;
-};
-
-export const STRUCTURED_COMPILE_INPUT_PREFIX = "FLOWFORGE_COMPILE_INPUT_V1\n";
 
 function normalize(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
 function uniqueConcreteStrings(values: Array<string | undefined>): string[] {
-  return [...new Set(values.filter((value): value is string => Boolean(value && isConcreteKnownFact(value))).map(normalize))];
+  return [...new Set(
+    values
+      .filter((value): value is string => Boolean(value && isConcreteKnownFact(value)))
+      .map(normalize),
+  )];
 }
 
-function isStructuredCompileInput(value: unknown): value is StructuredCompileInput {
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isClarificationAnswers(value: unknown): value is ClarificationSessionAnswer[] {
+  return Array.isArray(value) && value.every((item) => {
+    if (!item || typeof item !== "object") return false;
+    const record = item as Record<string, unknown>;
+    return typeof record.question_id === "string"
+      && typeof record.question === "string"
+      && typeof record.answer === "string";
+  });
+}
+
+function isStructuredWorkflowIntent(value: unknown): value is StructuredWorkflowIntent {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+
+  return record.version === "1"
+    && typeof record.original_input === "string"
+    && isStringArray(record.input_sources)
+    && isStringArray(record.input_data)
+    && isStringArray(record.desired_outputs)
+    && isStringArray(record.output_destinations)
+    && isStringArray(record.notification_targets)
+    && isStringArray(record.decision_rules)
+    && isStringArray(record.external_actions);
+}
+
+function isStructuredCompileRequest(value: unknown): value is StructuredCompileRequest {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+
+  return isStructuredWorkflowIntent(record.intent)
+    && isStringArray(record.safety_constraints)
+    && isClarificationAnswers(record.clarification_answers);
+}
+
+function isLegacyStructuredCompileInput(value: unknown): value is LegacyStructuredCompileInput {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
 
   return typeof record.original_input === "string"
     && typeof record.clarified_intent === "string"
     && Boolean(record.known_facts && typeof record.known_facts === "object")
-    && Array.isArray(record.clarification_answers)
-    && Array.isArray(record.safety_constraints)
-    && record.safety_constraints.every((constraint) => typeof constraint === "string");
+    && isClarificationAnswers(record.clarification_answers)
+    && isStringArray(record.safety_constraints);
 }
 
-export function serializeStructuredCompileInput(input: StructuredCompileInput): string {
-  return `${STRUCTURED_COMPILE_INPUT_PREFIX}${JSON.stringify({
-    ...input,
-    known_facts: getConcreteKnownFacts(input.known_facts),
+function pushFact(target: string[], value: unknown): void {
+  if (typeof value === "string" && isConcreteKnownFact(value)) {
+    target.push(normalize(value));
+  }
+}
+
+function adaptLegacyStructuredCompileInput(input: LegacyStructuredCompileInput): StructuredCompileRequest {
+  const facts = input.known_facts;
+  const intent = createEmptyStructuredWorkflowIntent(input.original_input);
+
+  if (typeof facts.workflow_goal === "string") intent.goal = facts.workflow_goal;
+  if (typeof facts.task_type === "string") intent.task_type = facts.task_type;
+  if (typeof facts.trigger === "string") intent.trigger = facts.trigger;
+  if (typeof facts.human_owner === "string") intent.human_owner = facts.human_owner;
+  if (typeof facts.approval_boundary === "string") intent.approval_boundary = facts.approval_boundary;
+  if (typeof facts.external_action_boundary === "string") intent.external_action_boundary = facts.external_action_boundary;
+  if (typeof facts.success_criteria === "string") intent.success_criteria = facts.success_criteria;
+
+  pushFact(intent.input_sources, facts.data_source);
+  if (isStringArray(facts.input_data)) intent.input_data.push(...facts.input_data);
+  pushFact(intent.desired_outputs, facts.desired_output);
+  if (isStringArray(facts.decision_rules)) intent.decision_rules.push(...facts.decision_rules);
+
+  if (!intent.goal && isConcreteKnownFact(input.clarified_intent, "goal")) {
+    intent.goal = input.clarified_intent;
+  }
+
+  return {
+    intent: getConcreteStructuredWorkflowIntent(intent),
+    clarification_answers: input.clarification_answers,
     safety_constraints: uniqueConcreteStrings(input.safety_constraints),
+  };
+}
+
+function line(label: string, value: string | undefined): string | undefined {
+  return value ? `- ${label}: ${value}` : undefined;
+}
+
+function listLine(label: string, values: string[]): string | undefined {
+  return values.length > 0 ? `- ${label}: ${values.join("; ")}` : undefined;
+}
+
+export function buildWorkflowIntentSection(intent: StructuredWorkflowIntent): string {
+  const concrete = getConcreteStructuredWorkflowIntent(intent);
+  return [
+    "WORKFLOW INTENT",
+    line("Original input", concrete.original_input),
+    line("Goal", concrete.goal),
+    line("Task type", concrete.task_type),
+    line("Trigger", concrete.trigger),
+    listLine("Input sources", concrete.input_sources),
+    listLine("Input data", concrete.input_data),
+    listLine("Desired outputs", concrete.desired_outputs),
+    listLine("Output destinations", concrete.output_destinations),
+    listLine("Notification targets", concrete.notification_targets),
+    listLine("Decision rules", concrete.decision_rules),
+    line("Human owner", concrete.human_owner),
+    line("Approval boundary", concrete.approval_boundary),
+    line("External-action boundary", concrete.external_action_boundary),
+    listLine("External actions", concrete.external_actions),
+    line("Success criteria", concrete.success_criteria),
+  ].filter((value): value is string => Boolean(value)).join("\n");
+}
+
+export function buildSafetyConstraintsSection(safetyConstraints: string[]): string {
+  const constraints = uniqueConcreteStrings(safetyConstraints);
+  return [
+    "SAFETY CONSTRAINTS",
+    ...(constraints.length > 0 ? constraints : ["No additional request-specific constraints."])
+      .map((constraint) => `- ${constraint}`),
+  ].join("\n");
+}
+
+export function serializeStructuredCompileInput(input: StructuredCompileRequest): string {
+  return `${STRUCTURED_COMPILE_INPUT_PREFIX}${JSON.stringify({
+    intent: getConcreteStructuredWorkflowIntent(input.intent),
+    safety_constraints: uniqueConcreteStrings(input.safety_constraints),
+    clarification_answers: input.clarification_answers,
   }, null, 2)}`;
 }
 
-function buildIntentOnlyText(input: StructuredCompileInput): string {
-  const facts = getConcreteKnownFacts(input.known_facts);
-  const semanticAnswers = input.clarification_answers
-    .filter((answer) => !isSafetyBoundaryAnswer(answer))
-    .map((answer) => answer.answer);
-  const factLines = [
-    facts.task_type ? `Task type: ${facts.task_type}` : undefined,
-    facts.trigger ? `Trigger: ${facts.trigger}` : undefined,
-    facts.data_source ? `Source material: ${facts.data_source}` : undefined,
-    facts.input_data?.length ? `Input data: ${facts.input_data.join(", ")}` : undefined,
-    facts.desired_output ? `Desired output: ${facts.desired_output}` : undefined,
-    facts.decision_rules?.length ? `Decision rules: ${facts.decision_rules.join("; ")}` : undefined,
-    facts.human_owner ? `Human reviewer: ${facts.human_owner}` : undefined,
-    facts.success_criteria ? `Success criteria: ${facts.success_criteria}` : undefined,
-  ];
-  const hasApprovalBoundary = Boolean(
-    facts.approval_boundary
-    || facts.external_action_boundary
-    || input.clarification_answers.some(isSafetyBoundaryAnswer),
-  );
-
-  if (hasApprovalBoundary) {
-    factLines.push("Approval boundary: External action is blocked until explicit human approval.");
-  }
-
-  return uniqueConcreteStrings([
-    input.original_input,
-    input.clarified_intent,
-    ...semanticAnswers,
-    ...factLines,
-  ]).join("\n");
+function normalizedResult(
+  request: StructuredCompileRequest,
+  source: NormalizedCompileRequest["source"],
+): NormalizedCompileRequest {
+  const intent = getConcreteStructuredWorkflowIntent(request.intent);
+  return {
+    intent,
+    clarification_answers: request.clarification_answers,
+    safety_constraints: uniqueConcreteStrings(request.safety_constraints),
+    semantic_intent: buildWorkflowIntentSection(intent),
+    source,
+  };
 }
 
-export function parseCompileAnalysisInput(rawInput: string): CompileAnalysisInput {
+export function normalizeCompileRequest(rawInput: string): NormalizedCompileRequest {
   const trimmed = rawInput.trim();
 
-  if (!trimmed.startsWith(STRUCTURED_COMPILE_INPUT_PREFIX)) {
-    return {
-      intent: trimmed,
-      safetyConstraints: [],
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed.slice(STRUCTURED_COMPILE_INPUT_PREFIX.length)) as unknown;
-
-    if (!isStructuredCompileInput(parsed)) {
-      throw new Error("Invalid structured compile input shape.");
+  if (trimmed.startsWith(STRUCTURED_COMPILE_INPUT_PREFIX)) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(STRUCTURED_COMPILE_INPUT_PREFIX.length)) as unknown;
+      if (isStructuredCompileRequest(parsed)) return normalizedResult(parsed, "canonical");
+    } catch {
+      // Invalid serialized input is treated as plain text at this one compatibility boundary.
     }
-
-    const structuredInput: StructuredCompileInput = {
-      ...parsed,
-      known_facts: getConcreteKnownFacts(parsed.known_facts),
-      safety_constraints: uniqueConcreteStrings(parsed.safety_constraints),
-    };
-
-    return {
-      intent: buildIntentOnlyText(structuredInput),
-      safetyConstraints: structuredInput.safety_constraints,
-      structuredInput,
-    };
-  } catch {
-    return {
-      intent: trimmed,
-      safetyConstraints: [],
-    };
   }
+
+  if (trimmed.startsWith(LEGACY_STRUCTURED_COMPILE_INPUT_PREFIX)) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(LEGACY_STRUCTURED_COMPILE_INPUT_PREFIX.length)) as unknown;
+      if (isLegacyStructuredCompileInput(parsed)) {
+        return normalizedResult(adaptLegacyStructuredCompileInput(parsed), "legacy");
+      }
+    } catch {
+      // Invalid legacy input is treated as plain text at this one compatibility boundary.
+    }
+  }
+
+  const intent = inferStructuredWorkflowIntent({ originalInput: trimmed, answers: [] });
+  return normalizedResult({
+    intent,
+    clarification_answers: [],
+    safety_constraints: [],
+  }, "plain_text");
 }

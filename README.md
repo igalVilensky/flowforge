@@ -24,6 +24,7 @@ FlowForge is intentionally conservative. The useful output is not "automation ha
 FlowForge currently includes:
 
 - guided clarification for vague requests
+- one canonical `StructuredWorkflowIntent` shared by clarification, readiness, scanning, and blueprint design
 - concrete-fact clarification readiness that rejects placeholder/default values
 - compile modes: `rule_only`, `balanced`, and `full`
 - agent-assisted routing, clarification, blueprint generation, and safety review
@@ -113,22 +114,27 @@ What kind of tasks should FlowForge help with first: emails, tickets, documents,
 
 ### 2. FlowForge clarifies until the request is useful
 
-The clarification session tracks previous answers and stops when enough practical detail is known. Readiness requires concrete user-provided or provider-extracted facts; placeholder text such as "the source mentioned by the user" does not resolve a missing field. A valid provider response with `status="needs_answer"`, `ready_to_compile=false`, and a new question is preserved unless the question limit is reached or the question was already answered.
+The clarification session tracks previous answers and progressively constructs one canonical `StructuredWorkflowIntent`. Readiness counts only concrete, confirmed user information; provider suggestions and placeholder text such as "the source mentioned by the user" do not resolve a missing field. A valid provider response with `status="needs_answer"`, `ready_to_compile=false`, and a new relevant question remains open. Duplicate-question and maximum-question guards prevent loops without compiling invented facts.
 
 Example collected facts:
 
 ```text
 Task type: email or support ticket management
 Trigger: new support ticket or weekly review
-Source: email inbox
-Output: summary, draft reply, tags, internal task
-Human reviewer: support lead
-Boundary: no reply is sent automatically
+Input source: email inbox
+Input data: new customer emails
+Desired outputs: summary, draft reply, tags, internal task
+Output destination: support review queue
+Notification target: support lead
+Human owner: support lead
+Approval boundary: no reply is sent automatically
 ```
+
+Input sources and input data are intentionally distinct from desired outputs and output destinations. Notification recipients are stored separately from both. A destination answer such as "save assets in the Promo Drafts folder and email the marketing manager" becomes an output destination plus a notification target; it never becomes source material.
 
 ### 3. FlowForge compiles a blueprint
 
-When the session is ready, the page calls `/api/compile` with the clarified prompt. Guided clarification uses a versioned structured compile envelope: intent, concrete known facts, and answer values feed semantic scanning, while generic safety constraints remain separate for the final non-executing guard. Safety boilerplate therefore cannot choose a finance, account-access, or destructive workflow domain. The compiler returns a `CompileJob` with a safe blueprint, safety outcome, agent outputs, trace/debug data, and observability details.
+When the session is ready, the page calls `/api/compile` with a versioned structured envelope containing the canonical intent, clarification history, and separate safety constraints. Direct plain-text and legacy compile requests are normalized once at the API boundary into the same canonical intent; streaming and non-streaming compilation then share one pipeline. Safety boilerplate therefore cannot choose a finance, account-access, or destructive workflow domain. The compiler returns a `CompileJob` with a safe blueprint, safety outcome, agent outputs, trace/debug data, and observability details.
 
 Compiled blueprint steps appear as compact horizontal workflow nodes with readable step titles and color-coded index markers for quick safety/status recognition. Detailed metadata stays hidden from the first-glance node view; descriptions, automation policy, execution boundaries, approval requirements, safety notes, suggested n8n role, and raw step JSON are available on click. When there are many steps, only the workflow map section scrolls horizontally.
 
@@ -144,7 +150,7 @@ FlowForge exposes the agent path instead of hiding it behind a single answer.
 
 ### Guided Clarifier
 
-Reads a vague automation idea, extracts concrete facts from answer IDs/kinds and answer values, asks one contextual question at a time, and can produce a structured rewritten compile prompt. Valid provider `needs_answer` responses remain open, while duplicate-question and maximum-question protections prevent loops.
+Reads a vague automation idea, maps stable question IDs and kinds into `StructuredWorkflowIntent`, and asks one contextual question at a time. Question-text inference is only a fallback for unknown IDs. The Clarifier separates input sources, output destinations, desired outputs, notification targets, concise human owners, and full approval boundaries before readiness is evaluated.
 
 ### Router
 
@@ -156,7 +162,9 @@ Checks whether the compile request still needs missing details before a blueprin
 
 ### Blueprint Architect
 
-Builds or improves the non-executing workflow preview with step roles, policies, and execution boundaries.
+Consumes the canonical intent directly and builds or improves the non-executing workflow preview with step roles, policies, and execution boundaries. Its prompt contains separate `WORKFLOW INTENT` and `SAFETY CONSTRAINTS` sections rather than a flattened clarification transcript.
+
+The current visible agent-stage structure and progress count are unchanged. Per-agent provider/model selection and the planned four-visible-stage UI simplification are not included yet.
 
 ### Safety Critic
 
@@ -316,7 +324,7 @@ ClarificationSessionResponse
 
 The clarification response includes:
 
-- known facts
+- canonical structured workflow intent
 - previous answers
 - one next question, or
 - `ready_to_compile=true`
@@ -366,7 +374,8 @@ The endpoint validates that the model output is JSON, includes `nodes` and `conn
 - TypeScript
 - Nuxt server routes
 - Zod
-- Groq provider
+- OpenAI provider for Clarifier and Blueprint Architect (`gpt-5-nano` by default)
+- Groq fallback
 - Gemini fallback
 - deterministic fallbacks
 - npm
@@ -386,6 +395,7 @@ shared/
     clarificationSession.ts
     compileJob.ts
     n8nWorkflow.ts
+    structuredWorkflowIntent.ts
     workflow.ts
 
 server/
@@ -416,26 +426,33 @@ server/
     safetyCritic.ts
     schemaValidator.ts
     signalScanner.ts
+    structuredCompileInput.ts
+    structuredIntentReadiness.ts
+    openaiProvider.ts
 ```
 
 ## Main Compile Pipeline
 
 ```text
-POST /api/compile
-  -> structuredCompileInput (intent/safety separation)
+User request
+  -> Guided Clarifier
+  -> canonical StructuredWorkflowIntent
+  -> structured intent readiness
+  -> POST /api/compile or /api/compile-stream
+  -> structuredCompileInput (single normalization boundary; intent/safety separation)
   -> signalScanner
   -> riskScanner
   -> readinessScorer
   -> routerAgent
   -> clarificationPlanner
   -> clarificationAgent
-  -> blueprintBuilder / Blueprint Architect
+  -> Blueprint Architect (canonical intent) / blueprintBuilder
   -> safetyCritic / Safety Critic
   -> schemaValidator
   -> CompileJob response
 ```
 
-Provider-backed agents are mode-dependent and fallback-aware. Deterministic scanners, schema validation, and safety boundaries remain part of the compiler path. The deterministic fallback recognizes admissions, support, finance, content/media generation, and generic workflows. Content fallback output stays draft-only, requires channel-owner approval before posting, blocks automatic publishing, and never claims production media or social-platform integrations.
+Provider-backed agents are mode-dependent and fallback-aware. For the Clarifier and Blueprint Architect the order is OpenAI, Groq, Gemini, then deterministic fallback, stopping after the first valid result. Deterministic scanners, schema validation, and safety boundaries remain part of the compiler path. The deterministic fallback recognizes admissions, support, finance, content/media generation, and generic workflows. Content fallback output stays draft-only, uses the confirmed human owner for approval, blocks automatic publishing, and never claims production media or social-platform integrations.
 
 ## Install
 
@@ -512,9 +529,21 @@ FlowForge can run without AI in `rule_only` mode.
 For `balanced` or `full` mode, configure providers if available:
 
 ```bash
+OPENAI_API_KEY=...
+OPENAI_AGENT_MODEL=gpt-5-nano
 GROQ_API_KEY=...
 GEMINI_API_KEY=...
 ```
+
+Optional OpenAI agent overrides are `OPENAI_CLARIFIER_MODEL` and `OPENAI_BLUEPRINT_MODEL`. Model resolution is agent-specific override, then `OPENAI_AGENT_MODEL`, then `gpt-5-nano`. All OpenAI calls and key access stay in Nuxt server services; never expose `OPENAI_API_KEY` through `NUXT_PUBLIC_` runtime config, logs, traces, or responses.
+
+Clarifier and Blueprint Architect provider order:
+
+```text
+OpenAI -> Groq -> Gemini -> deterministic fallback
+```
+
+Provider/model selection controls are not exposed in the UI in this milestone.
 
 For experimental n8n JSON draft generation:
 

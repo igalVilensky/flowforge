@@ -1,4 +1,5 @@
 import type { RiskCategory, SignalSummary, WorkflowPrimitive } from "../../shared/types/workflow";
+import type { StructuredWorkflowIntent } from "../../shared/types/structuredWorkflowIntent";
 import {
   clearOutputPhrases,
   decisionPointPhrases,
@@ -356,18 +357,38 @@ function getMissingCriticalInfo(
   return missingInfo;
 }
 
-export function scanSignals(input: string): SignalSummary {
-  const normalizedInput = normalizeInput(input);
+export function scanSignals(input: string | StructuredWorkflowIntent): SignalSummary {
+  const structuredIntent = typeof input === "string" ? undefined : input;
+  const semanticInput = typeof input === "string"
+    ? input
+    : [
+        input.original_input,
+        input.goal,
+        input.task_type,
+        input.trigger,
+        ...input.input_sources,
+        ...input.input_data,
+        ...input.desired_outputs,
+        ...input.notification_targets,
+        ...input.decision_rules,
+        input.human_owner,
+        input.approval_boundary,
+        input.external_action_boundary,
+        ...input.external_actions,
+        input.success_criteria,
+      ].filter((value): value is string => Boolean(value)).join("\n");
+  const normalizedInput = normalizeInput(semanticInput);
   const riskFlags = detectRiskFlags(normalizedInput);
   const workflowPrimitives = detectWorkflowPrimitives(normalizedInput, riskFlags);
 
   const hasScheduledTrigger = matchesAny(normalizedInput, schedulePhrases);
-  const hasTrigger = hasScheduledTrigger || matchesAny(normalizedInput, triggerPhrases);
+  const hasTrigger = Boolean(structuredIntent?.trigger) || hasScheduledTrigger || matchesAny(normalizedInput, triggerPhrases);
   const hasRepeatedProcess = matchesAny(normalizedInput, repeatedProcessPhrases);
   const hasExternalAction = riskFlags.includes("external_communication");
   const hasSensitiveData = riskFlags.some((category) => sensitiveRiskCategories.includes(category));
   const hasRealWorldExecutionRisk = riskFlags.includes("real_world_execution");
   const hasClearOutput =
+    Boolean(structuredIntent?.desired_outputs.length) ||
     matchesAny(normalizedInput, clearOutputPhrases) ||
     workflowPrimitives.some((primitive) => outputPrimitives.includes(primitive));
   const hasDecisionPoints =
@@ -375,9 +396,15 @@ export function scanSignals(input: string): SignalSummary {
     workflowPrimitives.some((primitive) =>
       ["classification", "routing", "approval", "risk_detection", "validation", "escalation"].includes(primitive),
     );
-  const hasDataSource = hasNamedDataSource(normalizedInput);
-  const hasOwner = hasApprovalOwner(normalizedInput);
-  const hasBoundary = hasExternalActionBoundary(normalizedInput);
+  const hasDataSource = structuredIntent
+    ? structuredIntent.input_sources.length > 0
+    : hasNamedDataSource(normalizedInput);
+  const hasOwner = structuredIntent
+    ? Boolean(structuredIntent.human_owner)
+    : hasApprovalOwner(normalizedInput);
+  const hasBoundary = structuredIntent
+    ? Boolean(structuredIntent.approval_boundary || structuredIntent.external_action_boundary)
+    : hasExternalActionBoundary(normalizedInput);
   const hasHumanActor = hasOwner;
   const hasSystemActor = matchesAny(normalizedInput, systemActorPhrases) || hasDataSource || workflowPrimitives.length > 0;
   const needsApproval =

@@ -31,14 +31,17 @@ The JSON must match this shape:
 }
 
 Allowed question field values:
+- task_type
 - trigger
+- input_source
 - input_data
-- output
+- desired_output
+- output_destination
+- notification_target
 - decision_rules
 - human_owner
 - approval_boundary
 - external_action_boundary
-- data_source
 - success_criteria
 
 Rules:

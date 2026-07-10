@@ -17,7 +17,8 @@ import { scanSignals } from "../services/signalScanner";
 import { routeCompileRequest } from "../services/routerAgent";
 import { runSafetyCriticAgent } from "../services/safetyCriticAgent";
 import { buildSafetyCriticReview } from "../services/safetyCritic";
-import { parseCompileAnalysisInput } from "../services/structuredCompileInput";
+import { normalizeCompileRequest } from "../services/structuredCompileInput";
+import { assessStructuredWorkflowIntentReadiness } from "../services/structuredIntentReadiness";
 
 const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
 
@@ -74,9 +75,11 @@ export async function runCompilePipeline(input: {
   emit?: EmitCompileProgress;
 }): Promise<CompileJob> {
   const { rawInput, mode, emit } = input;
-  const analysisInput = parseCompileAnalysisInput(rawInput);
-  const semanticInput = analysisInput.intent;
-  const signals = scanSignals(semanticInput);
+  const analysisInput = normalizeCompileRequest(rawInput);
+  const structuredIntent = analysisInput.intent;
+  const semanticInput = analysisInput.semantic_intent;
+  const intentReadiness = assessStructuredWorkflowIntentReadiness(structuredIntent);
+  const signals = scanSignals(structuredIntent);
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
   await emitProgress(emit, {
@@ -106,7 +109,8 @@ export async function runCompilePipeline(input: {
     message: "Checking whether required workflow details are present.",
   });
   const clarificationPlan = buildClarificationPlan({
-    processInput: semanticInput,
+    intent: structuredIntent,
+    intentReadiness,
     signals,
     risks,
     readiness,
@@ -160,7 +164,7 @@ export async function runCompilePipeline(input: {
   // but they should not block Blueprint Architect or Safety Critic Agent from
   // producing a non-executing preview.
   const blockingMissingFields = clarificationPlan.missing_fields.filter((field) => field !== "success_criteria");
-  const shouldSkipDesignAgents = blockingMissingFields.length > 0;
+  const shouldSkipDesignAgents = !intentReadiness.ready;
 
   const displayedPrimitives = signals.workflow_primitives.filter((primitive) => {
     if (primitive === "approval" && !risks.requires_human_review) {
@@ -200,13 +204,14 @@ export async function runCompilePipeline(input: {
   const result = buildBlueprint({
     jobId,
     processInput: semanticInput,
+    intent: structuredIntent,
     signals,
     risks,
     readiness,
     mode,
   });
 
-  for (const constraint of analysisInput.safetyConstraints) {
+  for (const constraint of analysisInput.safety_constraints) {
     const assumption = `Clarification safety constraint: ${constraint}`;
 
     if (!result.assumptions.includes(assumption)) {
@@ -357,7 +362,8 @@ export async function runCompilePipeline(input: {
       debug: skippedBlueprintArchitectDebug,
     }
     : await runBlueprintArchitectAgent({
-      processInput: semanticInput,
+      intent: structuredIntent,
+      safetyConstraints: analysisInput.safety_constraints,
       mode,
       signals,
       risks,
@@ -742,7 +748,7 @@ export async function runCompilePipeline(input: {
         metadata: {
           readiness_score: readiness.score,
           risk_count: risks.categories.length,
-          separated_safety_constraint_count: analysisInput.safetyConstraints.length,
+          separated_safety_constraint_count: analysisInput.safety_constraints.length,
         },
       },
       {

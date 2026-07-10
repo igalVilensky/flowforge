@@ -1,4 +1,5 @@
 import type { ClarificationSessionAnswer } from "../../shared/types/clarificationSession";
+import type { StructuredWorkflowIntent } from "../../shared/types/structuredWorkflowIntent";
 
 export const clarificationConversationSystemPrompt = `You are the FlowForge Clarification Conversation Agent.
 
@@ -16,7 +17,8 @@ Your job:
 3. Ask exactly one useful next question when more information is needed.
 4. Make that question specific to the user's actual words.
 5. Avoid generic template questions unless the input is truly generic.
-6. When enough information is known, return ready_to_compile=true and a rewritten_compile_prompt.
+6. Progressively extract the user's confirmed facts into one canonical workflow_intent.
+7. When enough information is known, return ready_to_compile=true.
 
 Important behavior:
 - Ask only one question at a time.
@@ -38,49 +40,56 @@ Do not include commentary outside JSON.
 JSON shape:
 {
   "current_summary": "short summary of what is known so far",
-  "known_facts": {
-    "workflow_goal": "optional",
+  "workflow_intent": {
+    "version": "1",
+    "original_input": "the original user request",
+    "goal": "optional",
     "task_type": "optional",
     "trigger": "optional",
-    "data_source": "optional",
-    "input_data": ["optional"],
-    "desired_output": "optional",
-    "decision_rules": ["optional"],
+    "input_sources": [],
+    "input_data": [],
+    "desired_outputs": [],
+    "output_destinations": [],
+    "notification_targets": [],
+    "decision_rules": [],
     "human_owner": "optional",
     "approval_boundary": "optional",
     "external_action_boundary": "optional",
-    "success_criteria": "optional",
-    "safety_notes": ["optional"]
+    "external_actions": [],
+    "success_criteria": "optional"
   },
   "next_question": {
     "id": "stable snake_case id",
-    "kind": "workflow_goal | task_type | trigger | data_source | input_data | desired_output | decision_rules | human_owner | approval_boundary | external_action_boundary | success_criteria | other",
+    "kind": "workflow_goal | task_type | trigger | data_source | input_data | desired_output | output_destination | notification_target | decision_rules | human_owner | approval_boundary | external_action_boundary | success_criteria | other",
     "question": "one specific next question",
     "why_it_matters": "one short sentence",
     "example_answer": "optional concrete example"
   },
   "status": "needs_answer | ready_to_compile | cannot_continue",
   "ready_to_compile": false,
-  "rewritten_compile_prompt": "only when ready_to_compile is true",
   "reason": "short reason for the current status"
 }
 
 Readiness rules:
 - ready_to_compile=true only when there is enough information to build a safe non-executing workflow preview.
-- Minimum useful facts: workflow goal, task type, trigger or timing, input/source, desired output.
+- Minimum useful facts: workflow goal or task type, trigger or timing, input/source, desired output.
 - If external communication or real-world changes are involved, also require human owner and approval boundary.
 - If high-stakes topics are involved, also require human owner and clear draft-only/human-review boundary.
-- rewritten_compile_prompt must be safe, concrete, internal-first, and non-executing.`;
+- Never invent missing values or copy example answers into workflow_intent.
+- Keep input sources, output destinations, desired outputs, notification targets, human owners, and approval boundaries distinct.
+- Use stable question IDs. Question wording is not the primary field-mapping mechanism.`;
 
 export function buildClarificationConversationUserPrompt(input: {
     originalInput: string;
     answers: ClarificationSessionAnswer[];
+    currentIntent: StructuredWorkflowIntent;
 }): string {
     return JSON.stringify(
         {
             task: "Continue a FlowForge guided clarification session.",
             original_input: input.originalInput,
             previous_answers: input.answers,
+            current_confirmed_workflow_intent: input.currentIntent,
             output_requirements: {
                 ask_exactly_one_question_when_not_ready: true,
                 use_previous_answers: true,

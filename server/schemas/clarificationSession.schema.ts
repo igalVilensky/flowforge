@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type {
-    ClarificationKnownFacts,
     ClarificationNextQuestion,
+    ClarificationProviderAttempt,
     ClarificationQuestionKind,
     ClarificationSession,
     ClarificationSessionAnswer,
@@ -9,6 +9,7 @@ import type {
     ClarificationSessionResponse,
     ClarificationSessionStatus,
 } from "../../shared/types/clarificationSession";
+import { structuredWorkflowIntentSchema } from "./structuredWorkflowIntent.schema";
 
 const requiredString = z.string().trim().min(1);
 
@@ -19,6 +20,8 @@ export const clarificationQuestionKindSchema = z.enum([
     "data_source",
     "input_data",
     "desired_output",
+    "output_destination",
+    "notification_target",
     "decision_rules",
     "human_owner",
     "approval_boundary",
@@ -39,21 +42,6 @@ export const clarificationSessionAnswerSchema = z.object({
     answer: requiredString,
 }).strict() satisfies z.ZodType<ClarificationSessionAnswer>;
 
-export const clarificationKnownFactsSchema = z.object({
-    workflow_goal: z.string().trim().optional(),
-    task_type: z.string().trim().optional(),
-    trigger: z.string().trim().optional(),
-    data_source: z.string().trim().optional(),
-    input_data: z.array(requiredString).optional(),
-    desired_output: z.string().trim().optional(),
-    decision_rules: z.array(requiredString).optional(),
-    human_owner: z.string().trim().optional(),
-    approval_boundary: z.string().trim().optional(),
-    external_action_boundary: z.string().trim().optional(),
-    success_criteria: z.string().trim().optional(),
-    safety_notes: z.array(requiredString).optional(),
-}).strict() satisfies z.ZodType<ClarificationKnownFacts>;
-
 export const clarificationNextQuestionSchema = z.object({
     id: requiredString,
     kind: clarificationQuestionKindSchema,
@@ -66,7 +54,7 @@ export const clarificationSessionSchema = z.object({
     session_id: requiredString,
     original_input: requiredString,
     current_summary: requiredString,
-    known_facts: clarificationKnownFactsSchema,
+    intent: structuredWorkflowIntentSchema,
     answers: z.array(clarificationSessionAnswerSchema),
     next_question: clarificationNextQuestionSchema.nullable(),
     status: clarificationSessionStatusSchema,
@@ -80,12 +68,20 @@ export const clarificationSessionRequestSchema = z.object({
     answers: z.array(clarificationSessionAnswerSchema).optional().default([]),
 }).strict() satisfies z.ZodType<ClarificationSessionRequest>;
 
-export const clarificationProviderSchema = z.enum(["groq", "gemini", "deterministic"]);
+export const clarificationProviderSchema = z.enum(["openai", "groq", "gemini", "deterministic"]);
+
+export const clarificationProviderAttemptSchema = z.object({
+    provider: clarificationProviderSchema,
+    attempted: z.boolean(),
+    success: z.boolean(),
+    error_summary: z.string().optional(),
+}).strict() satisfies z.ZodType<ClarificationProviderAttempt>;
 
 export const clarificationSessionResponseSchema = z.object({
     session: clarificationSessionSchema,
     used_ai: z.boolean(),
     provider: clarificationProviderSchema,
     fallback_used: z.boolean(),
+    provider_attempts: z.array(clarificationProviderAttemptSchema),
     raw_response: z.string().optional(),
 }).strict() satisfies z.ZodType<ClarificationSessionResponse>;

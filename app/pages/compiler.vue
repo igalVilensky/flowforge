@@ -697,6 +697,7 @@ function compactText(value: unknown, maxLength = 220) {
 
 function providerDisplayName(provider?: string) {
   if (!provider) return "Provider";
+  if (provider === "openai") return "OpenAI";
   if (provider === "groq") return "Groq";
   if (provider === "gemini") return "Gemini";
   if (provider === "deterministic") return "Deterministic";
@@ -1027,13 +1028,13 @@ const observabilityCards = computed<ObservabilityCard[]>(() => {
 
 const knownFactItems = computed<DetailItem[]>(() => {
   const items: DetailItem[] = [];
-  const facts = clarificationSession.value?.known_facts;
+  const facts = clarificationSession.value?.intent;
 
-  if (facts?.workflow_goal) addFact(items, "Goal", facts.workflow_goal);
+  if (facts?.goal) addFact(items, "Goal", facts.goal);
   if (facts?.task_type) addFact(items, "Task", facts.task_type);
   if (facts?.trigger) addFact(items, "Trigger", facts.trigger);
-  if (facts?.data_source) addFact(items, "Source", facts.data_source);
-  if (facts?.desired_output) addFact(items, "Output", facts.desired_output);
+  if (facts?.input_sources.length) addFact(items, "Source", facts.input_sources.join("; "));
+  if (facts?.desired_outputs.length) addFact(items, "Output", facts.desired_outputs.join("; "));
   if (facts?.human_owner) addFact(items, "Owner", facts.human_owner);
   if (facts?.approval_boundary) addFact(items, "Gate", facts.approval_boundary);
   if (facts?.external_action_boundary) addFact(items, "Boundary", facts.external_action_boundary);
