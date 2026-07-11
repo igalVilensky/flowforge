@@ -337,6 +337,16 @@ const agentProviderDebugAttemptSchema = z
     warning_summary: z.string().optional(),
     raw_response: z.string().optional(),
     parsed_response: z.unknown().optional(),
+    validation_issues: z
+      .array(
+        z.object({
+          path: z.string(),
+          message: z.string(),
+          code: z.string(),
+        }).strict(),
+      )
+      .optional(),
+    raw_response_preview: z.string().optional(),
   })
   .strict();
 

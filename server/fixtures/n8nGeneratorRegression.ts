@@ -120,6 +120,47 @@ function check(
   };
 }
 
+function fixtureRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  )
+    ? value as Record<
+        string,
+        unknown
+      >
+    : null;
+}
+
+function firstMainTarget(
+  connections:
+    Record<string, unknown>,
+  sourceName: string,
+): string {
+  const source = fixtureRecord(
+    connections[sourceName],
+  );
+  const main = source?.main;
+  const firstGroup =
+    Array.isArray(main)
+      ? main[0]
+      : null;
+  const firstTarget =
+    Array.isArray(firstGroup)
+      ? fixtureRecord(
+          firstGroup[0],
+        )
+      : null;
+
+  return typeof firstTarget?.node ===
+    "string"
+    ? firstTarget.node
+    : "";
+}
+
 function admissionsCompileJob(): CompileJob {
   const normalized =
     normalizeCompileRequest(
@@ -534,6 +575,806 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
         "OpenAI must be attempted first, and an OpenAI success must not be marked as fallback.",
       ),
     );
+
+    const nullCredentialCalls:
+      string[] = [];
+    const nullCredentialResult =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () => {
+              nullCredentialCalls.push(
+                "openai",
+              );
+
+              return JSON.stringify({
+                workflow: {
+                  name:
+                    "Admissions null credential draft",
+                  nodes: [
+                    {
+                      id: "start",
+                      name: "Manual Start",
+                      type: "n8n-nodes-base.manualTrigger",
+                      typeVersion: 1,
+                      position: [0, 0],
+                      parameters: {},
+                    },
+                    {
+                      id: "extract",
+                      name:
+                        "Extract Applicant Fields",
+                      type: "n8n-nodes-base.code",
+                      typeVersion: "1",
+                      position: [260, 0],
+                      parameters: null,
+                      credentials: null,
+                    },
+                  ],
+                  connections: {
+                    start: {
+                      main: "extract",
+                    },
+                  },
+                  active: true,
+                },
+              });
+            },
+            groq: async () => {
+              nullCredentialCalls.push(
+                "groq",
+              );
+              return validProviderResponse;
+            },
+          },
+        },
+      );
+
+    const normalizedExtractNode =
+      nullCredentialResult.workflow_json.nodes
+        .find(
+          (node) =>
+            node.name ===
+            "Extract Applicant Fields",
+        );
+
+    checks.push(
+      check(
+        "n8nNormalizesNullOptionalNodeFields",
+        nullCredentialCalls.join(",") ===
+          "openai" &&
+          nullCredentialResult.provider ===
+            "openai" &&
+          normalizedExtractNode
+            ?.credentials === undefined &&
+          normalizedExtractNode
+            ?.typeVersion === 1 &&
+          typeof normalizedExtractNode
+            ?.parameters.jsCode ===
+            "string" &&
+          nullCredentialResult.workflow_json
+            .active === false,
+        "Recoverable workflow envelopes, null optional fields, numeric type versions, missing parameters, and active drafts must be normalized before validation without reaching Groq.",
+      ),
+    );
+
+    const wrappedConnectionResult =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () =>
+              JSON.stringify({
+                name:
+                  "Wrapped connections draft",
+                nodes: [
+                  {
+                    id: "start_id",
+                    name: "Manual Start",
+                    type: "n8n-nodes-base.manualTrigger",
+                    typeVersion: 1,
+                    position: [0, 0],
+                    parameters: {},
+                  },
+                  {
+                    id: "finish_id",
+                    name:
+                      "Internal Draft Output",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [260, 0],
+                    parameters: {},
+                  },
+                ],
+                connections: {
+                  start_id: {
+                    Source: {
+                      main: "finish_id",
+                    },
+                  },
+                },
+                active: false,
+              }),
+            groq: async () => {
+              throw new Error(
+                "Groq must not be called for recoverable wrapped connections.",
+              );
+            },
+          },
+        },
+      );
+
+    const wrappedConnections =
+      JSON.stringify(
+        wrappedConnectionResult
+          .workflow_json.connections,
+      );
+
+    checks.push(
+      check(
+        "n8nNormalizesWrappedAndIdBasedConnections",
+        wrappedConnectionResult.provider ===
+          "openai" &&
+          wrappedConnections.includes(
+            "Manual Start",
+          ) &&
+          wrappedConnections.includes(
+            "Internal Draft Output",
+          ) &&
+          !wrappedConnections.includes(
+            "start_id",
+          ) &&
+          !wrappedConnections.includes(
+            "finish_id",
+          ) &&
+          !wrappedConnections.includes(
+            "Source",
+          ),
+        "Recoverable wrapper objects and node-id connection references must normalize to the generated node names.",
+      ),
+    );
+
+    const unsupportedExternalResult =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () =>
+              JSON.stringify({
+                name:
+                  "External connector preview",
+                nodes: [{
+                  id: "gmail",
+                  name:
+                    "Gmail Inbox Trigger Placeholder",
+                  type: "n8n-nodes-base.gmailTrigger",
+                  typeVersion: 1,
+                  position: [0, 0],
+                  parameters: {
+                    operation: "watch",
+                  },
+                  credentials: {
+                    gmailOAuth2: {
+                      id: "real-id",
+                      name: "real-name",
+                    },
+                  },
+                }],
+                connections: {},
+                active: false,
+              }),
+            groq: async () => {
+              throw new Error(
+                "Groq must not be called for a safely replaceable external node.",
+              );
+            },
+          },
+        },
+      );
+
+    const normalizedExternalNode =
+      unsupportedExternalResult
+        .workflow_json.nodes[0];
+
+    checks.push(
+      check(
+        "n8nSafelyNormalizesUnsupportedExternalNodes",
+        unsupportedExternalResult.provider ===
+          "openai" &&
+          normalizedExternalNode?.type ===
+            "n8n-nodes-base.set" &&
+          normalizedExternalNode?.disabled ===
+            true &&
+          normalizedExternalNode
+            ?.credentials === undefined,
+        "Unsupported external connector nodes must become disabled safe-preview set nodes with real credential references removed.",
+      ),
+    );
+
+    const duplicateReviewResult =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () =>
+              JSON.stringify({
+                name:
+                  "Duplicate review draft",
+                nodes: [
+                  {
+                    id: "start",
+                    name: "Manual Start",
+                    type: "n8n-nodes-base.manualTrigger",
+                    typeVersion: 1,
+                    position: [0, 0],
+                    parameters: {},
+                  },
+                  {
+                    id: "prepare",
+                    name:
+                      "Prepare Admissions Review Package",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [260, 0],
+                    parameters: {},
+                  },
+                  {
+                    id: "pending",
+                    name:
+                      "Mark Pending Human Review",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [520, 0],
+                    parameters: {},
+                  },
+                  {
+                    id: "finish",
+                    name:
+                      "Internal Draft Output",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [780, 0],
+                    parameters: {},
+                  },
+                  {
+                    id: "duplicate_pending",
+                    name:
+                      "Pending Review Status",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [1040, 0],
+                    parameters: {},
+                  },
+                ],
+                connections: {
+                  start: {
+                    main: "prepare",
+                  },
+                  prepare: {
+                    main: "pending",
+                  },
+                  pending: {
+                    main:
+                      "duplicate_pending",
+                  },
+                  duplicate_pending: {
+                    main: "finish",
+                  },
+                },
+                active: false,
+              }),
+            groq: async () => {
+              throw new Error(
+                "Groq must not be called after duplicate cleanup.",
+              );
+            },
+          },
+        },
+      );
+
+    const duplicateWorkflowText =
+      JSON.stringify(
+        duplicateReviewResult
+          .workflow_json,
+      );
+
+    checks.push(
+      check(
+        "n8nDuplicateRemovalLeavesNoStaleConnections",
+        duplicateReviewResult.provider ===
+          "openai" &&
+          duplicateWorkflowText.includes(
+            "Mark Pending Human Review",
+          ) &&
+          !duplicateWorkflowText.includes(
+            "Pending Review Status",
+          ) &&
+          duplicateReviewResult
+            .workflow_json.nodes.some(
+              (node) =>
+                node.name ===
+                "Prepare Admissions Review Package",
+            ),
+        "Removing duplicate pending-review markers must retain the canonical review-package and final pending-review nodes without stale source or target references.",
+      ),
+    );
+
+    const directRepairCalls:
+      string[] = [];
+    const repairedDirectWorkflow =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () => {
+              directRepairCalls.push(
+                "openai",
+              );
+
+              return JSON.stringify({
+                name:
+                  "Admissions Application Review Workflow",
+                nodes: [
+                  {
+                    id: "trigger",
+                    name:
+                      "Admissions Application Review Trigger",
+                    type: "n8n-nodes-base.manualTrigger",
+                    typeVersion: 1,
+                    position: [940, 380],
+                    parameters: {},
+                  },
+                  {
+                    id: "sample",
+                    name:
+                      "Sample Admissions Application",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [120, 760],
+                    parameters: {
+                      values: {
+                        role:
+                          "Software Engineer",
+                        portfolio_link:
+                          "https://example.test",
+                        application_source:
+                          "Recruitment portal",
+                        candidate_name:
+                          "Wrong Candidate",
+                        source_system:
+                          "generic inbox",
+                      },
+                    },
+                  },
+                  {
+                    id: "extract",
+                    name:
+                      "Extract Applicant Fields",
+                    type: "n8n-nodes-base.code",
+                    typeVersion: 1,
+                    position: [40, 40],
+                    parameters: {
+                      jsCode:
+                        "return [{ json: { role: 'Engineer', portfolio_link: 'wrong', candidate_name: 'Wrong' } }];",
+                    },
+                  },
+                  {
+                    id: "classify",
+                    name:
+                      "Classify Application Priority",
+                    type: "n8n-nodes-base.if",
+                    typeVersion: 2,
+                    position: [80, 80],
+                    parameters: {
+                      conditions: {},
+                    },
+                  },
+                  {
+                    id: "package",
+                    name:
+                      "Prepare Admissions Review Package",
+                    type: "n8n-nodes-base.set",
+                    typeVersion: 1,
+                    position: [60, 900],
+                    parameters: {
+                      values: {
+                        review_owner:
+                          "responsible human reviewer",
+                        role: "Engineer",
+                        portfolio_link:
+                          "wrong",
+                      },
+                    },
+                  },
+                  {
+                    id: "note",
+                    name:
+                      "Review Guidance",
+                    type: "n8n-nodes-base.stickyNote",
+                    typeVersion: 1,
+                    position: [0, 0],
+                    parameters: {
+                      content:
+                        "Use a generic reviewer and generic source.",
+                    },
+                  },
+                ],
+                connections: {},
+                active: true,
+                workflow_goal:
+                  "Leaked implementation brief",
+                trigger_description:
+                  "Leaked trigger",
+                source: "generic inbox",
+                source_type: "unknown",
+                source_is_placeholder:
+                  false,
+                domain: "recruitment",
+                extracted_fields: [
+                  "role",
+                  "portfolio_link",
+                ],
+                classification_target:
+                  "candidate quality",
+                classification_rules: [
+                  "Use recruitment fields",
+                ],
+                internal_outputs: [
+                  "candidate package",
+                ],
+                human_owner:
+                  "responsible human reviewer",
+                human_approval_gates: [],
+                approval_boundary:
+                  "Generic approval",
+                external_action_boundary:
+                  "Generic boundary",
+                blocked_or_not_safe_actions:
+                  [],
+                warnings: [],
+                recommended_nodes: [],
+                draft_only: false,
+              });
+            },
+            groq: async () => {
+              directRepairCalls.push(
+                "groq",
+              );
+              return validProviderResponse;
+            },
+          },
+        },
+      );
+
+    const repairedWorkflow =
+      repairedDirectWorkflow
+        .workflow_json;
+    const expectedChain = [
+      "Admissions Application Review Trigger",
+      "Sample Admissions Application",
+      "Extract Applicant Fields",
+      "Classify Application Priority",
+      "Prepare Admissions Review Package",
+      "Mark Pending Human Review",
+    ];
+    const repairedExecutableNodes =
+      repairedWorkflow.nodes.filter(
+        (node) =>
+          node.type !==
+            "n8n-nodes-base.stickyNote" &&
+          node.disabled !== true,
+      );
+    const repairedNodeByName =
+      new Map(
+        repairedWorkflow.nodes.map(
+          (node) => [
+            node.name,
+            node,
+          ],
+        ),
+      );
+    const repairedSampleValues =
+      fixtureRecord(
+        repairedNodeByName.get(
+          "Sample Admissions Application",
+        )?.parameters.values,
+      );
+    const repairedReviewValues =
+      fixtureRecord(
+        repairedNodeByName.get(
+          "Mark Pending Human Review",
+        )?.parameters.values,
+      );
+    const repairedMeta =
+      fixtureRecord(
+        repairedWorkflow.meta,
+      );
+    const repairedWorkflowText =
+      JSON.stringify(
+        repairedWorkflow,
+      );
+    const leakedRootFields = [
+      "workflow_goal",
+      "trigger_description",
+      "source",
+      "source_type",
+      "source_is_placeholder",
+      "domain",
+      "extracted_fields",
+      "classification_target",
+      "classification_rules",
+      "internal_outputs",
+      "human_owner",
+      "human_approval_gates",
+      "approval_boundary",
+      "external_action_boundary",
+      "blocked_or_not_safe_actions",
+      "warnings",
+      "recommended_nodes",
+      "draft_only",
+    ];
+
+    checks.push(
+      check(
+        "n8nRepairsEmptyCanonicalChainAndLayout",
+        repairedExecutableNodes
+          .map((node) => node.name)
+          .join("|") ===
+          expectedChain.join("|") &&
+          expectedChain.every(
+            (name, index) =>
+              JSON.stringify(
+                repairedNodeByName.get(
+                  name,
+                )?.position,
+              ) ===
+                JSON.stringify([
+                  index * 260,
+                  0,
+                ]) &&
+              (
+                index ===
+                  expectedChain.length - 1
+                  ? firstMainTarget(
+                      repairedWorkflow.connections,
+                      name,
+                    ) === ""
+                  : firstMainTarget(
+                      repairedWorkflow.connections,
+                      name,
+                    ) ===
+                    expectedChain[index + 1]
+              ),
+          ),
+        "Empty connections must be rebuilt as the canonical recommended-node chain with deterministic 260px horizontal spacing and a terminal review node.",
+      ),
+      check(
+        "n8nEnforcesCanonicalAdmissionsFieldsAndContext",
+        repairedSampleValues
+          ?.source_system ===
+          "shared admissions Gmail inbox" &&
+          repairedSampleValues
+            ?.source_type === "gmail" &&
+          [
+            "applicant_name",
+            "application_id",
+            "course",
+            "application_summary",
+          ].every((field) =>
+            repairedWorkflowText.includes(
+              field,
+            ),
+          ) &&
+          [
+            "candidate_name",
+            "role",
+            "portfolio_link",
+            "application_source",
+          ].every(
+            (field) =>
+              !repairedWorkflowText.includes(
+                field,
+              ),
+          ) &&
+          repairedMeta?.domain ===
+            "admissions" &&
+          repairedMeta?.source ===
+            "shared admissions Gmail inbox" &&
+          repairedMeta?.human_owner ===
+            "Jane Doe (admissions manager)" &&
+          repairedMeta
+            ?.approval_boundary ===
+            approvalBoundary &&
+          repairedMeta
+            ?.external_action_boundary ===
+            approvalBoundary,
+        "The direct workflow must overwrite model-owned recruitment fields and generic context with the canonical admissions fields, source, Jane Doe owner, and exact boundaries.",
+      ),
+      check(
+        "n8nCreatesTerminalReviewAndRepairsMeaninglessIf",
+        repairedNodeByName.get(
+          "Classify Application Priority",
+        )?.type ===
+          "n8n-nodes-base.code" &&
+          repairedNodeByName.get(
+            "Mark Pending Human Review",
+          )?.type ===
+            "n8n-nodes-base.set" &&
+          repairedReviewValues
+            ?.review_owner ===
+            "Jane Doe (admissions manager)" &&
+          repairedReviewValues
+            ?.review_status ===
+            "pending" &&
+          repairedReviewValues
+            ?.manual_review_required ===
+            true &&
+          repairedReviewValues
+            ?.requires_human_approval ===
+            true &&
+          repairedReviewValues
+            ?.draft_only === true &&
+          repairedReviewValues
+            ?.send_status ===
+            "not_sent" &&
+          repairedReviewValues
+            ?.approval_boundary ===
+            approvalBoundary &&
+          repairedReviewValues
+            ?.external_action_boundary ===
+            approvalBoundary,
+        "A meaningless classification If node must become canonical Code logic, and a missing safe pending-review Set node must be created with exact canonical review values.",
+      ),
+      check(
+        "n8nRemovesImplementationBriefRootLeakage",
+        repairedWorkflow.active ===
+          false &&
+          leakedRootFields.every(
+            (field) =>
+              !Object.hasOwn(
+                repairedWorkflow,
+                field,
+              ),
+          ) &&
+          repairedWorkflow.nodes.every(
+            (node) =>
+              !/(?:gmail|emailSend|httpRequest|slack)/i.test(
+                node.type,
+              ) || node.disabled === true,
+          ),
+        "The downloadable workflow root must contain n8n fields rather than implementation-brief properties and must not contain enabled production connectors.",
+      ),
+      check(
+        "n8nValidRepairedOpenAiStopsBeforeGroq",
+        directRepairCalls.join(",") ===
+          "openai" &&
+          repairedDirectWorkflow.provider ===
+            "openai" &&
+          !repairedDirectWorkflow.fallback_used &&
+          repairedDirectWorkflow
+            .provider_attempts?.length ===
+            1 &&
+          repairedDirectWorkflow
+            .provider_attempts[0]
+            ?.success === true,
+        "A repaired valid OpenAI direct workflow must succeed without calling Groq.",
+      ),
+    );
+
+    const diagnosticSecret =
+      "sk-diagnostic-secret-123456789";
+
+    process.env.OPENAI_API_KEY =
+      diagnosticSecret;
+
+    const invalidValidationCalls:
+      string[] = [];
+    const invalidNodes = Array.from(
+      { length: 6 },
+      (_, index) => ({
+        id: `invalid_${index}`,
+        name:
+          index === 0
+            ? `Invalid ${diagnosticSecret}`
+            : `Invalid ${index}`,
+        type:
+          index === 0
+            ? diagnosticSecret
+            : `unsupported.node.${index}`,
+        typeVersion: 1,
+        position: [index * 220, 0],
+        parameters: {},
+      }),
+    );
+
+    const detailedFallback =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () => {
+              invalidValidationCalls.push(
+                "openai",
+              );
+              return JSON.stringify({
+                name:
+                  "Invalid diagnostics draft",
+                nodes: invalidNodes,
+                connections: {},
+                active: false,
+              });
+            },
+            groq: async () => {
+              invalidValidationCalls.push(
+                "groq",
+              );
+              return validProviderResponse;
+            },
+          },
+        },
+      );
+
+    const failedOpenAIAttempt =
+      detailedFallback
+        .provider_attempts?.[0];
+    const validationDiagnosticsText =
+      JSON.stringify({
+        error:
+          failedOpenAIAttempt
+            ?.error_summary,
+        issues:
+          failedOpenAIAttempt
+            ?.validation_issues,
+        preview:
+          failedOpenAIAttempt
+            ?.raw_response_preview,
+      });
+
+    checks.push(
+      check(
+        "n8nValidationDiagnosticsAreDetailedBoundedAndSecretSafe",
+        invalidValidationCalls.join(",") ===
+          "openai,groq" &&
+          detailedFallback.provider ===
+            "groq" &&
+          detailedFallback.fallback_used &&
+          failedOpenAIAttempt
+            ?.validation_issues?.length ===
+            5 &&
+          failedOpenAIAttempt
+            .validation_issues[0]?.path ===
+            "nodes.0.type" &&
+          failedOpenAIAttempt
+            .validation_issues[0]?.message
+            .includes(
+              "Unsupported n8n node type",
+            ) === true &&
+          failedOpenAIAttempt
+            .error_summary?.includes(
+              "nodes.0.type",
+            ) === true &&
+          (
+            failedOpenAIAttempt
+              .error_summary?.length ?? 0
+          ) <= 800 &&
+          (
+            failedOpenAIAttempt
+              .raw_response_preview?.length ??
+            0
+          ) <= 600 &&
+          validationDiagnosticsText.includes(
+            "[REDACTED]",
+          ) &&
+          !validationDiagnosticsText.includes(
+            diagnosticSecret,
+          ),
+        "Validation failures must retain the first five issue paths and messages plus a bounded raw preview, while redacting secrets before Groq fallback succeeds.",
+      ),
+    );
+
+    process.env.OPENAI_API_KEY =
+      "test-openai-key";
 
     const fallbackCalls: string[] = [];
     const groqFallback =

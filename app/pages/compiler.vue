@@ -1596,12 +1596,34 @@ function providerAttemptsFromValue(value: unknown): AgentProviderDebugAttempt[] 
 
     if (provider !== "openai" && provider !== "groq") return [];
 
+    const validationIssues = Array.isArray(attempt?.validation_issues)
+      ? attempt.validation_issues.flatMap((item) => {
+          const issue = asRecord(item);
+
+          return typeof issue?.path === "string"
+            && typeof issue?.message === "string"
+            && typeof issue?.code === "string"
+            ? [{
+                path: issue.path,
+                message: issue.message,
+                code: issue.code,
+              }]
+            : [];
+        })
+      : [];
+
     return [{
       provider,
       attempted: attempt?.attempted === true,
       success: attempt?.success === true,
       ...(typeof attempt?.error_summary === "string"
         ? { error_summary: attempt.error_summary }
+        : {}),
+      ...(validationIssues.length > 0
+        ? { validation_issues: validationIssues }
+        : {}),
+      ...(typeof attempt?.raw_response_preview === "string"
+        ? { raw_response_preview: attempt.raw_response_preview }
         : {}),
     }];
   });

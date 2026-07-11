@@ -9,6 +9,7 @@ import type {
     StepAutomationPolicy,
     WorkflowPrimitive,
 } from "./workflow";
+import type { N8nWorkflowValidationIssue } from "./n8nWorkflow";
 
 export type AgentOutputProvider = "openai" | "groq" | "gemini" | "deterministic";
 
@@ -38,6 +39,8 @@ export type AgentProviderDebugAttempt = {
     warning_summary?: string;
     raw_response?: string;
     parsed_response?: unknown;
+    validation_issues?: N8nWorkflowValidationIssue[];
+    raw_response_preview?: string;
 };
 
 export type AgentDebugInfo = {

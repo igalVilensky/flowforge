@@ -85,16 +85,26 @@ export type N8nGeneratorProvider =
   | "groq"
   | "deterministic";
 
+export type N8nWorkflowValidationIssue = {
+  path: string;
+  message: string;
+  code: string;
+};
+
+export type N8nGeneratorProviderAttempt = {
+  provider: "openai" | "groq";
+  attempted: boolean;
+  success: boolean;
+  error_summary?: string;
+  validation_issues?: N8nWorkflowValidationIssue[];
+  raw_response_preview?: string;
+};
+
 export type N8nGenerateResponse = {
   workflow_json: N8nWorkflow;
   warnings: string[];
   provider: N8nGeneratorProvider;
   used_ai: boolean;
   fallback_used: boolean;
-  provider_attempts?: Array<{
-    provider: "openai" | "groq";
-    attempted: boolean;
-    success: boolean;
-    error_summary?: string;
-  }>;
+  provider_attempts?: N8nGeneratorProviderAttempt[];
 };

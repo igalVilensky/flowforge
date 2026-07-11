@@ -489,6 +489,7 @@ function detectSource(
   input: string,
   domain: BriefDomain,
   canonicalSources: readonly string[],
+  originalRequestText: string,
 ): string {
   const canonicalSource =
     canonicalSources.find((source) =>
@@ -517,6 +518,18 @@ function detectSource(
     "gmail inbox",
     "email inbox",
   ];
+
+  const exactSourceMatch =
+    originalRequestText.match(
+      /\b(?:shared admissions gmail inbox|admissions gmail inbox|shared admissions inbox|admissions inbox|shared support gmail inbox|support gmail inbox|support inbox|shared finance gmail inbox|finance gmail inbox|finance inbox|shared inbox|gmail inbox|email inbox)\b/i,
+    );
+
+  if (exactSourceMatch?.[0]) {
+    return truncateText(
+      exactSourceMatch[0],
+      160,
+    );
+  }
 
   const detected =
     sourcePhrases.find((source) =>
@@ -1341,6 +1354,7 @@ export function buildN8nImplementationBrief(
       normalizedRequest,
       domain,
       canonicalIntent.input_sources,
+      request,
     );
 
   const extractedFields =
