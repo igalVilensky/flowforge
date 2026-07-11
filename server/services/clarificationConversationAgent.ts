@@ -161,6 +161,20 @@ const QUESTION_ID_ALIASES = new Map<
     },
   ],
   [
+    "output_destination",
+    {
+      questionId: "output_destination",
+      kind: "output_destination",
+    },
+  ],
+  [
+    "notification_target",
+    {
+      questionId: "notification_target",
+      kind: "notification_target",
+    },
+  ],
+  [
     "input_data",
     {
       questionId: "input_data",

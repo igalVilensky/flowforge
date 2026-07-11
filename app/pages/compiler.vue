@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronRight, X } from "lucide-vue-next";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
-import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
+import type { AgentDebugInfo, AgentProviderDebugAttempt } from "../../shared/types/agentOutputs";
 import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
 import type {
   ClarificationSession,
@@ -169,6 +169,7 @@ const n8nStaticSafetyWarning =
 const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
+const n8nProviderAttempts = ref<AgentProviderDebugAttempt[]>([]);
 const n8nJsonCopied = ref(false);
 const compileProgressEvents = ref<CompileProgressEvent[]>([]);
 const compileAgentStateMap = ref<Record<string, AgentUiCard>>({});
@@ -440,7 +441,7 @@ const n8nGeneratorAgentCard = computed<AgentCard | null>(() => {
     providerToneValue = n8nFallbackUsed.value ? "fallback" : n8nUsedAi.value ? "ai" : "deterministic";
     statusLabel = n8nFallbackUsed.value ? "Fallback used" : n8nUsedAi.value ? "AI draft ready" : "Draft ready";
     statusReason = n8nFallbackUsed.value
-      ? "AI unavailable, rules completed the draft generation step."
+      ? "OpenAI failed; Groq generated and validated the draft."
       : "Validated n8n JSON draft is ready for review.";
   }
 
@@ -626,6 +627,14 @@ const activeAgentDebug = computed<AgentDebugInfo | null>(() => {
   return job.value?.agent_debug?.[id as keyof NonNullable<CompileJob["agent_debug"]>] ?? null;
 });
 
+const activeProviderAttempts = computed<AgentProviderDebugAttempt[]>(() => {
+  if (activeAgentDetailsId.value === "n8n_generator") {
+    return n8nProviderAttempts.value;
+  }
+
+  return activeAgentDebug.value?.provider_attempts ?? [];
+});
+
 const activeAgentOutcome = computed(() => {
   const id = activeAgentDetailsId.value;
 
@@ -657,6 +666,7 @@ const activeAgentOutcome = computed(() => {
       provider: n8nProvider.value,
       used_ai: n8nUsedAi.value,
       fallback_used: n8nFallbackUsed.value,
+      provider_attempts: n8nProviderAttempts.value,
       error: n8nGenerateError.value,
       warnings: n8nWarnings.value,
       workflow: n8nWorkflowDraft.value,
@@ -920,14 +930,24 @@ function cardStatusText(status: AgentCard["status"]) {
 
 function allProviderAttempts() {
   const debug = job.value?.agent_debug;
-  if (!debug) return [];
+  const compileAttempts = debug
+    ? Object.entries(debug).flatMap(([agentId, agentDebug]) =>
+        (agentDebug?.provider_attempts ?? []).map((attempt) => ({
+          agentId,
+          ...attempt,
+        })),
+      )
+    : [];
 
-  return Object.entries(debug).flatMap(([agentId, agentDebug]) =>
-    (agentDebug?.provider_attempts ?? []).map((attempt) => ({
-      agentId,
-      ...attempt,
-    })),
-  );
+  const generatorAttempts = n8nProviderAttempts.value.map((attempt) => ({
+    agentId: "n8n_generator",
+    ...attempt,
+  }));
+
+  return [
+    ...compileAttempts,
+    ...generatorAttempts,
+  ];
 }
 
 const agentExecutionSummary = computed(() => {
@@ -1567,6 +1587,65 @@ function detailFromErrorData(data: unknown) {
   return "";
 }
 
+function providerAttemptsFromValue(value: unknown): AgentProviderDebugAttempt[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    const attempt = asRecord(item);
+    const provider = attempt?.provider;
+
+    if (provider !== "openai" && provider !== "groq") return [];
+
+    return [{
+      provider,
+      attempted: attempt?.attempted === true,
+      success: attempt?.success === true,
+      ...(typeof attempt?.error_summary === "string"
+        ? { error_summary: attempt.error_summary }
+        : {}),
+    }];
+  });
+}
+
+function n8nFailureDetails(error: unknown) {
+  const record = asRecord(error);
+  const errorData = asRecord(record?.data);
+  const responseData = asRecord(asRecord(record?.response)?._data);
+  const candidates = [
+    asRecord(responseData?.data),
+    responseData,
+    asRecord(errorData?.data),
+    errorData,
+  ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
+  const payload = candidates.find((candidate) =>
+    Array.isArray(candidate.provider_attempts),
+  );
+  const attempts = providerAttemptsFromValue(payload?.provider_attempts);
+  const warnings = Array.isArray(payload?.warnings)
+    ? payload.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
+
+  return {
+    attempts,
+    provider: typeof payload?.provider === "string" ? payload.provider : "",
+    usedAi: payload?.used_ai === true,
+    fallbackUsed: payload?.fallback_used === true,
+    warnings,
+  };
+}
+
+function n8nProviderAttemptsErrorMessage(attempts: AgentProviderDebugAttempt[]) {
+  const details = attempts
+    .filter((attempt) => !attempt.success)
+    .map((attempt) =>
+      `${providerDisplayName(attempt.provider)}: ${attempt.error_summary || (attempt.attempted ? "failed" : "not configured")}`,
+    );
+
+  return details.length > 0
+    ? `n8n generation failed. ${details.join(" | ")}`
+    : "";
+}
+
 function apiErrorMessage(error: unknown, fallback: string) {
   const record = asRecord(error);
   const data = asRecord(record?.data);
@@ -1646,6 +1725,11 @@ async function generateN8nWorkflowDraft() {
   activePanel.value = "agents";
   n8nGeneratorState.value = "generating";
   n8nGenerateError.value = "";
+  n8nWarnings.value = [];
+  n8nProvider.value = "";
+  n8nUsedAi.value = false;
+  n8nFallbackUsed.value = false;
+  n8nProviderAttempts.value = [];
   n8nJsonCopied.value = false;
 
   try {
@@ -1662,11 +1746,19 @@ async function generateN8nWorkflowDraft() {
     n8nProvider.value = response.provider;
     n8nUsedAi.value = response.used_ai;
     n8nFallbackUsed.value = response.fallback_used;
+    n8nProviderAttempts.value = response.provider_attempts ?? [];
     n8nGeneratorState.value = "ready";
   } catch (error) {
+    const failure = n8nFailureDetails(error);
+
     n8nWorkflowDraft.value = null;
-    n8nWarnings.value = [];
-    n8nGenerateError.value = apiErrorMessage(error, "Could not generate n8n JSON draft.");
+    n8nWarnings.value = failure.warnings;
+    n8nProvider.value = failure.provider === "none" ? "" : failure.provider;
+    n8nUsedAi.value = failure.usedAi;
+    n8nFallbackUsed.value = failure.fallbackUsed;
+    n8nProviderAttempts.value = failure.attempts;
+    n8nGenerateError.value = n8nProviderAttemptsErrorMessage(failure.attempts)
+      || apiErrorMessage(error, "Could not generate n8n JSON draft.");
     n8nGeneratorState.value = "failed";
   }
 }
@@ -2717,10 +2809,10 @@ The current endpoint returns the agent outcome and raw provider response when av
 
           <article class="modal-section full">
             <h3>Provider attempts</h3>
-            <template v-if="activeAgentDebug?.provider_attempts?.length">
+            <template v-if="activeProviderAttempts.length">
               <div class="provider-attempts">
                 <article
-                  v-for="attempt in activeAgentDebug.provider_attempts"
+                  v-for="attempt in activeProviderAttempts"
                   :key="attempt.provider"
                   class="provider-attempt"
                   :class="{ success: attempt.success }"
