@@ -24,7 +24,10 @@ import {
 import { blueprintArchitectOutputSchema } from "../schemas/agentOutputs.schema";
 import { callGeminiAgent } from "./geminiProvider";
 import { callGroqAgent } from "./groqProvider";
-import { callOpenAIAgent } from "./openaiProvider";
+import {
+    callOpenAIAgent,
+    resolveOpenAIModelSelection,
+} from "./openaiProvider";
 import { buildBlueprint, detectBlueprintDomain } from "./blueprintBuilder";
 import { buildWorkflowIntentSection } from "./structuredCompileInput";
 
@@ -370,6 +373,14 @@ function providerIsAvailable(
     if (override !== undefined) return override;
     const keyName = provider === "openai" ? "OPENAI_API_KEY" : provider === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY";
     return Boolean(process.env[keyName]);
+}
+
+export function resolveBlueprintOpenAIModelSelection() {
+    return resolveOpenAIModelSelection({
+        modelEnv: "OPENAI_BLUEPRINT_MODEL",
+        fallbackModelEnv: "OPENAI_AGENT_MODEL",
+        defaultModel: "gpt-5-nano",
+    });
 }
 
 function providerCall(

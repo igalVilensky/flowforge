@@ -6,8 +6,15 @@ import { buildN8nImplementationBrief } from "../services/n8nImplementationBriefB
 import {
   N8nWorkflowGeneratorConfigError,
   N8nWorkflowGeneratorProvidersFailedError,
+  resolveN8nOpenAIModelSelection,
   runN8nWorkflowGeneratorAgent,
 } from "../services/n8nWorkflowGeneratorAgent";
+import { resolveBlueprintOpenAIModelSelection } from "../services/blueprintArchitectAgent";
+import {
+  OpenAIAPIError,
+  buildOpenAIResponsesRequest,
+  callOpenAI,
+} from "../services/openaiProvider";
 import {
   normalizeCompileRequest,
   serializeStructuredCompileInput,
@@ -34,6 +41,66 @@ const validProviderResponse = JSON.stringify({
   connections: {},
   active: false,
 });
+
+function openAISuccessResponse(
+  content = validProviderResponse,
+): Response {
+  return new Response(
+    JSON.stringify({
+      status: "completed",
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: content,
+            },
+          ],
+        },
+      ],
+    }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+    },
+  );
+}
+
+function openAIErrorResponse(input: {
+  message: string;
+  type?: string;
+  param?: string;
+  code?: string;
+  status?: number;
+  statusText?: string;
+}): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: input.message,
+        type:
+          input.type ??
+          "invalid_request_error",
+        param: input.param,
+        code: input.code,
+      },
+    }),
+    {
+      status: input.status ?? 400,
+      statusText:
+        input.statusText ??
+        "Bad Request",
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+    },
+  );
+}
 
 function check(
   name: string,
@@ -104,6 +171,9 @@ function canonicalAdmissionsCompileJob(): CompileJob {
 
 type SavedProviderEnvironment = {
   OPENAI_API_KEY?: string;
+  OPENAI_N8N_MODEL?: string;
+  OPENAI_BLUEPRINT_MODEL?: string;
+  OPENAI_AGENT_MODEL?: string;
   GROQ_API_KEY?: string;
   GROQ_N8N_API_KEY?: string;
 };
@@ -112,6 +182,12 @@ function saveProviderEnvironment(): SavedProviderEnvironment {
   return {
     OPENAI_API_KEY:
       process.env.OPENAI_API_KEY,
+    OPENAI_N8N_MODEL:
+      process.env.OPENAI_N8N_MODEL,
+    OPENAI_BLUEPRINT_MODEL:
+      process.env.OPENAI_BLUEPRINT_MODEL,
+    OPENAI_AGENT_MODEL:
+      process.env.OPENAI_AGENT_MODEL,
     GROQ_API_KEY:
       process.env.GROQ_API_KEY,
     GROQ_N8N_API_KEY:
@@ -124,6 +200,9 @@ function restoreProviderEnvironment(
 ): void {
   for (const key of [
     "OPENAI_API_KEY",
+    "OPENAI_N8N_MODEL",
+    "OPENAI_BLUEPRINT_MODEL",
+    "OPENAI_AGENT_MODEL",
     "GROQ_API_KEY",
     "GROQ_N8N_API_KEY",
   ] as const) {
@@ -155,6 +234,32 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
 
   const savedEnvironment =
     saveProviderEnvironment();
+
+  const unsupportedModelRequest =
+    buildOpenAIResponsesRequest({
+      model: "gpt-4-turbo",
+      prompt: "Return workflow data.",
+      systemPrompt:
+        "Return structured data.",
+      maxOutputTokens: 1200,
+      reasoningEffort: "minimal",
+      verbosity: "low",
+      structuredOutputMode:
+        "json_object",
+    });
+
+  const supportedModelRequest =
+    buildOpenAIResponsesRequest({
+      model: "gpt-5-nano",
+      prompt: "Return workflow data.",
+      systemPrompt:
+        "Return structured data.",
+      maxOutputTokens: 1200,
+      reasoningEffort: "minimal",
+      verbosity: "low",
+      structuredOutputMode:
+        "json_object",
+    });
 
   const checks: FixtureValidationCheck[] = [
     check(
@@ -195,13 +300,206 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
           approvalBoundary,
       "Canonical clarification facts must remain authoritative for the n8n owner, source, and approval boundary.",
     ),
+    check(
+      "openAIRequestOmitsUnsupportedOptionalFields",
+      unsupportedModelRequest.reasoning ===
+        undefined &&
+        unsupportedModelRequest.text ===
+          undefined &&
+        unsupportedModelRequest.model ===
+          "gpt-4-turbo" &&
+        unsupportedModelRequest.max_output_tokens ===
+          1200 &&
+        unsupportedModelRequest.store ===
+          false,
+      "The Responses request builder must omit reasoning, verbosity, and structured-output fields for unsupported models.",
+    ),
+    check(
+      "openAIRequestIncludesSupportedOptionalFields",
+      supportedModelRequest.reasoning
+        ?.effort === "minimal" &&
+        supportedModelRequest.text
+          ?.verbosity === "low" &&
+        supportedModelRequest.text
+          ?.format?.type ===
+          "json_object",
+      "The Responses request builder must include allowed optional fields for a supported GPT-5 model.",
+    ),
   ];
 
   try {
     process.env.OPENAI_API_KEY =
       "test-openai-key";
+    delete process.env.OPENAI_N8N_MODEL;
+    process.env.OPENAI_AGENT_MODEL =
+      "gpt-5-nano";
+    process.env.OPENAI_BLUEPRINT_MODEL =
+      "gpt-5-nano";
     process.env.GROQ_N8N_API_KEY =
       "test-n8n-groq-key";
+
+    const n8nModelResolution =
+      resolveN8nOpenAIModelSelection();
+
+    const blueprintModelResolution =
+      resolveBlueprintOpenAIModelSelection();
+
+    checks.push(
+      check(
+        "openAIModelResolutionIsSafeAndStageAware",
+        n8nModelResolution.primaryModelEnv ===
+          "OPENAI_N8N_MODEL" &&
+          n8nModelResolution.fallbackModelEnv ===
+            "OPENAI_AGENT_MODEL" &&
+          n8nModelResolution.fallbackUsed &&
+          n8nModelResolution.model ===
+            "gpt-5-nano" &&
+          n8nModelResolution.endpoint ===
+            "https://api.openai.com/v1/responses" &&
+          blueprintModelResolution.primaryModelEnv ===
+            "OPENAI_BLUEPRINT_MODEL" &&
+          !blueprintModelResolution.fallbackUsed &&
+          blueprintModelResolution.model ===
+            "gpt-5-nano",
+        "Model diagnostics must safely report stage env names, fallback use, final model, and endpoint.",
+      ),
+    );
+
+    const retryBodies: Array<
+      Record<string, unknown>
+    > = [];
+    const retryGroqCalls: string[] = [];
+
+    const retrySuccess =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          openaiFetch: async (
+            _input,
+            init,
+          ) => {
+            retryBodies.push(
+              JSON.parse(
+                typeof init?.body ===
+                  "string"
+                  ? init.body
+                  : "{}",
+              ) as Record<
+                string,
+                unknown
+              >,
+            );
+
+            if (
+              retryBodies.length === 1
+            ) {
+              return openAIErrorResponse({
+                message:
+                  "Unsupported parameter: 'reasoning.effort'.",
+                param:
+                  "reasoning.effort",
+                code:
+                  "unsupported_parameter",
+              });
+            }
+
+            return openAISuccessResponse();
+          },
+          calls: {
+            groq: async () => {
+              retryGroqCalls.push(
+                "groq",
+              );
+              return validProviderResponse;
+            },
+          },
+        },
+      );
+
+    checks.push(
+      check(
+        "openAIUnsupportedParameterRetriesOnceWithMinimalRequest",
+        retryBodies.length === 2 &&
+          retryBodies[0]?.reasoning !==
+            undefined &&
+          (
+            retryBodies[0]?.text as
+              Record<string, unknown>
+          )?.format === undefined &&
+          retryBodies[1]?.reasoning ===
+            undefined &&
+          retryBodies[1]?.text ===
+            undefined &&
+          Object.keys(
+            retryBodies[1] ?? {},
+          ).sort().join(",") ===
+            "input,instructions,max_output_tokens,model,store" &&
+          retrySuccess.provider ===
+            "openai" &&
+          !retrySuccess.fallback_used &&
+          retrySuccess.provider_attempts
+            ?.length === 1 &&
+          retrySuccess.provider_attempts[0]
+            ?.success === true &&
+          retryGroqCalls.length === 0,
+        "An unsupported optional parameter must trigger one minimal retry that remains the same successful OpenAI attempt.",
+      ),
+    );
+
+    let nonCapabilityCalls = 0;
+    let nonCapabilityError:
+      OpenAIAPIError | null = null;
+
+    try {
+      await callOpenAI(
+        "Return json workflow data.",
+        "Return only workflow data.",
+        {
+          modelEnv:
+            "OPENAI_N8N_MODEL",
+          fallbackModelEnv:
+            "OPENAI_AGENT_MODEL",
+          maxOutputTokensEnv:
+            "OPENAI_N8N_MAX_OUTPUT_TOKENS",
+          defaultMaxOutputTokens:
+            1200,
+          reasoningEffort: "minimal",
+          verbosity: "low",
+          structuredOutputMode:
+            "json_object",
+          fetchImpl: async () => {
+            nonCapabilityCalls += 1;
+            return openAIErrorResponse({
+              message:
+                "Invalid max_output_tokens value.",
+              param:
+                "max_output_tokens",
+              code: "invalid_value",
+            });
+          },
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof OpenAIAPIError
+      ) {
+        nonCapabilityError = error;
+      }
+    }
+
+    checks.push(
+      check(
+        "openAINonCapability400DoesNotRetry",
+        nonCapabilityCalls === 1 &&
+          nonCapabilityError
+            ?.details.param ===
+            "max_output_tokens" &&
+          nonCapabilityError
+            ?.details.code ===
+            "invalid_value",
+        "An arbitrary 400 such as invalid max_output_tokens must not trigger the optional-field compatibility retry.",
+      ),
+    );
 
     const openAiCalls: string[] = [];
     const openAiSuccess =
@@ -273,6 +571,14 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
       ),
     );
 
+    const openAISecret =
+      "sk-test-openai-secret-123456789";
+    const leakedAuthorizationValue =
+      "sk-leaked-authorization-987654321";
+
+    process.env.OPENAI_API_KEY =
+      openAISecret;
+
     let totalFailure:
       N8nWorkflowGeneratorProvidersFailedError |
       null = null;
@@ -281,12 +587,16 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
       await runN8nWorkflowGeneratorAgent(
         { compileJob },
         {
+          openaiFetch: async () =>
+            openAIErrorResponse({
+              message:
+                `Unknown field 'mystery'. Authorization: Bearer ${leakedAuthorizationValue}. OPENAI_API_KEY=${openAISecret}`,
+              type:
+                "invalid_request_error",
+              param: "mystery",
+              code: "unknown_field",
+            }),
           calls: {
-            openai: async () => {
-              throw new Error(
-                "OpenAI exact total failure",
-              );
-            },
             groq: async () => {
               throw new Error(
                 "Groq exact total failure",
@@ -306,7 +616,7 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
 
     checks.push(
       check(
-        "n8nPreservesProviderAttemptsOnTotalFailure",
+        "n8nPreservesSanitizedProviderAttemptsOnTotalFailure",
         totalFailure?.fallback_used === true &&
           totalFailure.provider_attempts.length ===
             2 &&
@@ -317,8 +627,40 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
           totalFailure.provider_attempts[0]
             ?.success === false &&
           totalFailure.provider_attempts[0]
-            ?.error_summary ===
-            "OpenAI exact total failure" &&
+            ?.error_summary
+            ?.includes(
+              "Unknown field 'mystery'.",
+            ) === true &&
+          totalFailure.provider_attempts[0]
+            ?.error_summary
+            ?.includes(
+              "type: invalid_request_error",
+            ) === true &&
+          totalFailure.provider_attempts[0]
+            ?.error_summary
+            ?.includes("param: mystery") ===
+            true &&
+          totalFailure.provider_attempts[0]
+            ?.error_summary
+            ?.includes(
+              "code: unknown_field",
+            ) === true &&
+          totalFailure.provider_attempts[0]
+            ?.error_summary
+            ?.includes("[REDACTED]") ===
+            true &&
+          !totalFailure.provider_attempts[0]
+            ?.error_summary
+            ?.includes(openAISecret) &&
+          !totalFailure.provider_attempts[0]
+            ?.error_summary
+            ?.includes(
+              leakedAuthorizationValue,
+            ) &&
+          (
+            totalFailure.provider_attempts[0]
+              ?.error_summary?.length ?? 0
+          ) <= 500 &&
           totalFailure.provider_attempts[1]
             ?.provider === "groq" &&
           totalFailure.provider_attempts[1]
@@ -328,7 +670,7 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
           totalFailure.provider_attempts[1]
             ?.error_summary ===
             "Groq exact total failure",
-        "Total failure must preserve ordered OpenAI and Groq attempt details and exact error summaries.",
+        "Total failure must preserve bounded OpenAI error fields and the Groq error while redacting API keys and Authorization values.",
       ),
     );
 

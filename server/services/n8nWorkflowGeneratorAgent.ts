@@ -12,7 +12,12 @@ import {
 } from "../prompts/n8nWorkflowGeneratorPrompt";
 import { n8nWorkflowSchema } from "../schemas/n8nWorkflow.schema";
 import { callGroq } from "./groqProvider";
-import { callOpenAIAgent } from "./openaiProvider";
+import {
+  OpenAIAPIError,
+  callOpenAIAgent,
+  resolveOpenAIModelSelection,
+  type OpenAIFetch,
+} from "./openaiProvider";
 import { buildCompactN8nGenerationInput } from "./n8nImplementationBriefBuilder";
 
 export const n8nGeneratorNotConfiguredMessage =
@@ -43,7 +48,17 @@ export type N8nWorkflowGeneratorDependencies = {
       (prompt: string) => Promise<string>
     >
   >;
+  openaiFetch?: OpenAIFetch;
 };
+
+export function resolveN8nOpenAIModelSelection() {
+  return resolveOpenAIModelSelection({
+    modelEnv: "OPENAI_N8N_MODEL",
+    fallbackModelEnv:
+      "OPENAI_AGENT_MODEL",
+    defaultModel: "gpt-5-nano",
+  });
+}
 
 export class N8nWorkflowGeneratorConfigError extends Error {
   provider_attempts: ProviderAttempt[];
@@ -1764,6 +1779,9 @@ async function callN8nProvider(
 
         reasoningEffort: "minimal",
         verbosity: "low",
+        structuredOutputMode: "none",
+        fetchImpl:
+          dependencies?.openaiFetch,
       },
     );
   }
@@ -1799,6 +1817,13 @@ async function callN8nProvider(
 function summarizeProviderError(
   error: unknown,
 ): string {
+  if (error instanceof OpenAIAPIError) {
+    return error.message
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 500);
+  }
+
   if (error instanceof Error) {
     return error.message
       .replace(
