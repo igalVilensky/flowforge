@@ -6,6 +6,8 @@ import type {
   N8nGenerateResponse,
   N8nGeneratorProviderAttempt,
   N8nWorkflow,
+  N8nWorkflowProcessingTrace,
+  N8nWorkflowTransformation,
   N8nWorkflowValidationIssue,
 } from "../../shared/types/n8nWorkflow";
 import {
@@ -75,11 +77,17 @@ export class N8nWorkflowGeneratorConfigError extends Error {
 
 export class N8nWorkflowGeneratorValidationError extends Error {
   issues: N8nWorkflowValidationIssue[];
+  processing_trace?: N8nWorkflowProcessingTrace;
 
-  constructor(message: string, issues: N8nWorkflowValidationIssue[]) {
+  constructor(
+    message: string,
+    issues: N8nWorkflowValidationIssue[],
+    processingTrace?: N8nWorkflowProcessingTrace,
+  ) {
     super(message);
     this.name = "N8nWorkflowGeneratorValidationError";
     this.issues = issues;
+    this.processing_trace = processingTrace;
   }
 }
 
@@ -136,6 +144,31 @@ export class N8nWorkflowGeneratorProvidersFailedError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function valuesDiffer(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) !== JSON.stringify(right);
+}
+
+function recordTransformation(
+  target: N8nWorkflowTransformation[],
+  input: {
+    id: string;
+    description: string;
+    functionNames: string[];
+    before: unknown;
+    after: unknown;
+    details?: string[];
+  },
+) {
+  if (!valuesDiffer(input.before, input.after)) return;
+
+  target.push({
+    id: input.id,
+    description: input.description,
+    function_names: input.functionNames,
+    ...(input.details?.length ? { details: input.details } : {}),
+  });
 }
 
 function normalizeText(value: unknown): string {
@@ -826,7 +859,29 @@ function samplePayloadForInput(
     const key = fieldKey(field);
 
     if (key) {
-      payload[key] = "";
+      if (key.includes("name")) {
+        payload[key] = "Alex Example";
+      } else if (key.includes("id")) {
+        payload[key] = "APP-TEST-001";
+      } else if (key.includes("email")) {
+        payload[key] = "alex.example@example.com";
+      } else if (key.includes("course")) {
+        payload[key] = "Web Development";
+      } else if (key.includes("summary")) {
+        payload[key] = "Synthetic sample application for workflow testing.";
+      } else if (key.includes("url") || key.includes("link")) {
+        payload[key] = "https://example.com/portfolio";
+      } else if (key.includes("source")) {
+        payload[key] = "Test source";
+      } else if (key.includes("role")) {
+        payload[key] = "Frontend Developer";
+      } else if (key.includes("priority") || key.includes("category")) {
+        payload[key] = "normal";
+      } else if (key.includes("amount")) {
+        payload[key] = 100;
+      } else {
+        payload[key] = "Sample value";
+      }
     }
   }
 
@@ -880,7 +935,7 @@ function reviewPackageValues(
   for (const output of compactInput.internal_outputs) {
     const key = fieldKey(output);
 
-    if (key) {
+    if (key && !Object.hasOwn(values, key)) {
       values[key] = true;
     }
   }
@@ -955,13 +1010,30 @@ function classificationCodeForInput(
       "  ];",
       "",
       '  const missingFields = requiredFields.filter((field) => !String(item.json[field] || "").trim());',
-      '  const priority = missingFields.length > 0 ? "needs_manual_review" : "normal";',
+      "",
+      '  let priority = "normal";',
+      '  let priority_reason = "Standard processing";',
+      "",
+      '  if (missingFields.length > 0) {',
+      '    priority = "needs_manual_review";',
+      '    priority_reason = "Missing required fields";',
+      '  } else {',
+      '    const hasUsefulSignal = Boolean(',
+      '      item.json.portfolio_link ||',
+      '      (item.json.application_source && String(item.json.application_source).toLowerCase().includes("referral"))',
+      '    );',
+      '    if (hasUsefulSignal) {',
+      '      priority = "high";',
+      '      priority_reason = "Strong candidate signal detected";',
+      '    }',
+      '  }',
       "",
       "  return {",
       "    json: {",
       ...canonicalAssignments,
       `      ${JSON.stringify(targetKey)}: priority,`,
       "      priority,",
+      "      priority_reason,",
       "      missing_fields: missingFields,",
       "      classification_is_internal_triage_only: true",
       "    }",
@@ -1007,12 +1079,16 @@ function normalizeCodeNodeParameters(
   const existingParameters = isRecord(node.parameters) ? node.parameters : {};
 
   const nodeName = normalizedNodeName(node);
-
   let canonicalCode = "";
+  let updatedNode = { ...node };
+
+  if (nodeName.includes("extract")) {
+    updatedNode.notes = "Normalizes pre-extracted sample fields. In production, replace this with an AI extraction node to parse raw email text.";
+  }
 
   if (nodeName.includes("sample")) {
     canonicalCode = sampleCodeForInput(compactInput);
-  } else if (nodeName.includes("extract")) {
+  } else if (nodeName.includes("normalize") || nodeName.includes("extract")) {
     canonicalCode = extractionCodeForInput(compactInput);
   } else if (
     nodeName.includes("classify") ||
@@ -1031,7 +1107,7 @@ function normalizeCodeNodeParameters(
   }
 
   return {
-    ...node,
+    ...updatedNode,
     parameters: canonicalCode
       ? {
           jsCode: canonicalCode,
@@ -1055,12 +1131,17 @@ function normalizeSetNodeParameters(
   const existingParameters = isRecord(node.parameters) ? node.parameters : {};
 
   const nodeName = normalizedNodeName(node);
+  let updatedNode = { ...node };
+
+  if (nodeName.includes("extract")) {
+    updatedNode.notes = "Normalizes pre-extracted sample fields. In production, replace this with an AI extraction node to parse raw email text.";
+  }
 
   let values: Record<string, unknown> | null = null;
 
   if (nodeName.includes("sample")) {
     values = samplePayloadForInput(compactInput);
-  } else if (nodeName.includes("extract")) {
+  } else if (nodeName.includes("normalize") || nodeName.includes("extract")) {
     values = canonicalFieldExpressions(compactInput);
   } else if (
     nodeName.includes("classify") ||
@@ -1087,7 +1168,8 @@ function normalizeSetNodeParameters(
   }
 
   return {
-    ...node,
+    ...updatedNode,
+    typeVersion: 1, // Enforce supported set node format
     parameters: values
       ? {
           values,
@@ -1252,6 +1334,25 @@ export function normalizeGeneratedWorkflowNodeParameters(
     nodes: input.nodes.map((node) => {
       if (!isRecord(node)) {
         return node;
+      }
+
+      if (node.type === "n8n-nodes-base.manualTrigger") {
+        return {
+          ...node,
+          parameters: {},
+        };
+      }
+
+      if (node.type === "n8n-nodes-base.scheduleTrigger") {
+        const existingParameters = isRecord(node.parameters) ? node.parameters : {};
+        const newParameters: Record<string, unknown> = {};
+        if (existingParameters.rule !== undefined) {
+          newParameters.rule = existingParameters.rule;
+        }
+        return {
+          ...node,
+          parameters: newParameters,
+        };
       }
 
       if (isUnsafeExternalNode(node)) {
@@ -1821,6 +1922,44 @@ export function repairGeneratedWorkflowGraph(
   };
 }
 
+function applyDeterministicLayout(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  const orderedNodes = orderedExecutableNodes(input.nodes, compactInput);
+
+  return {
+    ...input,
+    nodes: input.nodes.map((node) => {
+      if (!isRecord(node)) {
+        return node;
+      }
+
+      const name = normalizeText(node.name);
+
+      if (node.type === "n8n-nodes-base.stickyNote") {
+        return node;
+      }
+
+      const index = orderedNodes.findIndex((n) => normalizeText(n.name) === name);
+
+      if (index >= 0) {
+        const y = node.disabled === true ? 220 : 0;
+        return {
+          ...node,
+          position: [index * 260, y],
+        };
+      }
+
+      return node;
+    }),
+  };
+}
+
 const implementationBriefRootFields = [
   "workflow_goal",
   "trigger_description",
@@ -2161,13 +2300,45 @@ function validateGeneratedWorkflowQuality(
     }
   }
 
+  const manualTrigger = executableNodes.find(node => node.type === "n8n-nodes-base.manualTrigger");
+  if (manualTrigger && Object.keys(isRecord(manualTrigger.parameters) ? manualTrigger.parameters : {}).length > 0) {
+    addIssue(
+      `nodes.${manualTrigger.name}.parameters`,
+      "Manual trigger parameters must be empty.",
+    );
+  }
+
+  for (const node of workflow.nodes) {
+    if (node.type === "n8n-nodes-base.set" && node.typeVersion !== 1) {
+      addIssue(
+        `nodes.${node.name}.typeVersion`,
+        "Set nodes must use the compatible typeVersion 1 format.",
+      );
+    }
+  }
+
   const canonicalKeys = canonicalFieldKeys(compactInput);
   const fieldNodes = workflow.nodes.filter((node) => {
+    if (
+      node.disabled === true ||
+      node.type === "n8n-nodes-base.stickyNote"
+    ) {
+      return false;
+    }
+
+    if (
+      node.type !== "n8n-nodes-base.set" &&
+      node.type !== "n8n-nodes-base.code"
+    ) {
+      return false;
+    }
+
     const name = node.name.toLowerCase();
 
     return (
       name.includes("sample") ||
       name.includes("extract") ||
+      name.includes("normalize") ||
       name.includes("classify") ||
       name.includes("categorize") ||
       name.includes("triage") ||
@@ -2202,7 +2373,7 @@ function validateGeneratedWorkflowQuality(
     }
   }
 
-  const sampleNode = workflow.nodes.find((node) =>
+  const sampleNode = fieldNodes.find((node) =>
     node.name.toLowerCase().includes("sample"),
   );
   const sampleParameterText = sampleNode
@@ -2223,6 +2394,7 @@ function validateGeneratedWorkflowQuality(
       "The sample intake node must preserve the canonical source and source type.",
     );
   }
+
 
   const contextValues = [
     compactInput.domain,
@@ -2290,63 +2462,230 @@ function validateGeneratedWorkflowQuality(
   return issues;
 }
 
+function changedNodeTypeDetails(before: unknown, after: unknown): string[] {
+  if (!isRecord(before) || !Array.isArray(before.nodes) || !isRecord(after) || !Array.isArray(after.nodes)) {
+    return [];
+  }
+
+  const beforeNodes = before.nodes.filter(isRecord);
+  const afterNodes = after.nodes.filter(isRecord);
+
+  return afterNodes.flatMap((node) => {
+    const name = normalizeText(node.name);
+    const previous = beforeNodes.find((candidate) => normalizeText(candidate.name) === name);
+
+    if (!previous || previous.type === node.type) return [];
+
+    return [`${name || "Unnamed node"}: ${normalizeText(previous.type)} → ${normalizeText(node.type)}`];
+  });
+}
+
+function canonicalMetadataChanges(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): { fields: string[]; details: string[] } {
+  const existingMeta = isRecord(input) && isRecord(input.meta) ? input.meta : {};
+  const canonicalValues: Record<string, unknown> = {
+    domain: compactInput.domain,
+    source: compactInput.source,
+    source_type: compactInput.source_type,
+    source_is_placeholder: true,
+    extracted_fields: canonicalFieldKeys(compactInput),
+    classification_target: compactInput.classification_target,
+    human_owner: compactInput.human_owner,
+    approval_boundary: compactInput.approval_boundary,
+    external_action_boundary: compactInput.external_action_boundary,
+    safety_status: compactInput.safety_status,
+  };
+  const fields = Object.entries(canonicalValues)
+    .filter(([key, value]) => valuesDiffer(existingMeta[key], value))
+    .map(([key]) => key);
+  const details = fields.map((key) => {
+    const previous = existingMeta[key];
+    const value = canonicalValues[key];
+    const renderedValue = Array.isArray(value) ? value.join(", ") : String(value);
+
+    return previous === undefined
+      ? `${key} added from the structured implementation input: ${renderedValue}`
+      : `${key} replaced with the structured implementation value: ${renderedValue}`;
+  });
+
+  return { fields, details };
+}
+
 function normalizeAndValidateGeneratedWorkflow(
   rawResponse: string,
   compactInput: CompactN8nGenerationInput,
   provider: N8nAiProvider,
   onValidationFailure?: (trace: N8nWorkflowValidationTrace) => void,
-): N8nWorkflow {
+): { workflow: N8nWorkflow; processing: N8nWorkflowProcessingTrace } {
   const parsed = parseStrictJson(rawResponse);
+  const normalizationActions: N8nWorkflowTransformation[] = [];
+  const repairActions: N8nWorkflowTransformation[] = [];
 
   const unwrapped = normalizeGeneratedWorkflowEnvelope(parsed);
+  recordTransformation(normalizationActions, {
+    id: "workflow_envelope",
+    description: "Removed an extra provider wrapper around the n8n workflow.",
+    functionNames: ["normalizeGeneratedWorkflowEnvelope()"],
+    before: parsed,
+    after: unwrapped,
+  });
 
   const named = normalizeGeneratedWorkflowName(
     unwrapped,
     compactInput.workflow_name,
   );
+  recordTransformation(normalizationActions, {
+    id: "workflow_name",
+    description: "Replaced a generic provider title with the canonical workflow name.",
+    functionNames: ["normalizeGeneratedWorkflowName()"],
+    before: unwrapped,
+    after: named,
+  });
 
   const inactive = normalizeGeneratedWorkflowActiveFlag(named);
+  recordTransformation(normalizationActions, {
+    id: "inactive_preview",
+    description: "Forced the generated workflow to remain inactive for safe preview.",
+    functionNames: ["normalizeGeneratedWorkflowActiveFlag()"],
+    before: named,
+    after: inactive,
+  });
 
   const normalizedIds = normalizeGeneratedWorkflowIds(inactive);
+  recordTransformation(normalizationActions, {
+    id: "node_ids",
+    description: "Normalized missing or duplicate node identifiers.",
+    functionNames: ["normalizeGeneratedWorkflowIds()"],
+    before: inactive,
+    after: normalizedIds,
+  });
 
   const normalizedNodeShape =
     normalizeGeneratedWorkflowNodeShape(normalizedIds);
+  recordTransformation(normalizationActions, {
+    id: "node_shape",
+    description: "Normalized node parameter objects, versions, and optional values.",
+    functionNames: ["normalizeGeneratedWorkflowNodeShape()"],
+    before: normalizedIds,
+    after: normalizedNodeShape,
+  });
 
   const normalizedConnections =
     normalizeGeneratedWorkflowConnections(normalizedNodeShape);
+  recordTransformation(normalizationActions, {
+    id: "connection_shape",
+    description: "Normalized provider connection aliases into n8n's connection structure.",
+    functionNames: ["normalizeGeneratedWorkflowConnections()"],
+    before: normalizedNodeShape,
+    after: normalizedConnections,
+  });
 
   const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(
     normalizedConnections,
     compactInput,
   );
+  recordTransformation(normalizationActions, {
+    id: "node_parameters",
+    description: "Rebuilt generated node parameters from the canonical fields and safe-preview rules.",
+    functionNames: ["normalizeGeneratedWorkflowNodeParameters()"],
+    before: normalizedConnections,
+    after: normalizedParameters,
+    details: changedNodeTypeDetails(normalizedConnections, normalizedParameters),
+  });
 
   const normalizedStickyNotes =
     normalizeStickyNoteConnections(normalizedParameters);
+  recordTransformation(normalizationActions, {
+    id: "sticky_note_connections",
+    description: "Removed sticky notes from the executable connection path.",
+    functionNames: ["normalizeStickyNoteConnections()"],
+    before: normalizedParameters,
+    after: normalizedStickyNotes,
+  });
 
   const normalizedDuplicates = normalizeDuplicateReviewSetNodes(
     normalizedStickyNotes,
   );
+  recordTransformation(repairActions, {
+    id: "duplicate_review_nodes",
+    description: "Removed duplicate pending-review marker nodes.",
+    functionNames: ["normalizeDuplicateReviewSetNodes()"],
+    before: normalizedStickyNotes,
+    after: normalizedDuplicates,
+  });
 
   const completedReviewPath = ensureRecommendedPendingReviewNode(
     normalizedDuplicates,
     compactInput,
   );
+  recordTransformation(repairActions, {
+    id: "pending_review_node",
+    description: "Added the required terminal pending-human-review node.",
+    functionNames: ["ensureRecommendedPendingReviewNode()"],
+    before: normalizedDuplicates,
+    after: completedReviewPath,
+  });
 
   const finalConnections =
     normalizeGeneratedWorkflowConnectionsAfterNodeRemoval(completedReviewPath);
+  recordTransformation(repairActions, {
+    id: "removed_node_connections",
+    description: "Removed connections that referenced nodes removed during repair.",
+    functionNames: ["normalizeGeneratedWorkflowConnectionsAfterNodeRemoval()"],
+    before: completedReviewPath,
+    after: finalConnections,
+  });
 
   const repairedGraph = repairGeneratedWorkflowGraph(
     finalConnections,
     compactInput,
   );
+  recordTransformation(repairActions, {
+    id: "workflow_graph",
+    description: "Rebuilt the main execution path because generated connections were incomplete or unsafe.",
+    functionNames: ["repairGeneratedWorkflowGraph()"],
+    before: finalConnections,
+    after: repairedGraph,
+  });
+
+  const layedOutGraph = applyDeterministicLayout(
+    repairedGraph,
+    compactInput,
+  );
+  recordTransformation(normalizationActions, {
+    id: "deterministic_layout",
+    description: "Applied a deterministic left-to-right node layout.",
+    functionNames: ["applyDeterministicLayout()"],
+    before: repairedGraph,
+    after: layedOutGraph,
+  });
 
   const normalizedPositions =
-    normalizeGeneratedWorkflowNodePositions(repairedGraph);
+    normalizeGeneratedWorkflowNodePositions(layedOutGraph);
+  recordTransformation(normalizationActions, {
+    id: "node_positions",
+    description: "Replaced missing or invalid node positions.",
+    functionNames: ["normalizeGeneratedWorkflowNodePositions()"],
+    before: layedOutGraph,
+    after: normalizedPositions,
+  });
+
+  const canonicalChanges = canonicalMetadataChanges(normalizedPositions, compactInput);
 
   const normalized = enforceCanonicalMetadata(
     normalizedPositions,
     compactInput,
   );
+  recordTransformation(repairActions, {
+    id: "canonical_metadata",
+    description: "Restored authoritative compile fields in workflow metadata.",
+    functionNames: ["enforceCanonicalMetadata()"],
+    before: normalizedPositions,
+    after: normalized,
+    details: canonicalChanges.details,
+  });
 
   const validation = n8nWorkflowSchema.safeParse(normalized);
 
@@ -2364,9 +2703,19 @@ function normalizeAndValidateGeneratedWorkflow(
       // Diagnostics must never alter provider routing.
     }
 
+    const processing: N8nWorkflowProcessingTrace = {
+      normalization_actions: normalizationActions,
+      repair_actions: repairActions,
+      canonical_fields_restored: canonicalChanges.fields,
+      schema_validation_passed: false,
+      quality_validation_passed: false,
+      validation_issues: issues,
+    };
+
     throw new N8nWorkflowGeneratorValidationError(
       "Generated n8n workflow JSON did not pass FlowForge safety validation.",
       issues,
+      processing,
     );
   }
 
@@ -2387,13 +2736,33 @@ function normalizeAndValidateGeneratedWorkflow(
       // Diagnostics must never alter provider routing.
     }
 
+    const processing: N8nWorkflowProcessingTrace = {
+      normalization_actions: normalizationActions,
+      repair_actions: repairActions,
+      canonical_fields_restored: canonicalChanges.fields,
+      schema_validation_passed: true,
+      quality_validation_passed: false,
+      validation_issues: qualityIssues,
+    };
+
     throw new N8nWorkflowGeneratorValidationError(
       "Generated n8n workflow JSON did not pass FlowForge direct-workflow quality validation.",
       qualityIssues,
+      processing,
     );
   }
 
-  return validation.data;
+  return {
+    workflow: validation.data,
+    processing: {
+      normalization_actions: normalizationActions,
+      repair_actions: repairActions,
+      canonical_fields_restored: canonicalChanges.fields,
+      schema_validation_passed: true,
+      quality_validation_passed: true,
+      validation_issues: [],
+    },
+  };
 }
 
 export async function runN8nWorkflowGeneratorAgent(
@@ -2436,7 +2805,7 @@ export async function runN8nWorkflowGeneratorAgent(
     try {
       rawResponse = await callN8nProvider(provider, prompt, dependencies);
 
-      const workflow = normalizeAndValidateGeneratedWorkflow(
+      const generated = normalizeAndValidateGeneratedWorkflow(
         rawResponse,
         compactInput,
         provider,
@@ -2458,12 +2827,13 @@ export async function runN8nWorkflowGeneratorAgent(
         provider,
         attempted: true,
         success: true,
+        processing_trace: generated.processing,
       });
 
       return {
-        workflow_json: workflow,
+        workflow_json: generated.workflow,
 
-        warnings: workflowWarnings(workflow),
+        warnings: workflowWarnings(generated.workflow),
 
         provider,
 
@@ -2472,6 +2842,11 @@ export async function runN8nWorkflowGeneratorAgent(
         fallback_used: fallbackUsed,
 
         provider_attempts: providerAttempts,
+
+        generation_trace: {
+          implementation_input: compactInput,
+          processing: generated.processing,
+        },
       };
     } catch (error) {
       const validationIssues =
@@ -2492,6 +2867,11 @@ export async function runN8nWorkflowGeneratorAgent(
         ...(provider === "openai" && rawResponse
           ? {
               raw_response_preview: previewRawModelOutput(rawResponse),
+            }
+          : {}),
+        ...(error instanceof N8nWorkflowGeneratorValidationError && error.processing_trace
+          ? {
+              processing_trace: error.processing_trace,
             }
           : {}),
       });

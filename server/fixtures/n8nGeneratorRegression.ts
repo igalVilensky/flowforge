@@ -1581,6 +1581,175 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
         "The general GROQ_API_KEY must not configure n8n generation; only GROQ_N8N_API_KEY may enable Groq.",
       ),
     );
+    // ─── Fixture: Sticky Note sample node + missing sample set repair ────────
+    // Verifies 7 quality improvements in a single agent run:
+    //  1. Manual trigger parameters stripped to {}
+    //  2. Deterministic layout at y=0 for executable chain
+    //  3. Repaired sample set node gets synthetic values from samplePayloadForInput
+    //  4. Extract node name is preserved (not renamed to Normalize)
+    //  5. Admissions classifier emits high / needs_manual_review triage
+    //  6. Set nodes have typeVersion 1
+    //  7. A sticky note named Sample… is ignored; graph repair inserts a set node
+    const validationFixesResult =
+      await runN8nWorkflowGeneratorAgent(
+        { compileJob },
+        {
+          calls: {
+            openai: async () => JSON.stringify({
+              name: "Validation Fixes Test",
+              nodes: [
+                {
+                  id: "trigger",
+                  name: "Manual Start",
+                  type: "n8n-nodes-base.manualTrigger",
+                  typeVersion: 1,
+                  position: [33, 44],
+                  // This param must be stripped to {}:
+                  parameters: { someParam: "shouldBeRemoved" },
+                },
+                {
+                  // A sticky note whose name starts with "Sample" must NOT
+                  // become the canonical sample-data set node:
+                  id: "sample_sticky",
+                  name: "Sample Admissions Application",
+                  type: "n8n-nodes-base.stickyNote",
+                  typeVersion: 1,
+                  position: [111, -222],
+                  parameters: { content: "Sample Data" },
+                },
+                {
+                  id: "extract",
+                  name: "Extract Applicant Fields",
+                  type: "n8n-nodes-base.code",
+                  typeVersion: 1,
+                  position: [555, 666],
+                  parameters: {},
+                },
+                {
+                  id: "classify",
+                  name: "Classify Application Priority",
+                  type: "n8n-nodes-base.code",
+                  typeVersion: 1,
+                  position: [777, 888],
+                  parameters: {},
+                },
+                {
+                  id: "review",
+                  name: "Mark Pending Human Review",
+                  type: "n8n-nodes-base.set",
+                  typeVersion: 1,
+                  position: [999, 0],
+                  parameters: {},
+                },
+              ],
+              connections: {
+                "Manual Start": {
+                  main: [[{ node: "Extract Applicant Fields", type: "main", index: 0 }]],
+                },
+                "Extract Applicant Fields": {
+                  main: [[{ node: "Classify Application Priority", type: "main", index: 0 }]],
+                },
+                "Classify Application Priority": {
+                  main: [[{ node: "Mark Pending Human Review", type: "main", index: 0 }]],
+                },
+              },
+              active: false,
+            }),
+            groq: async () => validProviderResponse,
+          },
+        },
+      );
+
+    // OpenAI must succeed without Groq fallback.
+    const openAISucceeded =
+      validationFixesResult.provider === "openai" &&
+      !validationFixesResult.fallback_used;
+
+    const valWorkflow = validationFixesResult.workflow_json;
+    const vfTriggerNode = valWorkflow.nodes.find(
+      (n) => n.type === "n8n-nodes-base.manualTrigger",
+    ) as Record<string, unknown> | undefined;
+    const vfStickyNode = valWorkflow.nodes.find(
+      (n) => n.type === "n8n-nodes-base.stickyNote",
+    ) as Record<string, unknown> | undefined;
+    // Graph repair inserts a sample Set node because the sticky-note is ignored:
+    const vfSampleSetNode = valWorkflow.nodes.find(
+      (n) =>
+        n.type === "n8n-nodes-base.set" &&
+        n.name.toLowerCase().includes("sample"),
+    ) as Record<string, unknown> | undefined;
+    const vfExtractNode = valWorkflow.nodes.find(
+      (n) => String(n.name).includes("Extract Applicant"),
+    ) as Record<string, unknown> | undefined;
+    const vfClassifyNode = valWorkflow.nodes.find(
+      (n) => String(n.name).includes("Classify Application"),
+    ) as Record<string, unknown> | undefined;
+
+    const vfTriggerPos = vfTriggerNode?.position as number[] | undefined;
+    const vfExtractPos = vfExtractNode?.position as number[] | undefined;
+
+    checks.push(
+      check(
+        "n8nNormalizesManualTriggerParameters",
+        openAISucceeded &&
+          vfTriggerNode !== undefined &&
+          Object.keys(
+            (vfTriggerNode.parameters as Record<string, unknown>) || {},
+          ).length === 0,
+        "Manual trigger parameters must be normalized to empty {}.",
+      ),
+      check(
+        "n8nAppliesDeterministicLayout",
+        openAISucceeded &&
+          vfTriggerPos?.[0] === 0 &&
+          vfTriggerPos?.[1] === 0 &&
+          Array.isArray(vfExtractPos) &&
+          (vfExtractPos[1] as number) === 0,
+        "Executable chain nodes must land at y=0 with 260px horizontal spacing.",
+      ),
+      check(
+        "n8nGeneratesSyntheticSampleValues",
+        openAISucceeded &&
+          vfSampleSetNode !== undefined &&
+          JSON.stringify(
+            vfSampleSetNode.parameters || {},
+          ).includes("Alex Example"),
+        "The repaired sample Set node must contain recognizable synthetic field data.",
+      ),
+      check(
+        "n8nPreservesCanonicalExtractionNodeName",
+        openAISucceeded &&
+          vfExtractNode !== undefined &&
+          String(vfExtractNode.name) === "Extract Applicant Fields" &&
+          String(vfExtractNode.notes ?? "").includes(
+            "Normalizes pre-extracted",
+          ),
+        "Extract nodes must keep their original name and receive an explanatory note.",
+      ),
+      check(
+        "n8nAdmissionsClassificationSupportsHighPriority",
+        openAISucceeded &&
+          JSON.stringify(
+            vfClassifyNode?.parameters || {},
+          ).includes("needs_manual_review") &&
+          JSON.stringify(
+            vfClassifyNode?.parameters || {},
+          ).includes("high"),
+        "Admissions classifier must emit both 'high' and 'needs_manual_review' triage values.",
+      ),
+      check(
+        "n8nEnforcesSetNodeCompatibility",
+        openAISucceeded && vfSampleSetNode?.typeVersion === 1,
+        "Set nodes must use the compatible typeVersion 1 format.",
+      ),
+      check(
+        "n8nRepairsMissingSampleNodeGracefully",
+        openAISucceeded &&
+          vfStickyNode !== undefined &&
+          vfSampleSetNode !== undefined,
+        "A sticky note named Sample… must be ignored; graph repair must insert an executable sample Set node.",
+      ),
+    );
   } finally {
     restoreProviderEnvironment(
       savedEnvironment,

@@ -91,6 +91,22 @@ export type N8nWorkflowValidationIssue = {
   code: string;
 };
 
+export type N8nWorkflowTransformation = {
+  id: string;
+  description: string;
+  function_names: string[];
+  details?: string[];
+};
+
+export type N8nWorkflowProcessingTrace = {
+  normalization_actions: N8nWorkflowTransformation[];
+  repair_actions: N8nWorkflowTransformation[];
+  canonical_fields_restored: string[];
+  schema_validation_passed: boolean;
+  quality_validation_passed: boolean;
+  validation_issues: N8nWorkflowValidationIssue[];
+};
+
 export type N8nGeneratorProviderAttempt = {
   provider: "openai" | "groq";
   attempted: boolean;
@@ -98,6 +114,12 @@ export type N8nGeneratorProviderAttempt = {
   error_summary?: string;
   validation_issues?: N8nWorkflowValidationIssue[];
   raw_response_preview?: string;
+  processing_trace?: N8nWorkflowProcessingTrace;
+};
+
+export type N8nGenerationTrace = {
+  implementation_input: CompactN8nGenerationInput;
+  processing: N8nWorkflowProcessingTrace;
 };
 
 export type N8nGenerateResponse = {
@@ -107,4 +129,5 @@ export type N8nGenerateResponse = {
   used_ai: boolean;
   fallback_used: boolean;
   provider_attempts?: N8nGeneratorProviderAttempt[];
+  generation_trace?: N8nGenerationTrace;
 };

@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { ChevronRight, X } from "lucide-vue-next";
+import { buildExecutionJourney } from "~~/shared/executionJourney";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
 import type { AgentDebugInfo, AgentProviderDebugAttempt } from "../../shared/types/agentOutputs";
-import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
+import type {
+  N8nGenerationTrace,
+  N8nGenerateResponse,
+  N8nGeneratorProviderAttempt,
+  N8nWorkflow,
+} from "../../shared/types/n8nWorkflow";
 import type {
   ClarificationSession,
   ClarificationSessionAnswer,
   ClarificationSessionResponse,
 } from "../../shared/types/clarificationSession";
 
-type PanelView = "context" | "agents" | "details" | "trace";
+type PanelView = "journey" | "context" | "agents" | "details";
 type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
 type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
 
@@ -151,7 +157,7 @@ const clarificationAnswers = ref<ClarificationSessionAnswer[]>([]);
 const clarificationAnswerDraft = ref("");
 const runState = ref<RunState>("idle");
 const errorMessage = ref("");
-const activePanel = ref<PanelView>("context");
+const activePanel = ref<PanelView>("journey");
 const showAnswered = ref(false);
 const selectedExampleLabel = ref<string | null>(null);
 const clarificationRateLimitMessage = ref("");
@@ -169,7 +175,8 @@ const n8nStaticSafetyWarning =
 const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
-const n8nProviderAttempts = ref<AgentProviderDebugAttempt[]>([]);
+const n8nProviderAttempts = ref<N8nGeneratorProviderAttempt[]>([]);
+const n8nGenerationTrace = ref<N8nGenerationTrace | null>(null);
 const n8nJsonCopied = ref(false);
 const compileProgressEvents = ref<CompileProgressEvent[]>([]);
 const compileAgentStateMap = ref<Record<string, AgentUiCard>>({});
@@ -1526,6 +1533,49 @@ const n8nGeneratorMeta = computed(() => {
   ].join(" · ");
 });
 
+const executionJourney = computed(() => buildExecutionJourney({
+  job: job.value,
+  ...(clarificationLastResponse.value && clarificationOriginalInput.value
+    ? {
+        guided_clarification: {
+          original_input: clarificationOriginalInput.value,
+          answers: clarificationAnswers.value,
+          provider: clarificationLastResponse.value.provider,
+          used_ai: clarificationLastResponse.value.used_ai,
+          fallback_used: clarificationLastResponse.value.fallback_used,
+          ready_to_compile: clarificationLastResponse.value.session.ready_to_compile,
+          reason: clarificationLastResponse.value.session.reason,
+          rewritten_compile_prompt: clarificationLastResponse.value.session.rewritten_compile_prompt,
+          raw: clarificationLastResponse.value,
+        },
+      }
+    : {}),
+  n8n: {
+    state: n8nGeneratorState.value,
+    workflow: n8nWorkflowDraft.value,
+    provider: n8nProvider.value,
+    used_ai: n8nUsedAi.value,
+    fallback_used: n8nFallbackUsed.value,
+    provider_attempts: n8nProviderAttempts.value,
+    generation_trace: n8nGenerationTrace.value,
+    warnings: n8nWarnings.value,
+    error: n8nGenerateError.value,
+  },
+}));
+
+function journeyStatusLabel(status: string) {
+  if (status === "fallback") return "Fallback used";
+  return status.replaceAll("_", " ");
+}
+
+function journeyMethodLabel(method: string) {
+  if (method === "openai") return "OpenAI";
+  if (method === "groq") return "Groq";
+  if (method === "gemini") return "Gemini";
+  if (method === "safety") return "Safety rules";
+  return method.replaceAll("_", " ");
+}
+
 const n8nJsonFileName = computed(() => {
   const source = job.value?.result?.workflow_name || "flowforge-n8n-draft";
   const safeName = source
@@ -1545,6 +1595,7 @@ function resetN8nGeneratorState() {
   n8nProvider.value = "";
   n8nUsedAi.value = false;
   n8nFallbackUsed.value = false;
+  n8nGenerationTrace.value = null;
   n8nJsonCopied.value = false;
 }
 
@@ -1587,7 +1638,7 @@ function detailFromErrorData(data: unknown) {
   return "";
 }
 
-function providerAttemptsFromValue(value: unknown): AgentProviderDebugAttempt[] {
+function providerAttemptsFromValue(value: unknown): N8nGeneratorProviderAttempt[] {
   if (!Array.isArray(value)) return [];
 
   return value.flatMap((item) => {
@@ -1625,6 +1676,9 @@ function providerAttemptsFromValue(value: unknown): AgentProviderDebugAttempt[] 
       ...(typeof attempt?.raw_response_preview === "string"
         ? { raw_response_preview: attempt.raw_response_preview }
         : {}),
+      ...(asRecord(attempt?.processing_trace)
+        ? { processing_trace: attempt?.processing_trace as N8nGeneratorProviderAttempt["processing_trace"] }
+        : {}),
     }];
   });
 }
@@ -1656,7 +1710,7 @@ function n8nFailureDetails(error: unknown) {
   };
 }
 
-function n8nProviderAttemptsErrorMessage(attempts: AgentProviderDebugAttempt[]) {
+function n8nProviderAttemptsErrorMessage(attempts: N8nGeneratorProviderAttempt[]) {
   const details = attempts
     .filter((attempt) => !attempt.success)
     .map((attempt) =>
@@ -1744,7 +1798,7 @@ function apiErrorMessage(error: unknown, fallback: string) {
 async function generateN8nWorkflowDraft() {
   if (!job.value || !canGenerateN8nJson.value) return;
 
-  activePanel.value = "agents";
+  activePanel.value = "journey";
   n8nGeneratorState.value = "generating";
   n8nGenerateError.value = "";
   n8nWarnings.value = [];
@@ -1752,6 +1806,7 @@ async function generateN8nWorkflowDraft() {
   n8nUsedAi.value = false;
   n8nFallbackUsed.value = false;
   n8nProviderAttempts.value = [];
+  n8nGenerationTrace.value = null;
   n8nJsonCopied.value = false;
 
   try {
@@ -1769,6 +1824,7 @@ async function generateN8nWorkflowDraft() {
     n8nUsedAi.value = response.used_ai;
     n8nFallbackUsed.value = response.fallback_used;
     n8nProviderAttempts.value = response.provider_attempts ?? [];
+    n8nGenerationTrace.value = response.generation_trace ?? null;
     n8nGeneratorState.value = "ready";
   } catch (error) {
     const failure = n8nFailureDetails(error);
@@ -1779,6 +1835,7 @@ async function generateN8nWorkflowDraft() {
     n8nUsedAi.value = failure.usedAi;
     n8nFallbackUsed.value = failure.fallbackUsed;
     n8nProviderAttempts.value = failure.attempts;
+    n8nGenerationTrace.value = null;
     n8nGenerateError.value = n8nProviderAttemptsErrorMessage(failure.attempts)
       || apiErrorMessage(error, "Could not generate n8n JSON draft.");
     n8nGeneratorState.value = "failed";
@@ -2154,7 +2211,7 @@ async function compileWithFallback(input: string) {
 
 async function compilePrompt(input: string) {
   runState.value = "compiling";
-  activePanel.value = "agents";
+  activePanel.value = "journey";
   errorMessage.value = "";
   resetCompileProgressState();
 
@@ -2531,6 +2588,13 @@ function isPrimaryDisabled() {
         <nav class="panel-tabs">
           <button
             type="button"
+            :class="{ active: activePanel === 'journey' }"
+            @click="activePanel = 'journey'"
+          >
+            Journey
+          </button>
+          <button
+            type="button"
             :class="{ active: activePanel === 'context' }"
             @click="activePanel = 'context'"
           >
@@ -2550,17 +2614,140 @@ function isPrimaryDisabled() {
           >
             Details
           </button>
-          <button
-            type="button"
-            :class="{ active: activePanel === 'trace' }"
-            @click="activePanel = 'trace'"
-          >
-            Trace
-          </button>
         </nav>
 
         <div class="panel-scroll">
-          <section v-if="activePanel === 'context'" class="side-section">
+          <section v-if="activePanel === 'journey'" class="side-section journey-section">
+            <div class="side-title">
+              <h2>Execution Journey</h2>
+              <span>{{ executionJourney.length }} steps</span>
+            </div>
+
+            <p v-if="executionJourney.length" class="journey-intro">
+              Follow the real handoffs, decisions, provider attempts, repairs, and final source of this result.
+            </p>
+
+            <div v-if="executionJourney.length" class="journey-list">
+              <article
+                v-for="step in executionJourney"
+                :key="step.id"
+                class="journey-card"
+                :class="`journey-${step.status}`"
+              >
+                <header class="journey-head">
+                  <span class="journey-number">{{ step.order }}</span>
+                  <div class="journey-identity">
+                    <h3>{{ step.title }}</h3>
+                    <div class="journey-badges">
+                      <span :class="`journey-badge status-${step.status}`">{{ journeyStatusLabel(step.status) }}</span>
+                      <span class="journey-badge method">{{ journeyMethodLabel(step.method) }}</span>
+                    </div>
+                  </div>
+                </header>
+
+                <p class="journey-purpose">{{ step.purpose }}</p>
+
+                <div v-if="step.function_names?.length" class="journey-functions">
+                  <span>Functions used</span>
+                  <code v-for="functionName in step.function_names" :key="functionName">{{ functionName }}</code>
+                </div>
+
+                <section class="journey-block">
+                  <h4>Input received</h4>
+                  <dl class="journey-values">
+                    <div v-for="item in step.input_summary" :key="item.label">
+                      <dt>{{ item.label }}</dt>
+                      <dd>{{ item.value }}</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section v-if="step.requirements?.length" class="journey-block">
+                  <h4>Requires</h4>
+                  <ul>
+                    <li v-for="requirement in step.requirements" :key="requirement">{{ requirement }}</li>
+                  </ul>
+                </section>
+
+                <section class="journey-block">
+                  <h4>What happened</h4>
+                  <ul>
+                    <li v-for="action in step.actions" :key="action">{{ action }}</li>
+                  </ul>
+                </section>
+
+                <section class="journey-block">
+                  <h4>Output produced</h4>
+                  <dl class="journey-values">
+                    <div v-for="item in step.output_summary" :key="item.label">
+                      <dt>{{ item.label }}</dt>
+                      <dd>{{ item.value }}</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section v-if="step.field_explanations?.length" class="journey-block journey-field-block">
+                  <h4>Why this output is needed</h4>
+                  <div v-for="item in step.field_explanations" :key="`${item.field}-${item.used_by}`" class="journey-field">
+                    <code>{{ item.field }}</code>
+                    <p>{{ item.reason }}</p>
+                    <span v-if="item.used_by">Used by {{ item.used_by }}</span>
+                  </div>
+                </section>
+
+                <section v-if="step.next_step" class="journey-next">
+                  <span>Next</span>
+                  <strong>{{ step.next_step.title }}</strong>
+                  <p>{{ step.next_step.reason }}</p>
+                </section>
+
+                <section v-if="step.limitations?.length" class="journey-limitations">
+                  <h4>Limitations</h4>
+                  <ul>
+                    <li v-for="limitation in step.limitations" :key="limitation">{{ limitation }}</li>
+                  </ul>
+                </section>
+
+                <details
+                  v-if="step.raw_input !== undefined || step.raw_output !== undefined"
+                  class="journey-raw"
+                >
+                  <summary>View raw data</summary>
+                  <div v-if="step.raw_input !== undefined">
+                    <strong>Input</strong>
+                    <pre>{{ formatDebugValue(step.raw_input) }}</pre>
+                  </div>
+                  <div v-if="step.raw_output !== undefined">
+                    <strong>Output</strong>
+                    <pre>{{ formatDebugValue(step.raw_output) }}</pre>
+                  </div>
+                </details>
+              </article>
+            </div>
+
+            <details v-if="job?.agent_trace?.length" class="journey-technical-trace">
+              <summary>Technical event trace · {{ job.agent_trace.length }}</summary>
+              <div class="trace-list">
+                <article v-for="(event, index) in job.agent_trace" :key="event.id || index" class="trace-item">
+                  <div class="trace-head">
+                    <strong>{{ event.action || event.tool_name || `Trace ${index + 1}` }}</strong>
+                    <span :class="`trace-status trace-${event.status || 'completed'}`">{{ event.status || "completed" }}</span>
+                  </div>
+                  <p>{{ compactText(event.output_summary || event.input_summary || event.reason || "Completed", 260) }}</p>
+                  <details v-if="event.reason || event.metadata" class="trace-details">
+                    <summary>Why / metadata</summary>
+                    <pre>{{ formatDebugValue({ reason: event.reason, metadata: event.metadata }) }}</pre>
+                  </details>
+                </article>
+              </div>
+            </details>
+
+            <p v-if="!executionJourney.length" class="muted">
+              Compile a scenario to see how the result was created.
+            </p>
+          </section>
+
+          <section v-else-if="activePanel === 'context'" class="side-section">
             <div class="side-title">
               <h2>Known facts</h2>
               <span>{{ knownFactItems.length }}</span>
@@ -2683,31 +2870,6 @@ function isPrimaryDisabled() {
                 </article>
               </div>
             </template>
-          </section>
-
-          <section v-else class="side-section">
-            <div class="side-title">
-              <h2>Trace</h2>
-              <span>{{ job?.agent_trace?.length || 0 }}</span>
-            </div>
-
-            <div v-if="job?.agent_trace?.length" class="trace-list">
-              <article v-for="(event, index) in job.agent_trace" :key="index" class="trace-item">
-                <div class="trace-head">
-                  <strong>{{ event.action || event.tool_name || `Trace ${index + 1}` }}</strong>
-                  <span :class="`trace-status trace-${event.status || 'completed'}`">{{ event.status || "completed" }}</span>
-                </div>
-                <p>{{ compactText(event.output_summary || event.input_summary || event.reason || "Completed", 260) }}</p>
-                <details v-if="event.reason || event.metadata" class="trace-details">
-                  <summary>Why / metadata</summary>
-                  <pre>{{ formatDebugValue({ reason: event.reason, metadata: event.metadata }) }}</pre>
-                </details>
-              </article>
-            </div>
-
-            <p v-else class="muted">
-              Agent and compiler trace appears here after compile.
-            </p>
           </section>
         </div>
       </aside>
@@ -5219,13 +5381,344 @@ The current endpoint returns the agent outcome and raw provider response when av
   padding: 10px;
 }
 
+.journey-intro {
+  margin: -3px 0 14px;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.journey-list {
+  display: grid;
+  gap: 16px;
+}
+
+.journey-card {
+  position: relative;
+  padding: 13px;
+  border: 1px solid rgba(145, 166, 255, 0.15);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.032);
+  overflow-wrap: anywhere;
+}
+
+.journey-card:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 25px;
+  top: calc(100% + 1px);
+  width: 1px;
+  height: 16px;
+  background: linear-gradient(rgba(102, 227, 255, 0.52), rgba(125, 140, 255, 0.18));
+}
+
+.journey-card.journey-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+}
+
+.journey-card.journey-skipped {
+  border-color: rgba(255, 209, 102, 0.23);
+}
+
+.journey-card.journey-repaired,
+.journey-card.journey-fallback {
+  border-color: rgba(255, 176, 86, 0.3);
+}
+
+.journey-card.journey-validated {
+  border-color: rgba(67, 224, 166, 0.25);
+}
+
+.journey-head {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.journey-number {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(102, 227, 255, 0.36);
+  border-radius: 50%;
+  color: #9decff;
+  background: rgba(102, 227, 255, 0.08);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.journey-identity h3 {
+  margin: 1px 0 7px;
+  color: #eef3ff;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.journey-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.journey-badge {
+  padding: 3px 7px;
+  border: 1px solid rgba(145, 166, 255, 0.18);
+  border-radius: 999px;
+  color: #b8c5f1;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.journey-badge.status-completed,
+.journey-badge.status-validated {
+  border-color: rgba(67, 224, 166, 0.26);
+  color: #78ecc1;
+}
+
+.journey-badge.status-skipped {
+  border-color: rgba(255, 209, 102, 0.27);
+  color: #ffd166;
+}
+
+.journey-badge.status-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+  color: #ff9a9a;
+}
+
+.journey-badge.status-fallback,
+.journey-badge.status-repaired {
+  border-color: rgba(255, 176, 86, 0.32);
+  color: #ffc277;
+}
+
+.journey-badge.method {
+  color: #9decff;
+}
+
+.journey-purpose {
+  margin: 12px 0 0;
+  color: #cbd6ff;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.journey-functions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.journey-functions > span {
+  flex-basis: 100%;
+  color: #7d8cff;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.journey-functions code,
+.journey-field code {
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #aeeeff;
+  background: rgba(102, 227, 255, 0.07);
+  font-size: 10px;
+  white-space: normal;
+}
+
+.journey-block {
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(145, 166, 255, 0.1);
+}
+
+.journey-block h4,
+.journey-limitations h4 {
+  margin: 0 0 8px;
+  color: #8998ce;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.journey-block ul,
+.journey-limitations ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 17px;
+  color: #b8c5e9;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.journey-values {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.journey-values > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.journey-values dt {
+  color: #7d8cff;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.journey-values dd {
+  margin: 0;
+  color: #dce5ff;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.journey-field {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(125, 140, 255, 0.045);
+}
+
+.journey-field + .journey-field {
+  margin-top: 6px;
+}
+
+.journey-field p,
+.journey-field span,
+.journey-next p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.journey-field p {
+  color: #c4cfef;
+}
+
+.journey-field span {
+  color: #7d8cff;
+}
+
+.journey-next {
+  display: grid;
+  gap: 4px;
+  margin-top: 13px;
+  padding: 10px;
+  border: 1px solid rgba(102, 227, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(102, 227, 255, 0.045);
+}
+
+.journey-next span {
+  color: #66e3ff;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.journey-next strong {
+  color: #e7faff;
+  font-size: 12px;
+}
+
+.journey-next p {
+  color: #9ba9d8;
+}
+
+.journey-limitations {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.journey-limitations ul {
+  color: #8996bf;
+  font-size: 10px;
+}
+
+.journey-raw,
+.journey-technical-trace {
+  margin-top: 11px;
+  border-top: 1px solid rgba(145, 166, 255, 0.1);
+}
+
+.journey-raw summary,
+.journey-technical-trace > summary {
+  padding-top: 10px;
+  color: #9decff;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.journey-raw > div {
+  margin-top: 10px;
+}
+
+.journey-raw strong {
+  color: #7d8cff;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.journey-raw pre {
+  max-height: 260px;
+  margin: 6px 0 0;
+  padding: 9px;
+  overflow: auto;
+  border-radius: 10px;
+  color: #dbe4ff;
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.journey-technical-trace {
+  margin-top: 16px;
+}
+
+.journey-technical-trace .trace-list {
+  margin-top: 10px;
+}
+
 @media (max-width: 1100px) {
   .console-grid {
     grid-template-columns: 120px minmax(0, 1fr);
   }
 
   .side-panel {
-    display: none;
+    grid-column: 1 / -1;
+    position: static;
+    display: block;
+    height: auto;
+    min-height: 0;
+  }
+
+  .panel-scroll {
+    height: auto;
+    max-height: none;
   }
 }
 
