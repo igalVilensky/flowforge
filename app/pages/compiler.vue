@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronRight, X } from "lucide-vue-next";
 import { buildExecutionJourney } from "~~/shared/executionJourney";
+import ExecutionJourneyModal from "../../components/execution-journey/ExecutionJourneyModal.vue";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
 import type { AgentDebugInfo, AgentProviderDebugAttempt } from "../../shared/types/agentOutputs";
 import type {
@@ -2585,14 +2586,12 @@ function isPrimaryDisabled() {
       </section>
 
       <aside class="side-panel">
+        <ExecutionJourneyModal
+          :steps="executionJourney"
+          :job="job"
+        />
+
         <nav class="panel-tabs">
-          <button
-            type="button"
-            :class="{ active: activePanel === 'journey' }"
-            @click="activePanel = 'journey'"
-          >
-            Journey
-          </button>
           <button
             type="button"
             :class="{ active: activePanel === 'context' }"
@@ -2617,137 +2616,7 @@ function isPrimaryDisabled() {
         </nav>
 
         <div class="panel-scroll">
-          <section v-if="activePanel === 'journey'" class="side-section journey-section">
-            <div class="side-title">
-              <h2>Execution Journey</h2>
-              <span>{{ executionJourney.length }} steps</span>
-            </div>
-
-            <p v-if="executionJourney.length" class="journey-intro">
-              Follow the real handoffs, decisions, provider attempts, repairs, and final source of this result.
-            </p>
-
-            <div v-if="executionJourney.length" class="journey-list">
-              <article
-                v-for="step in executionJourney"
-                :key="step.id"
-                class="journey-card"
-                :class="`journey-${step.status}`"
-              >
-                <header class="journey-head">
-                  <span class="journey-number">{{ step.order }}</span>
-                  <div class="journey-identity">
-                    <h3>{{ step.title }}</h3>
-                    <div class="journey-badges">
-                      <span :class="`journey-badge status-${step.status}`">{{ journeyStatusLabel(step.status) }}</span>
-                      <span class="journey-badge method">{{ journeyMethodLabel(step.method) }}</span>
-                    </div>
-                  </div>
-                </header>
-
-                <p class="journey-purpose">{{ step.purpose }}</p>
-
-                <div v-if="step.function_names?.length" class="journey-functions">
-                  <span>Functions used</span>
-                  <code v-for="functionName in step.function_names" :key="functionName">{{ functionName }}</code>
-                </div>
-
-                <section class="journey-block">
-                  <h4>Input received</h4>
-                  <dl class="journey-values">
-                    <div v-for="item in step.input_summary" :key="item.label">
-                      <dt>{{ item.label }}</dt>
-                      <dd>{{ item.value }}</dd>
-                    </div>
-                  </dl>
-                </section>
-
-                <section v-if="step.requirements?.length" class="journey-block">
-                  <h4>Requires</h4>
-                  <ul>
-                    <li v-for="requirement in step.requirements" :key="requirement">{{ requirement }}</li>
-                  </ul>
-                </section>
-
-                <section class="journey-block">
-                  <h4>What happened</h4>
-                  <ul>
-                    <li v-for="action in step.actions" :key="action">{{ action }}</li>
-                  </ul>
-                </section>
-
-                <section class="journey-block">
-                  <h4>Output produced</h4>
-                  <dl class="journey-values">
-                    <div v-for="item in step.output_summary" :key="item.label">
-                      <dt>{{ item.label }}</dt>
-                      <dd>{{ item.value }}</dd>
-                    </div>
-                  </dl>
-                </section>
-
-                <section v-if="step.field_explanations?.length" class="journey-block journey-field-block">
-                  <h4>Why this output is needed</h4>
-                  <div v-for="item in step.field_explanations" :key="`${item.field}-${item.used_by}`" class="journey-field">
-                    <code>{{ item.field }}</code>
-                    <p>{{ item.reason }}</p>
-                    <span v-if="item.used_by">Used by {{ item.used_by }}</span>
-                  </div>
-                </section>
-
-                <section v-if="step.next_step" class="journey-next">
-                  <span>Next</span>
-                  <strong>{{ step.next_step.title }}</strong>
-                  <p>{{ step.next_step.reason }}</p>
-                </section>
-
-                <section v-if="step.limitations?.length" class="journey-limitations">
-                  <h4>Limitations</h4>
-                  <ul>
-                    <li v-for="limitation in step.limitations" :key="limitation">{{ limitation }}</li>
-                  </ul>
-                </section>
-
-                <details
-                  v-if="step.raw_input !== undefined || step.raw_output !== undefined"
-                  class="journey-raw"
-                >
-                  <summary>View raw data</summary>
-                  <div v-if="step.raw_input !== undefined">
-                    <strong>Input</strong>
-                    <pre>{{ formatDebugValue(step.raw_input) }}</pre>
-                  </div>
-                  <div v-if="step.raw_output !== undefined">
-                    <strong>Output</strong>
-                    <pre>{{ formatDebugValue(step.raw_output) }}</pre>
-                  </div>
-                </details>
-              </article>
-            </div>
-
-            <details v-if="job?.agent_trace?.length" class="journey-technical-trace">
-              <summary>Technical event trace · {{ job.agent_trace.length }}</summary>
-              <div class="trace-list">
-                <article v-for="(event, index) in job.agent_trace" :key="event.id || index" class="trace-item">
-                  <div class="trace-head">
-                    <strong>{{ event.action || event.tool_name || `Trace ${index + 1}` }}</strong>
-                    <span :class="`trace-status trace-${event.status || 'completed'}`">{{ event.status || "completed" }}</span>
-                  </div>
-                  <p>{{ compactText(event.output_summary || event.input_summary || event.reason || "Completed", 260) }}</p>
-                  <details v-if="event.reason || event.metadata" class="trace-details">
-                    <summary>Why / metadata</summary>
-                    <pre>{{ formatDebugValue({ reason: event.reason, metadata: event.metadata }) }}</pre>
-                  </details>
-                </article>
-              </div>
-            </details>
-
-            <p v-if="!executionJourney.length" class="muted">
-              Compile a scenario to see how the result was created.
-            </p>
-          </section>
-
-          <section v-else-if="activePanel === 'context'" class="side-section">
+          <section v-if="activePanel === 'context'" class="side-section">
             <div class="side-title">
               <h2>Known facts</h2>
               <span>{{ knownFactItems.length }}</span>
@@ -5836,5 +5705,70 @@ The current endpoint returns the agent outcome and raw provider response when av
     width: 100%;
   }
 
+}
+.side-panel {
+  position: sticky;
+  top: 58px;
+  align-self: start;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: calc(100vh - 116px);
+  max-height: calc(100vh - 116px);
+  overflow: hidden;
+  border-radius: 22px;
+}
+
+.panel-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(145, 166, 255, 0.12);
+}
+
+.panel-tabs button {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.panel-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-bottom: 112px;
+}
+
+.panel-scroll .side-section {
+  min-width: 0;
+  padding-bottom: 24px;
+}
+
+.panel-scroll > .side-section > :last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 1180px) {
+  .side-panel {
+    position: static;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .panel-scroll {
+    max-height: none;
+    overflow: visible;
+    padding-bottom: 28px;
+  }
 }
 </style>
