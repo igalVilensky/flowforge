@@ -105,8 +105,8 @@ Server-side environment variables:
 
 - `TAVILY_API_KEY` — required for pain-point search
 - `OPENAI_API_KEY` — required for idea generation
-- `OPENAI_DISCOVERY_MODEL` — optional; falls back to `OPENAI_AGENT_MODEL`, then the provider default
-- `OPENAI_DISCOVERY_MAX_OUTPUT_TOKENS` — optional discovery response budget
+- `OPENAI_DISCOVERY_MODEL` — optional discovery-specific model (defaults to `gpt-4.1-mini`)
+- `OPENAI_DISCOVERY_MAX_OUTPUT_TOKENS` — optional discovery response budget (defaults to `3000`)
 
 For local development, configure these in `.env`. On Netlify, configure them in Site settings → Environment variables. Never prefix them with `NUXT_PUBLIC_`; neither credential is sent to browser code.
 

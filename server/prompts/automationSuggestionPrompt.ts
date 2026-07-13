@@ -10,15 +10,15 @@ Choose the technical fit naturally: automation_only, agent_only, or agentic_work
 
 The workflowIntent is the main output. Make it a complete natural-language use case with a clear trigger, received information, useful processing or AI interpretation, decisions or branches, internal actions or integrations, expected outcome, and a human review boundary for high-impact external actions where appropriate. Avoid vague productivity claims and enormous enterprise transformation projects.
 
-Return one JSON object only, with exactly these fields:
-id, title, category, fitType, painPoint, targetUser, whyItMatters, valueLevel, difficulty, confidence, workflowIntent, suggestedSteps, source.
+Return one JSON object only with these model-owned fields:
+title, fitType, painPoint, targetUser, whyItMatters, valueLevel, difficulty, confidence, workflowIntent, suggestedSteps, source.
 
 Rules:
-- category must exactly match the requested internal category value.
 - valueLevel and difficulty must be low, medium, or high.
 - confidence must be a number from 0 to 1.
 - suggestedSteps must be a non-empty array of conceptual steps, not exact node names.
 - source must be one supplied source as {"title":"...","url":"..."}, or null when none genuinely supports the idea.
+- Do not return id or category; the server adds those fields.
 - Do not quote raw source content in workflowIntent.`;
 
 export function buildAutomationSuggestionPrompt(
@@ -50,8 +50,34 @@ Review every signal, then create exactly one concrete workflow opportunity. Free
 export function buildAutomationSuggestionRepairPrompt(
   category: DiscoveryCategory,
   malformedResponse: string,
+  signals: WorkflowPainPointSignal[],
 ): string {
-  return `Repair the following malformed response into the exact JSON structure requested by the system prompt. Preserve its idea instead of inventing a fallback. Return JSON only. The category must be "${category}".
+  const allowedSources = signals.map((signal, index) =>
+    `${index + 1}. ${signal.title} — ${signal.url}`,
+  ).join("\n");
+
+  return `Repair the malformed response below into the expected model-output shape. Preserve the original idea and wording where possible; do not replace it with a generic fallback. Return one JSON object only.
+
+REQUESTED CATEGORY (context only; do not return it)
+${category}
+
+EXPECTED MODEL-OUTPUT SHAPE
+{
+  "title": "non-empty string",
+  "fitType": "automation_only | agent_only | agentic_workflow",
+  "painPoint": "non-empty string",
+  "targetUser": "non-empty string",
+  "whyItMatters": "non-empty string",
+  "valueLevel": "low | medium | high",
+  "difficulty": "low | medium | high",
+  "confidence": "number from 0 to 1",
+  "workflowIntent": "complete natural-language workflow use case",
+  "suggestedSteps": ["one or more conceptual steps"],
+  "source": {"title": "allowed source title", "url": "allowed source URL"} | null
+}
+
+ALLOWED SOURCES
+${allowedSources || "None; use null."}
 
 MALFORMED RESPONSE
 ${malformedResponse.slice(0, 8000)}`;

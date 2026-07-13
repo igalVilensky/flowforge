@@ -12,15 +12,20 @@ import {
   searchWorkflowPainPoints,
 } from "../services/tavilySearch";
 
+function publicApiError(statusCode: number, statusMessage: string) {
+  const error = createError({ statusCode, statusMessage });
+  // Keep development responses as concise as production responses. Detailed,
+  // redacted diagnostics are emitted server-side by the generator.
+  error.stack = undefined;
+  return error;
+}
+
 export default defineEventHandler(async (event): Promise<AutomationSuggestion> => {
   const body = await readBody<unknown>(event);
   const parsed = suggestAutomationRequestSchema.safeParse(body);
 
   if (!parsed.success) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: "Select a valid discovery category.",
-    });
+    throw publicApiError(400, "Select a valid discovery category.");
   }
 
   try {
@@ -31,36 +36,21 @@ export default defineEventHandler(async (event): Promise<AutomationSuggestion> =
       error instanceof TavilyConfigurationError
       || error instanceof AutomationSuggestionConfigurationError
     ) {
-      throw createError({
-        statusCode: 503,
-        statusMessage: "Automation discovery is not configured.",
-      });
+      throw publicApiError(503, "Automation discovery is not configured.");
     }
 
     if (error instanceof NoUsefulTavilyResultsError) {
-      throw createError({
-        statusCode: 422,
-        statusMessage: "No useful workflow pain points were found. Please try again.",
-      });
+      throw publicApiError(422, "No useful workflow pain points were found. Please try again.");
     }
 
     if (error instanceof TavilyRequestError) {
-      throw createError({
-        statusCode: 502,
-        statusMessage: "Could not search for workflow pain points. Please try again.",
-      });
+      throw publicApiError(502, "Could not search for workflow pain points. Please try again.");
     }
 
     if (error instanceof AutomationSuggestionGenerationError) {
-      throw createError({
-        statusCode: 502,
-        statusMessage: "Could not create a valid automation idea. Please try again.",
-      });
+      throw publicApiError(502, "Could not create a valid automation idea. Please try again.");
     }
 
-    throw createError({
-      statusCode: 500,
-      statusMessage: "Automation discovery failed. Please try again.",
-    });
+    throw publicApiError(500, "Automation discovery failed. Please try again.");
   }
 });
