@@ -16,7 +16,7 @@ import type {
   ClarificationSessionResponse,
 } from "../../shared/types/clarificationSession";
 
-type PanelView =  "context" | "agents" | "details";
+type PanelView = "context" | "agents" | "details";
 type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
 type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
 

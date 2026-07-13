@@ -440,9 +440,13 @@ export async function runCompilePipeline(input: {
         : blueprintArchitectAgentResult.output.reason,
   });
 
-  const blueprintArchitectSummary = blueprintArchitectAgentResult.output.used_ai
-    ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
-    : `Blueprint Architect fallback: ${blueprintArchitectAgentResult.output.reason}`;
+  const blueprintArchitectSummary = shouldSkipDesignAgents
+    ? "Blueprint Architect Agent was skipped because blocking clarification is needed first."
+    : blueprintArchitectAgentResult.output.used_ai
+      ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
+      : blueprintArchitectAgentResult.output.fallback_used
+        ? `Blueprint Architect used deterministic fallback: ${blueprintArchitectAgentResult.output.reason}`
+        : blueprintArchitectAgentResult.output.reason;
 
   const skippedSafetyCriticAgentOutput = {
     provider: "deterministic" as const,
@@ -593,9 +597,13 @@ export async function runCompilePipeline(input: {
         : safetyCriticAgentResult.output.reason,
   });
 
-  const safetyCriticAgentSummary = safetyCriticAgentResult.output.used_ai
-    ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
-    : `Safety Critic Agent fallback: ${safetyCriticAgentResult.output.reason}`;
+  const safetyCriticAgentSummary = shouldSkipDesignAgents
+    ? "Safety Critic Agent was skipped because blocking clarification is needed first."
+    : safetyCriticAgentResult.output.used_ai
+      ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
+      : safetyCriticAgentResult.output.fallback_used
+        ? `Safety Critic Agent used deterministic fallback: ${safetyCriticAgentResult.output.reason}`
+        : safetyCriticAgentResult.output.reason;
 
   await emitProgress(emit, {
     type: "step_started",
