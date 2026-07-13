@@ -16,7 +16,7 @@ import type {
   ClarificationSessionResponse,
 } from "../../shared/types/clarificationSession";
 
-type PanelView = "journey" | "context" | "agents" | "details";
+type PanelView =  "context" | "agents" | "details";
 type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
 type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
 
@@ -158,7 +158,7 @@ const clarificationAnswers = ref<ClarificationSessionAnswer[]>([]);
 const clarificationAnswerDraft = ref("");
 const runState = ref<RunState>("idle");
 const errorMessage = ref("");
-const activePanel = ref<PanelView>("journey");
+const activePanel = ref<PanelView>("context");
 const showAnswered = ref(false);
 const selectedExampleLabel = ref<string | null>(null);
 const clarificationRateLimitMessage = ref("");
@@ -1799,7 +1799,6 @@ function apiErrorMessage(error: unknown, fallback: string) {
 async function generateN8nWorkflowDraft() {
   if (!job.value || !canGenerateN8nJson.value) return;
 
-  activePanel.value = "journey";
   n8nGeneratorState.value = "generating";
   n8nGenerateError.value = "";
   n8nWarnings.value = [];
@@ -2212,7 +2211,6 @@ async function compileWithFallback(input: string) {
 
 async function compilePrompt(input: string) {
   runState.value = "compiling";
-  activePanel.value = "journey";
   errorMessage.value = "";
   resetCompileProgressState();
 
