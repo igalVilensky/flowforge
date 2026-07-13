@@ -1,4 +1,5 @@
 import type { CompileMode } from "../../shared/types/compileJob";
+import type { StructuredWorkflowIntent } from "../../shared/types/structuredWorkflowIntent";
 import type {
   AutomationBoundary,
   AutomationReadinessScore,
@@ -21,6 +22,7 @@ import type {
 export type BuildBlueprintInput = {
   jobId: string;
   processInput: string;
+  intent?: StructuredWorkflowIntent;
   signals: SignalSummary;
   risks: RiskSummary;
   readiness: AutomationReadinessScore;
@@ -593,7 +595,7 @@ function detectInternalOutput(input: string, domain: BlueprintDomain): string {
 }
 
 function detectApprovalOwner(input: string, domain: BlueprintDomain): string {
-  const labeledOwner = input.match(/\bhuman reviewer:\s*([^\n.]{2,80})/i)?.[1];
+  const labeledOwner = input.match(/\bhuman (?:reviewer|owner):\s*([^\n.]{2,80})/i)?.[1];
 
   if (labeledOwner) {
     return truncateText(cleanDomainPhrase(labeledOwner), 80);
@@ -625,19 +627,33 @@ function buildDomainStepContext(
   processInput: string,
   signals: SignalSummary,
   risks: RiskSummary,
+  intent?: StructuredWorkflowIntent,
 ): DomainStepContext {
   const normalizedInput = normalizeForDetection(processInput);
   const domain = detectBlueprintDomain(processInput);
+  const structuredSourceFallback = domain === "content"
+    ? "the clarified source material"
+    : domain === "admissions"
+      ? "the admissions inbox"
+      : domain === "support"
+        ? "the support inbox"
+        : domain === "finance"
+          ? "the finance queue"
+          : "the requested internal source";
 
   return {
     domain,
-    source: detectSource(normalizedInput, domain),
-    sourceItem: detectSourceItem(normalizedInput, domain),
-    triggerTiming: detectTriggerTiming(normalizedInput, signals),
+    source: intent
+      ? intent.input_sources[0] ?? structuredSourceFallback
+      : detectSource(normalizedInput, domain),
+    sourceItem: intent
+      ? intent.input_data[0] ?? detectSourceItem("", domain)
+      : detectSourceItem(normalizedInput, domain),
+    triggerTiming: intent?.trigger ? truncateText(intent.trigger, 120) : detectTriggerTiming(normalizedInput, signals),
     extractedFields: detectExtractedFields(normalizedInput, domain, signals),
     classificationTarget: detectClassificationTarget(normalizedInput, domain),
-    internalOutput: detectInternalOutput(normalizedInput, domain),
-    approvalOwner: detectApprovalOwner(normalizedInput, domain),
+    internalOutput: intent?.desired_outputs[0] ?? detectInternalOutput(normalizedInput, domain),
+    approvalOwner: intent?.human_owner ?? detectApprovalOwner(normalizedInput, domain),
     hasDraftReply: hasAny(normalizedInput, ["draft", "reply", "response", "write", "compose"]),
     hasExplicitExternalMessageBlock:
       /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:send|sending|reply|replies|message|messages|email|emails|external message|external messages)\b/.test(normalizedInput),
@@ -1058,8 +1074,13 @@ function buildContentWorkflowSteps(
   return steps;
 }
 
-function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks: RiskSummary): WorkflowStep[] {
-  const context = buildDomainStepContext(processInput, signals, risks);
+function buildWorkflowSteps(
+  processInput: string,
+  signals: SignalSummary,
+  risks: RiskSummary,
+  intent?: StructuredWorkflowIntent,
+): WorkflowStep[] {
+  const context = buildDomainStepContext(processInput, signals, risks, intent);
 
   if (context.domain === "content") {
     return buildContentWorkflowSteps(processInput, context, risks);
@@ -2020,12 +2041,13 @@ function buildOpenQuestions(signals: SignalSummary, risks: RiskSummary): string[
 export function buildBlueprint({
   jobId,
   processInput,
+  intent,
   signals,
   risks,
   readiness,
   mode,
 }: BuildBlueprintInput): SafeAutomationBlueprint {
-  const steps = buildWorkflowSteps(processInput, signals, risks);
+  const steps = buildWorkflowSteps(processInput, signals, risks, intent);
 
   return {
     id: `blueprint_${jobId}`,

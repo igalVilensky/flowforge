@@ -56,6 +56,7 @@ AI Agent Layer
 Shared Contract
   shared/types
   server/schemas
+  StructuredWorkflowIntent is the canonical downstream intent
   Zod validation keeps API and UI aligned
 ```
 
@@ -96,13 +97,13 @@ messy input
   ↓
 Clarification Conversation Agent
   ↓
-known facts + one next question
+canonical StructuredWorkflowIntent + one next question
   ↓
 user answer
   ↓
 repeat until ready
   ↓
-rewritten_compile_prompt
+versioned StructuredCompileRequest
   ↓
 POST /api/compile
 ```
@@ -128,7 +129,9 @@ The Clarification Conversation Agent must:
 - ask contextual questions based on the user’s actual input
 - avoid generic missing-field questions when the input is messy but understandable
 - use previous answers
-- stop once enough core facts are collected
+- map stable question IDs/kinds into the canonical intent
+- keep input sources, output destinations, desired outputs, notification targets, owners, and approval boundaries distinct
+- stop once canonical readiness confirms the required user-provided facts
 - return `ready_to_compile=true` and `rewritten_compile_prompt`
 - avoid endless clarification loops
 - fall back deterministically when providers fail
@@ -136,8 +139,9 @@ The Clarification Conversation Agent must:
 Hard stop behavior:
 
 - a small maximum question count prevents infinite questioning
-- repeated-question detection forces compile-readiness with best available facts
-- deterministic readiness inference checks whether enough facts were collected
+- repeated-question detection selects the next genuinely missing field or stops without inventing values
+- the maximum question guard does not force compilation when required facts remain missing
+- `assessStructuredWorkflowIntentReadiness` is the single clarification-readiness decision
 
 ---
 
@@ -164,9 +168,12 @@ The guided clarification endpoint can use providers when configured. It also has
 ## Compile pipeline
 
 ```text
-User input or rewritten_compile_prompt
+User input or versioned StructuredCompileRequest
   ↓
-Validate request body
+Normalize once to StructuredWorkflowIntent
+  - canonical guided input
+  - legacy envelope adapter
+  - plain-text compatibility adapter
   ↓
 Signal scanner
   ↓
@@ -182,8 +189,15 @@ Router Agent
 Clarification planner
   ↓
 Clarification Agent
+  - OpenAI primary (`gpt-5-nano` default)
+  - Groq fallback
+  - Gemini fallback
+  - deterministic fallback
   ↓
 Blueprint Architect Agent or skipped clarification-safe fallback
+  - consumes StructuredWorkflowIntent directly
+  - receives safety constraints separately
+  - same OpenAI → Groq → Gemini → deterministic order
   ↓
 Safety Critic Agent or skipped clarification-safe fallback
   ↓
@@ -270,7 +284,7 @@ ClarificationSessionResponse
 A session contains:
 
 - original input
-- known facts
+- canonical `StructuredWorkflowIntent`
 - collected answers
 - current summary
 - one next question, or

@@ -1,633 +1,1702 @@
 import { ZodError } from "zod";
 import type {
-    ClarificationKnownFacts,
-    ClarificationNextQuestion,
-    ClarificationSession,
-    ClarificationSessionAnswer,
-    ClarificationSessionResponse,
+  ClarificationNextQuestion,
+  ClarificationQuestionKind,
+  ClarificationSession,
+  ClarificationSessionAnswer,
+  ClarificationSessionResponse,
 } from "../../shared/types/clarificationSession";
+import type { StructuredWorkflowIntent } from "../../shared/types/structuredWorkflowIntent";
 import {
-    clarificationSessionResponseSchema,
-    clarificationSessionSchema,
+  clarificationSessionResponseSchema,
+  clarificationSessionSchema,
 } from "../schemas/clarificationSession.schema";
 import {
-    buildClarificationConversationUserPrompt,
-    clarificationConversationSystemPrompt,
+  buildClarificationConversationUserPrompt,
+  clarificationConversationSystemPrompt,
 } from "../prompts/clarificationConversationPrompt";
 import {
-    getClarificationAnswerKind,
-    getConcreteKnownFacts,
-    isConcreteKnownFact,
+  getClarificationAnswerKind,
+  inferStructuredWorkflowIntent,
+  isConcreteKnownFact,
 } from "./clarificationFacts";
 import { callGeminiAgent } from "./geminiProvider";
 import { callGroqAgent } from "./groqProvider";
+import { callOpenAIAgent } from "./openaiProvider";
 import { serializeStructuredCompileInput } from "./structuredCompileInput";
+import {
+  assessStructuredWorkflowIntentReadiness,
+  type StructuredIntentReadinessField,
+} from "./structuredIntentReadiness";
 
-type AgentProvider = ClarificationSessionResponse["provider"];
+type AgentProvider = Exclude<
+  ClarificationSessionResponse["provider"],
+  "deterministic"
+>;
 
 type RunClarificationConversationAgentInput = {
-    originalInput: string;
-    answers: ClarificationSessionAnswer[];
+  originalInput: string;
+  answers: ClarificationSessionAnswer[];
 };
 
-const MAX_CLARIFICATION_QUESTIONS = 6;
+type ClarificationProviderCall = (
+  userPrompt: string,
+  systemPrompt: string,
+) => Promise<string>;
+
+type ProviderWorkflowIntent = Partial<
+  Omit<
+    StructuredWorkflowIntent,
+    "version" | "original_input"
+  >
+>;
+
+type QuestionAlias = {
+  questionId: string;
+  kind: ClarificationQuestionKind;
+};
+
+export type ClarificationProviderDependencies = {
+  calls?: Partial<
+    Record<AgentProvider, ClarificationProviderCall>
+  >;
+  availability?: Partial<Record<AgentProvider, boolean>>;
+};
+
+const SOFT_MAX_CLARIFICATION_QUESTIONS = 6;
+const HARD_MAX_CLARIFICATION_QUESTIONS = 9;
+
+const PROVIDER_ORDER: readonly AgentProvider[] = [
+  "openai",
+  "groq",
+  "gemini",
+];
+
+const QUESTION_ID_ALIASES = new Map<
+  string,
+  QuestionAlias
+>([
+  [
+    "workflow_goal",
+    {
+      questionId: "workflow_goal",
+      kind: "workflow_goal",
+    },
+  ],
+  [
+    "automation_goal",
+    {
+      questionId: "workflow_goal",
+      kind: "workflow_goal",
+    },
+  ],
+  [
+    "task_category",
+    {
+      questionId: "task_type",
+      kind: "task_type",
+    },
+  ],
+  [
+    "task_type",
+    {
+      questionId: "task_type",
+      kind: "task_type",
+    },
+  ],
+  [
+    "desired_output",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "desired_outputs",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "desired_output_formats",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "output_formats",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "asset_formats",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "generated_assets",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "deliverables",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "content_specifications",
+    {
+      questionId: "desired_output",
+      kind: "desired_output",
+    },
+  ],
+  [
+    "output_destination",
+    {
+      questionId: "output_destination",
+      kind: "output_destination",
+    },
+  ],
+  [
+    "notification_target",
+    {
+      questionId: "notification_target",
+      kind: "notification_target",
+    },
+  ],
+  [
+    "input_data",
+    {
+      questionId: "input_data",
+      kind: "input_data",
+    },
+  ],
+  [
+    "input_data_details",
+    {
+      questionId: "input_data",
+      kind: "input_data",
+    },
+  ],
+  [
+    "input_requirements",
+    {
+      questionId: "input_data",
+      kind: "input_data",
+    },
+  ],
+  [
+    "product_information",
+    {
+      questionId: "input_data",
+      kind: "input_data",
+    },
+  ],
+  [
+    "input_source",
+    {
+      questionId: "data_source",
+      kind: "data_source",
+    },
+  ],
+  [
+    "data_source",
+    {
+      questionId: "data_source",
+      kind: "data_source",
+    },
+  ],
+  [
+    "content_source",
+    {
+      questionId: "data_source",
+      kind: "data_source",
+    },
+  ],
+  [
+    "content_source_material",
+    {
+      questionId: "data_source",
+      kind: "data_source",
+    },
+  ],
+  [
+    "workflow_source",
+    {
+      questionId: "data_source",
+      kind: "data_source",
+    },
+  ],
+  [
+    "human_owner",
+    {
+      questionId: "human_owner",
+      kind: "human_owner",
+    },
+  ],
+  [
+    "human_reviewer",
+    {
+      questionId: "human_owner",
+      kind: "human_owner",
+    },
+  ],
+  [
+    "reviewer",
+    {
+      questionId: "human_owner",
+      kind: "human_owner",
+    },
+  ],
+  [
+    "approver",
+    {
+      questionId: "human_owner",
+      kind: "human_owner",
+    },
+  ],
+  [
+    "approval_boundary",
+    {
+      questionId: "approval_boundary",
+      kind: "approval_boundary",
+    },
+  ],
+  [
+    "approval_process",
+    {
+      questionId: "approval_boundary",
+      kind: "approval_boundary",
+    },
+  ],
+  [
+    "external_action_boundary",
+    {
+      questionId: "external_action_boundary",
+      kind: "external_action_boundary",
+    },
+  ],
+]);
+
+const PROVIDER_PLACEHOLDER_PATTERNS = [
+  /^optional$/i,
+  /^none$/i,
+  /^n\/a$/i,
+  /^not applicable$/i,
+  /^not provided$/i,
+  /^not specified$/i,
+  /^not known$/i,
+  /^unknown$/i,
+  /^tbd$/i,
+  /^to be decided$/i,
+  /^to be determined$/i,
+  /^human reviewer$/i,
+  /^human owner$/i,
+  /^a reviewer$/i,
+  /^the reviewer$/i,
+];
 
 function normalizeText(value: string): string {
-    return value.trim().replace(/\s+/g, " ");
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeQuestionId(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+function aliasForQuestionId(
+  questionId: string,
+): QuestionAlias | undefined {
+  const normalizedId =
+    normalizeQuestionId(questionId);
+
+  const directAlias =
+    QUESTION_ID_ALIASES.get(normalizedId);
+
+  if (directAlias) {
+    return directAlias;
+  }
+
+  if (
+    /^(?:desired_)?output(?:s)?(?:_|$)/.test(
+      normalizedId,
+    ) ||
+    /^(?:output|asset)_formats?$/.test(
+      normalizedId,
+    )
+  ) {
+    return {
+      questionId: "desired_output",
+      kind: "desired_output",
+    };
+  }
+
+  if (
+    /^input_(?:data|details|requirements?|material)/.test(
+      normalizedId,
+    )
+  ) {
+    return {
+      questionId: "input_data",
+      kind: "input_data",
+    };
+  }
+
+  if (
+    /^(?:human_)?(?:owner|reviewer)$/.test(
+      normalizedId,
+    ) ||
+    normalizedId === "approver"
+  ) {
+    return {
+      questionId: "human_owner",
+      kind: "human_owner",
+    };
+  }
+
+  return undefined;
+}
+
+function normalizeClarificationAnswer(
+  answer: ClarificationSessionAnswer,
+): ClarificationSessionAnswer {
+  const alias =
+    aliasForQuestionId(answer.question_id);
+
+  if (!alias) {
+    return answer;
+  }
+
+  return {
+    ...answer,
+    question_id: alias.questionId,
+  };
+}
+
+function normalizeClarificationAnswers(
+  answers: ClarificationSessionAnswer[],
+): ClarificationSessionAnswer[] {
+  return answers.map(normalizeClarificationAnswer);
+}
+
+function normalizedInput(
+  input: RunClarificationConversationAgentInput,
+): RunClarificationConversationAgentInput {
+  return {
+    ...input,
+    answers: normalizeClarificationAnswers(
+      input.answers,
+    ),
+  };
+}
+
+function answerKind(
+  answer: Pick<
+    ClarificationSessionAnswer,
+    "question_id" | "question"
+  >,
+): ClarificationQuestionKind | undefined {
+  const alias =
+    aliasForQuestionId(answer.question_id);
+
+  return (
+    alias?.kind ??
+    getClarificationAnswerKind(answer)
+  );
 }
 
 function summarizeError(error: unknown): string {
-    if (error instanceof ZodError) {
-        return error.issues
-            .slice(0, 5)
-            .map((issue) => {
-                const path = issue.path.length > 0 ? issue.path.join(".") : "root";
-                return `${path}: ${issue.message}`;
-            })
-            .join("; ");
-    }
+  let summary: string;
 
-    if (error instanceof Error) {
-        return error.message;
-    }
+  if (error instanceof ZodError) {
+    summary = error.issues
+      .slice(0, 5)
+      .map((issue) => {
+        const path =
+          issue.path.length > 0
+            ? issue.path.join(".")
+            : "root";
 
-    return "Unknown error.";
+        return `${path}: ${issue.message}`;
+      })
+      .join("; ");
+  } else if (error instanceof Error) {
+    summary = error.message;
+  } else {
+    summary = "Unknown error.";
+  }
+
+  return summary
+    .replace(
+      /\s*\|?\s*Response body:[\s\S]*/i,
+      "",
+    )
+    .slice(0, 300);
 }
 
 function safeParseJSON(rawText: string): unknown {
-    try {
-        return JSON.parse(rawText);
-    } catch {
-        const match = rawText.match(/\{[\s\S]*\}/);
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    const match = rawText.match(/\{[\s\S]*\}/);
 
-        if (!match) {
-            throw new Error("No valid JSON object found in Clarification Conversation Agent response.");
-        }
-
-        return JSON.parse(match[0]);
+    if (!match) {
+      throw new Error(
+        "No valid JSON object found in Clarification Conversation Agent response.",
+      );
     }
+
+    return JSON.parse(match[0]);
+  }
 }
 
-function buildSessionId(originalInput: string, answers: ClarificationSessionAnswer[]): string {
-    const seed = `${originalInput}:${answers.length}:${answers.map((answer) => answer.answer).join("|")}`;
-    let hash = 0;
+function buildSessionId(
+  originalInput: string,
+  answers: ClarificationSessionAnswer[],
+): string {
+  const seed =
+    `${originalInput}:${answers.length}:` +
+    answers
+      .map((answer) => answer.answer)
+      .join("|");
 
-    for (let index = 0; index < seed.length; index += 1) {
-        hash = ((hash << 5) - hash + seed.charCodeAt(index)) | 0;
-    }
+  let hash = 0;
 
-    return `clarify_${Math.abs(hash).toString(36)}`;
-}
+  for (
+    let index = 0;
+    index < seed.length;
+    index += 1
+  ) {
+    hash =
+      ((hash << 5) -
+        hash +
+        seed.charCodeAt(index)) |
+      0;
+  }
 
-function intentText(input: RunClarificationConversationAgentInput): string {
-    return [
-        input.originalInput,
-        ...input.answers.map((answer) => answer.answer),
-    ].join("\n").toLowerCase();
-}
-
-function hasAny(text: string, patterns: RegExp[]): boolean {
-    return patterns.some((pattern) => pattern.test(text));
-}
-
-export function inferKnownFacts(input: RunClarificationConversationAgentInput): ClarificationKnownFacts {
-    const text = intentText(input);
-    const answerText = input.answers.map((answer) => answer.answer).join(" ").trim();
-    const answersByKind = new Map<string, ClarificationSessionAnswer[]>();
-
-    for (const answer of input.answers) {
-        const kind = getClarificationAnswerKind(answer);
-
-        if (!kind || !isConcreteKnownFact(answer.answer, kind)) continue;
-        answersByKind.set(kind, [...(answersByKind.get(kind) ?? []), answer]);
-    }
-
-    const answerFor = (kind: string) => answersByKind.get(kind)?.at(-1)?.answer;
-    const taskType = answerFor("task_type");
-    const explicitGoal = answerFor("workflow_goal");
-    const trigger = answerFor("trigger");
-    const dataSource = answerFor("data_source");
-    const inputData = answerFor("input_data");
-    const desiredOutput = answerFor("desired_output");
-    const humanOwner = answerFor("human_owner");
-    const approvalBoundary = answerFor("approval_boundary");
-    const externalActionBoundary = answerFor("external_action_boundary");
-    const successCriteria = answerFor("success_criteria");
-
-    const knownFacts: ClarificationKnownFacts = {
-        workflow_goal: explicitGoal ?? (taskType ? `Create a workflow for ${normalizeText(taskType)}.` : normalizeText(input.originalInput)),
-    };
-
-    if (taskType) {
-        knownFacts.task_type = normalizeText(taskType);
-    } else if (!isVeryVagueTaskRequest(input.originalInput) && input.answers.length === 0) {
-        knownFacts.task_type = normalizeText(input.originalInput);
-    }
-
-    if (trigger) {
-        knownFacts.trigger = normalizeText(trigger);
-    } else if (hasAny(input.originalInput.toLowerCase(), [
-        /\bon[ -]?demand\b/,
-        /\bmanually\b/,
-        /\bwhen\b/,
-        /\bwhenever\b/,
-        /\bevery\b/,
-        /\bdaily\b/,
-        /\bweekly\b/,
-        /\bschedule(?:d)?\b/,
-    ])) {
-        knownFacts.trigger = normalizeText(input.originalInput);
-    }
-
-    if (dataSource) {
-        knownFacts.data_source = normalizeText(dataSource);
-    } else if (input.answers.length === 0 && hasAny(text, [
-        /support inbox|admissions inbox|shared inbox|zendesk|intercom|hubspot|salesforce|gmail/,
-        /google sheet|spreadsheet|database|campaign brief|product description|source material|brand assets/,
-    ])) {
-        knownFacts.data_source = normalizeText(input.originalInput);
-    }
-
-    if (inputData) {
-        knownFacts.input_data = [normalizeText(inputData)];
-    } else if (dataSource && /source material|brief|description|blog|asset|marketing point|product/i.test(dataSource)) {
-        knownFacts.input_data = [normalizeText(dataSource)];
-    }
-
-    if (desiredOutput) {
-        knownFacts.desired_output = normalizeText(desiredOutput);
-    } else if (taskType && /content generation|social media content|generate (?:social )?posts?|marketing content|social posts?/i.test(taskType)) {
-        knownFacts.desired_output = "Draft social media content and a reviewable post package.";
-    } else if (taskType && /\b(?:draft|summarize|classify|extract|route|generate|create)\b/i.test(taskType)) {
-        knownFacts.desired_output = normalizeText(taskType);
-    } else if (input.answers.length === 0 && hasAny(text, [/\bdraft\b|\bsummarize\b|\bclassify\b|\bextract\b|\bgenerate\b/])) {
-        knownFacts.desired_output = normalizeText(input.originalInput);
-    }
-
-    const ruleAnswers = answersByKind.get("decision_rules") ?? [];
-
-    if (ruleAnswers.length > 0) {
-        knownFacts.decision_rules = ruleAnswers.map((answer) => answer.answer);
-    }
-
-    if (humanOwner) {
-        knownFacts.human_owner = normalizeText(humanOwner);
-    }
-
-    if (approvalBoundary) {
-        knownFacts.approval_boundary = normalizeText(approvalBoundary);
-    }
-
-    if (externalActionBoundary) {
-        knownFacts.external_action_boundary = normalizeText(externalActionBoundary);
-    } else if (approvalBoundary && /before (?:posting|publishing|sending)|no automatic|draft.only|external/i.test(approvalBoundary)) {
-        knownFacts.external_action_boundary = "External action is blocked until explicit human approval.";
-    }
-
-    if (successCriteria) {
-        knownFacts.success_criteria = normalizeText(successCriteria);
-    }
-
-    if (answerText.length > 0) {
-        knownFacts.safety_notes = input.answers.map((answer) => `${answer.question}: ${answer.answer}`);
-    }
-
-    return knownFacts;
-}
-
-export function hasEnoughInformation(knownFacts: ClarificationKnownFacts): boolean {
-    const concrete = getConcreteKnownFacts(knownFacts);
-
-    return Boolean(
-        isConcreteKnownFact(concrete.workflow_goal, "workflow_goal")
-        && isConcreteKnownFact(concrete.task_type, "task_type")
-        && isConcreteKnownFact(concrete.trigger, "trigger")
-        && (isConcreteKnownFact(concrete.data_source, "data_source") || isConcreteKnownFact(concrete.input_data, "input_data"))
-        && isConcreteKnownFact(concrete.desired_output, "desired_output"),
-    );
-}
-
-function needsHumanBoundary(input: RunClarificationConversationAgentInput): boolean {
-    const text = intentText(input);
-    return hasAny(text, [
-        /send|reply|email|message|external|publish|posting|social media/,
-        /refund|payment|charge|invoice|billing/,
-        /legal|medical|visa|immigration|employment/,
-        /delete|remove|account|access|update/,
-    ]);
-}
-
-function hasHumanBoundary(knownFacts: ClarificationKnownFacts): boolean {
-    return isConcreteKnownFact(knownFacts.human_owner, "human_owner")
-        && (isConcreteKnownFact(knownFacts.approval_boundary, "approval_boundary")
-            || isConcreteKnownFact(knownFacts.external_action_boundary, "external_action_boundary"));
-}
-
-function buildCompilePrompt(input: RunClarificationConversationAgentInput, knownFacts: ClarificationKnownFacts): string {
-    const concreteFacts = getConcreteKnownFacts(knownFacts);
-
-    return serializeStructuredCompileInput({
-        original_input: normalizeText(input.originalInput),
-        clarified_intent: buildCurrentSummary(input, concreteFacts),
-        known_facts: concreteFacts,
-        clarification_answers: input.answers,
-        safety_constraints: [
-            concreteFacts.approval_boundary,
-            concreteFacts.external_action_boundary,
-            "Build a non-executing FlowForge workflow blueprint.",
-            "Keep external actions human-reviewed or draft-only.",
-            "Do not connect production credentials or execute real-world actions.",
-        ].filter((constraint): constraint is string => Boolean(constraint)),
-    });
-}
-
-function buildReadySession(
-    input: RunClarificationConversationAgentInput,
-    knownFacts: ClarificationKnownFacts,
-    reason: string,
-): ClarificationSession {
-    return {
-        session_id: buildSessionId(input.originalInput, input.answers),
-        original_input: normalizeText(input.originalInput),
-        current_summary: buildCurrentSummary(input, knownFacts),
-        known_facts: knownFacts,
-        answers: input.answers,
-        next_question: null,
-        status: "ready_to_compile",
-        ready_to_compile: true,
-        rewritten_compile_prompt: buildCompilePrompt(input, knownFacts),
-        reason,
-    };
+  return `clarify_${Math.abs(hash).toString(36)}`;
 }
 
 function buildCurrentSummary(
-    input: RunClarificationConversationAgentInput,
-    knownFacts: ClarificationKnownFacts,
+  intent: StructuredWorkflowIntent,
 ): string {
-    if (knownFacts.task_type && knownFacts.desired_output) {
-        return normalizeText(`${knownFacts.task_type}, producing ${knownFacts.desired_output}.`);
-    }
+  if (
+    intent.task_type &&
+    intent.desired_outputs.length > 0
+  ) {
+    return normalizeText(
+      `${intent.task_type}, producing ${intent.desired_outputs.join("; ")}.`,
+    );
+  }
 
-    if (input.answers.length > 0) {
-        return normalizeText(`${input.originalInput} ${input.answers.map((answer) => answer.answer).join(" ")}`);
-    }
+  if (intent.goal) {
+    return normalizeText(intent.goal);
+  }
 
-    return normalizeText(input.originalInput);
+  if (intent.task_type) {
+    return normalizeText(intent.task_type);
+  }
+
+  return normalizeText(intent.original_input);
 }
 
-function hasAlreadyAskedKind(input: RunClarificationConversationAgentInput, kind: string): boolean {
-    const normalizedKind = kind.replaceAll("_", " ");
-    return input.answers.some((answer) => {
-        const combined = `${answer.question} ${answer.question_id}`.toLowerCase();
-        return combined.includes(kind.toLowerCase()) || combined.includes(normalizedKind);
-    });
+function buildCompilePrompt(
+  input: RunClarificationConversationAgentInput,
+  intent: StructuredWorkflowIntent,
+): string {
+  return serializeStructuredCompileInput({
+    intent,
+    clarification_answers: input.answers,
+    safety_constraints: [
+      intent.approval_boundary,
+      intent.external_action_boundary,
+      "Build a non-executing FlowForge workflow blueprint.",
+      "Keep external actions human-reviewed or draft-only.",
+      "Do not connect production credentials or execute real-world actions.",
+    ].filter(
+      (constraint): constraint is string =>
+        Boolean(constraint),
+    ),
+  });
 }
 
-function questionWasAlreadyAnswered(input: RunClarificationConversationAgentInput, question: ClarificationNextQuestion): boolean {
-    const q = question.question.toLowerCase();
-    return input.answers.some((answer) => {
-        const previousQuestion = answer.question.toLowerCase();
-        const previousAnswer = answer.answer.toLowerCase();
-        const previousKind = getClarificationAnswerKind(answer);
-
-        if (answer.question_id === question.id) return true;
-        if (previousQuestion === q) return true;
-        if (previousKind === question.kind && isConcreteKnownFact(answer.answer, question.kind)) return true;
-
-        if (question.kind === "human_owner" || question.kind === "approval_boundary" || question.kind === "external_action_boundary") {
-            return /support lead|channel owner|manager|human|review|approve|before sending|before posting|before publishing|before anything/.test(previousAnswer);
-        }
-
-        if (question.kind === "decision_rules") {
-            return /rule|priority|vip|condition|determine/.test(previousAnswer);
-        }
-
-        return false;
-    });
+function buildReadySession(
+  input: RunClarificationConversationAgentInput,
+  intent: StructuredWorkflowIntent,
+  reason: string,
+): ClarificationSession {
+  return {
+    session_id: buildSessionId(
+      input.originalInput,
+      input.answers,
+    ),
+    original_input: normalizeText(
+      input.originalInput,
+    ),
+    current_summary:
+      buildCurrentSummary(intent),
+    intent,
+    answers: input.answers,
+    next_question: null,
+    status: "ready_to_compile",
+    ready_to_compile: true,
+    rewritten_compile_prompt: buildCompilePrompt(
+      input,
+      intent,
+    ),
+    reason,
+  };
 }
 
-function isVeryVagueTaskRequest(input: string): boolean {
-    const normalized = input.toLowerCase().trim();
-    return normalized.length < 40
-        && /\b(automate|automation|make|build|do)\b/.test(normalized)
-        && /\b(task|tasks|work|stuff|things|process|job|jobs)\b/.test(normalized);
+function buildCannotContinueSession(
+  input: RunClarificationConversationAgentInput,
+  intent: StructuredWorkflowIntent,
+  reason: string,
+): ClarificationSession {
+  return {
+    session_id: buildSessionId(
+      input.originalInput,
+      input.answers,
+    ),
+    original_input: normalizeText(
+      input.originalInput,
+    ),
+    current_summary:
+      buildCurrentSummary(intent),
+    intent,
+    answers: input.answers,
+    next_question: null,
+    status: "cannot_continue",
+    ready_to_compile: false,
+    reason,
+  };
 }
 
-function isVagueEmailRequest(input: string): boolean {
-    const normalized = input.toLowerCase().trim();
-    return normalized.length < 80
-        && /\b(email|emails|mail|inbox|message|messages)\b/.test(normalized)
-        && !/\b(draft|summarize|classify|extract|route|reply|tag|assign)\b/.test(normalized);
+function isUsableProviderString(
+  value: unknown,
+  field?: string,
+): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalized = normalizeText(value);
+
+  if (
+    PROVIDER_PLACEHOLDER_PATTERNS.some(
+      (pattern) => pattern.test(normalized),
+    )
+  ) {
+    return false;
+  }
+
+  return isConcreteKnownFact(
+    normalized,
+    field,
+  );
+}
+
+function readUsableString(
+  value: unknown,
+  field?: string,
+): string | undefined {
+  return isUsableProviderString(value, field)
+    ? normalizeText(value)
+    : undefined;
+}
+
+function readUsableStringArray(
+  value: unknown,
+  field?: string,
+): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      value
+        .map((item) =>
+          readUsableString(item, field),
+        )
+        .filter(
+          (item): item is string =>
+            Boolean(item),
+        ),
+    ),
+  ];
+}
+
+function addUniqueStrings(
+  current: string[],
+  incoming: string[],
+): string[] {
+  return [
+    ...new Set(
+      [...current, ...incoming]
+        .map(normalizeText)
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function parseProviderWorkflowIntent(
+  value: unknown,
+): ProviderWorkflowIntent {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return {
+    goal: readUsableString(
+      value.goal,
+      "goal",
+    ),
+    task_type: readUsableString(
+      value.task_type,
+      "task_type",
+    ),
+    trigger: readUsableString(
+      value.trigger,
+      "trigger",
+    ),
+    input_sources: readUsableStringArray(
+      value.input_sources,
+      "input_sources",
+    ),
+    input_data: readUsableStringArray(
+      value.input_data,
+      "input_data",
+    ),
+    desired_outputs: readUsableStringArray(
+      value.desired_outputs,
+      "desired_outputs",
+    ),
+    output_destinations:
+      readUsableStringArray(
+        value.output_destinations,
+        "output_destinations",
+      ),
+    notification_targets:
+      readUsableStringArray(
+        value.notification_targets,
+        "notification_targets",
+      ),
+    decision_rules: readUsableStringArray(
+      value.decision_rules,
+      "decision_rules",
+    ),
+    human_owner: readUsableString(
+      value.human_owner,
+      "human_owner",
+    ),
+    approval_boundary: readUsableString(
+      value.approval_boundary,
+      "approval_boundary",
+    ),
+    external_action_boundary:
+      readUsableString(
+        value.external_action_boundary,
+        "external_action_boundary",
+      ),
+    external_actions: readUsableStringArray(
+      value.external_actions,
+      "external_actions",
+    ),
+    success_criteria: readUsableString(
+      value.success_criteria,
+      "success_criteria",
+    ),
+  };
+}
+
+function mergeStructuredWorkflowIntent(
+  deterministicIntent: StructuredWorkflowIntent,
+  providerIntent: ProviderWorkflowIntent,
+): StructuredWorkflowIntent {
+  /*
+   * Provider output may improve summaries and extract boundaries
+   * that the deterministic parser cannot infer cleanly.
+   *
+   * The original input and version remain deterministic.
+   * Arrays are merged rather than overwritten.
+   */
+  return {
+    version: "1",
+    original_input:
+      deterministicIntent.original_input,
+
+    goal:
+      providerIntent.goal ??
+      deterministicIntent.goal,
+
+    task_type:
+      providerIntent.task_type ??
+      deterministicIntent.task_type,
+
+    trigger:
+      providerIntent.trigger ??
+      deterministicIntent.trigger,
+
+    input_sources: addUniqueStrings(
+      deterministicIntent.input_sources,
+      providerIntent.input_sources ?? [],
+    ),
+
+    input_data: addUniqueStrings(
+      deterministicIntent.input_data,
+      providerIntent.input_data ?? [],
+    ),
+
+    desired_outputs: addUniqueStrings(
+      deterministicIntent.desired_outputs,
+      providerIntent.desired_outputs ?? [],
+    ),
+
+    output_destinations: addUniqueStrings(
+      deterministicIntent.output_destinations,
+      providerIntent.output_destinations ??
+        [],
+    ),
+
+    notification_targets: addUniqueStrings(
+      deterministicIntent.notification_targets,
+      providerIntent.notification_targets ??
+        [],
+    ),
+
+    decision_rules: addUniqueStrings(
+      deterministicIntent.decision_rules,
+      providerIntent.decision_rules ?? [],
+    ),
+
+    human_owner:
+      providerIntent.human_owner ??
+      deterministicIntent.human_owner,
+
+    approval_boundary:
+      providerIntent.approval_boundary ??
+      deterministicIntent.approval_boundary,
+
+    external_action_boundary:
+      providerIntent.external_action_boundary ??
+      deterministicIntent.external_action_boundary,
+
+    external_actions: addUniqueStrings(
+      deterministicIntent.external_actions,
+      providerIntent.external_actions ?? [],
+    ),
+
+    success_criteria:
+      providerIntent.success_criteria ??
+      deterministicIntent.success_criteria,
+  };
+}
+
+function questionWasAlreadyAnswered(
+  input: RunClarificationConversationAgentInput,
+  question: ClarificationNextQuestion,
+): boolean {
+  const alias =
+    aliasForQuestionId(question.id);
+
+  const normalizedQuestionId =
+    alias?.questionId ??
+    normalizeQuestionId(question.id);
+
+  const questionKind =
+    alias?.kind ?? question.kind;
+
+  return input.answers.some((answer) => {
+    const normalizedAnswer =
+      normalizeClarificationAnswer(answer);
+
+    const previousKind =
+      answerKind(normalizedAnswer);
+
+    const normalizedAnswerId =
+      normalizeQuestionId(
+        normalizedAnswer.question_id,
+      );
+
+    return (
+      normalizedAnswerId ===
+        normalizedQuestionId ||
+      normalizedAnswer.question
+        .toLowerCase() ===
+        question.question.toLowerCase() ||
+      (
+        previousKind === questionKind &&
+        isConcreteKnownFact(
+          normalizedAnswer.answer,
+          questionKind,
+        )
+      )
+    );
+  });
+}
+
+function isUsableProviderQuestion(
+  question: ClarificationNextQuestion,
+): boolean {
+  const text = normalizeText(
+    question.question,
+  );
+
+  if (text.length < 12) {
+    return false;
+  }
+
+  if (!text.endsWith("?")) {
+    return false;
+  }
+
+  if (
+    /\(\s*(?:e\.?g\.?|for example)\s*,?\s*\?\s*$/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    /(?:e\.?g\.?|for example)\s*,?\s*\?$/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    /[\(\[,;:-]\s*\?$/.test(text)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function readinessFieldForQuestionKind(
+  kind: ClarificationQuestionKind,
+): StructuredIntentReadinessField | undefined {
+  if (
+    kind === "workflow_goal" ||
+    kind === "task_type"
+  ) {
+    return "goal_or_task_type";
+  }
+
+  if (kind === "trigger") {
+    return "trigger";
+  }
+
+  if (
+    kind === "data_source" ||
+    kind === "input_data"
+  ) {
+    return "input_source_or_data";
+  }
+
+  if (kind === "desired_output") {
+    return "desired_output";
+  }
+
+  if (kind === "human_owner") {
+    return "human_owner";
+  }
+
+  if (
+    kind === "approval_boundary" ||
+    kind === "external_action_boundary"
+  ) {
+    return "approval_or_external_action_boundary";
+  }
+
+  return undefined;
+}
+
+function questionMatchesMissingField(
+  question: ClarificationNextQuestion,
+  missingFields:
+    StructuredIntentReadinessField[],
+): boolean {
+  const alias =
+    aliasForQuestionId(question.id);
+
+  const effectiveKind =
+    alias?.kind ?? question.kind;
+
+  const readinessField =
+    readinessFieldForQuestionKind(
+      effectiveKind,
+    );
+
+  if (!readinessField) {
+    return false;
+  }
+
+  return missingFields.includes(
+    readinessField,
+  );
 }
 
 function createFallbackQuestion(
-    input: RunClarificationConversationAgentInput,
-    knownFacts: ClarificationKnownFacts,
+  intent: StructuredWorkflowIntent,
 ): ClarificationNextQuestion {
-    if (!isConcreteKnownFact(knownFacts.task_type, "task_type") || (input.answers.length === 0 && isVeryVagueTaskRequest(input.originalInput))) {
-        return {
-            id: "choose_task_category",
-            kind: "task_type",
-            question: "What kind of tasks should FlowForge help with first — emails, tickets, documents, leads, scheduling, or internal admin work?",
-            why_it_matters: "FlowForge needs the task category before it can ask useful workflow questions.",
-            example_answer: "Support emails from students, or weekly admin reports.",
-        };
+  const readiness =
+    assessStructuredWorkflowIntentReadiness(
+      intent,
+    );
+
+  const missing =
+    readiness.missing_fields;
+
+  if (
+    missing.includes(
+      "goal_or_task_type",
+    )
+  ) {
+    return {
+      id: "choose_task_category",
+      kind: "task_type",
+      question:
+        "What kind of task or process should FlowForge plan?",
+      why_it_matters:
+        "FlowForge needs a concrete task before it can create a useful workflow.",
+      example_answer:
+        "Review new admissions applications.",
+    };
+  }
+
+  if (missing.includes("trigger")) {
+    return {
+      id: "workflow_trigger",
+      kind: "trigger",
+      question:
+        "When should this workflow start?",
+      why_it_matters:
+        "A safe workflow blueprint needs a clear starting event.",
+      example_answer:
+        "When a new application email arrives.",
+    };
+  }
+
+  if (
+    missing.includes(
+      "input_source_or_data",
+    )
+  ) {
+    const combinedContext = [
+      intent.goal,
+      intent.task_type,
+      ...intent.desired_outputs,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const isContentWorkflow =
+      /social media|content generation|marketing content|social post/i.test(
+        combinedContext,
+      );
+
+    const isEmailWorkflow =
+      /\bemail|inbox|application\b/i.test(
+        combinedContext,
+      );
+
+    if (isContentWorkflow) {
+      return {
+        id: "content_source_material",
+        kind: "data_source",
+        question:
+          "What source material should the workflow use to generate the content?",
+        why_it_matters:
+          "The workflow needs concrete source material before it can generate accurate drafts.",
+        example_answer:
+          "A product description, campaign brief, brand assets, and key marketing points.",
+      };
     }
 
-    if (!isConcreteKnownFact(knownFacts.desired_output, "desired_output") || (input.answers.length === 0 && isVagueEmailRequest(input.originalInput))) {
-        return {
-            id: "desired_output",
-            kind: "desired_output",
-            question: "What should the workflow produce?",
-            why_it_matters: "The output determines the safe workflow structure.",
-            example_answer: "A summary, draft reply, tags, and an internal task.",
-        };
-    }
-
-    if (!isConcreteKnownFact(knownFacts.trigger, "trigger")) {
-        return {
-            id: "workflow_trigger",
-            kind: "trigger",
-            question: "When should this workflow start?",
-            why_it_matters: "A safe automation blueprint needs a clear starting event.",
-            example_answer: "When a new support ticket is created, or every Friday at 16:00.",
-        };
-    }
-
-    if (!isConcreteKnownFact(knownFacts.data_source, "data_source") && !isConcreteKnownFact(knownFacts.input_data, "input_data")) {
-        const isContentWorkflow = /social media|content generation|generate (?:social )?posts?|marketing content|social post/i.test(
-            `${knownFacts.task_type ?? ""} ${knownFacts.desired_output ?? ""}`,
-        );
-
-        if (isContentWorkflow) {
-            return {
-                id: "content_source_material",
-                kind: "data_source",
-                question: "What source material should the workflow use to generate the social media content, such as a product description, campaign brief, blog post, image assets, or key marketing points?",
-                why_it_matters: "The workflow needs concrete source material before it can generate an accurate content draft.",
-                example_answer: "A product description, campaign brief, brand assets, and the key marketing points for the post.",
-            };
-        }
-
-        return {
-            id: "workflow_source",
-            kind: "data_source",
-            question: "Where will the workflow read the items from?",
-            why_it_matters: "The source tells FlowForge what system or inbox the workflow watches.",
-            example_answer: "The support inbox, Zendesk, Intercom, or a Google Sheet.",
-        };
-    }
-
-    if (needsHumanBoundary(input) && !isConcreteKnownFact(knownFacts.human_owner, "human_owner")) {
-        return {
-            id: "human_reviewer",
-            kind: "human_owner",
-            question: "Who reviews the result before anything is sent or changed?",
-            why_it_matters: "External replies and sensitive actions need accountable human ownership.",
-            example_answer: "The support lead reviews every draft before sending.",
-        };
-    }
-
-    if (needsHumanBoundary(input) && !hasHumanBoundary(knownFacts)) {
-        return {
-            id: "approval_boundary",
-            kind: "approval_boundary",
-            question: "What must stay human-approved or draft-only?",
-            why_it_matters: "This prevents FlowForge from planning automatic external actions.",
-            example_answer: "No replies are sent automatically. The support lead reviews every draft.",
-        };
+    if (isEmailWorkflow) {
+      return {
+        id: "workflow_source",
+        kind: "data_source",
+        question:
+          "Which inbox or email system should the workflow read the application emails from?",
+        why_it_matters:
+          "The workflow needs a concrete source for the incoming applications.",
+        example_answer:
+          "The shared admissions Gmail inbox.",
+      };
     }
 
     return {
-        id: "success_criteria",
-        kind: "success_criteria",
-        question: "How will you know the workflow worked correctly?",
-        why_it_matters: "Success criteria help FlowForge generate useful dry-run checks.",
-        example_answer: "A draft reply, tags, and a support-lead task are created, with no message sent automatically.",
+      id: "workflow_source",
+      kind: "data_source",
+      question:
+        "Where should the workflow read its input from?",
+      why_it_matters:
+        "The workflow needs a concrete source or input system.",
+      example_answer:
+        "A shared inbox, form, Google Sheet, or internal database.",
     };
+  }
+
+  if (
+    missing.includes("desired_output")
+  ) {
+    return {
+      id: "desired_output",
+      kind: "desired_output",
+      question:
+        "What should the workflow produce?",
+      why_it_matters:
+        "The output determines the workflow structure.",
+      example_answer:
+        "An internal review task with extracted details and a priority classification.",
+    };
+  }
+
+  if (
+    missing.includes("human_owner")
+  ) {
+    const isAdmissionsWorkflow =
+      /\badmissions?|application|candidate\b/i.test(
+        [
+          intent.goal,
+          intent.task_type,
+          ...intent.desired_outputs,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+
+    return {
+      id: "human_reviewer",
+      kind: "human_owner",
+      question: isAdmissionsWorkflow
+        ? "Who performs the manual admissions review before any external communication is allowed?"
+        : "Who reviews the result before anything is sent, published, or changed?",
+      why_it_matters:
+        "External actions need accountable human ownership.",
+      example_answer:
+        isAdmissionsWorkflow
+          ? "The admissions team reviews every application."
+          : "The responsible team manager reviews every result.",
+    };
+  }
+
+  if (
+    missing.includes(
+      "approval_or_external_action_boundary",
+    )
+  ) {
+    return {
+      id: "approval_boundary",
+      kind: "approval_boundary",
+      question:
+        "What must stay human-approved or draft-only?",
+      why_it_matters:
+        "This prevents FlowForge from planning unapproved external actions.",
+      example_answer:
+        "No external communication is sent automatically. The responsible reviewer must approve it first.",
+    };
+  }
+
+  return {
+    id: "success_criteria",
+    kind: "success_criteria",
+    question:
+      "How will you know the workflow worked correctly?",
+    why_it_matters:
+      "Success criteria help FlowForge generate useful dry-run checks.",
+    example_answer:
+      "The internal task contains the correct details, priority, and approval status.",
+  };
+}
+
+function buildDeterministicSessionFromIntent(
+  input: RunClarificationConversationAgentInput,
+  intent: StructuredWorkflowIntent,
+  reason: string,
+): ClarificationSession {
+  const readiness =
+    assessStructuredWorkflowIntentReadiness(
+      intent,
+    );
+
+  if (readiness.ready) {
+    return buildReadySession(
+      input,
+      intent,
+      "Enough confirmed clarification has been collected to compile a safe preview.",
+    );
+  }
+
+  if (
+    input.answers.length >=
+    HARD_MAX_CLARIFICATION_QUESTIONS
+  ) {
+    return buildCannotContinueSession(
+      input,
+      intent,
+      `Clarification hard limit reached. Missing required fields: ${readiness.missing_fields.join(", ")}.`,
+    );
+  }
+
+  const nextQuestion =
+    createFallbackQuestion(intent);
+
+  if (
+    questionWasAlreadyAnswered(
+      input,
+      nextQuestion,
+    )
+  ) {
+    return buildCannotContinueSession(
+      input,
+      intent,
+      `A duplicate clarification question was prevented. Missing required fields: ${readiness.missing_fields.join(", ")}.`,
+    );
+  }
+
+  return {
+    session_id: buildSessionId(
+      input.originalInput,
+      input.answers,
+    ),
+    original_input: normalizeText(
+      input.originalInput,
+    ),
+    current_summary:
+      buildCurrentSummary(intent),
+    intent,
+    answers: input.answers,
+    next_question: nextQuestion,
+    status: "needs_answer",
+    ready_to_compile: false,
+    reason,
+  };
 }
 
 export function buildDeterministicClarificationSession(
-    input: RunClarificationConversationAgentInput,
-    reason: string,
-    providedFacts?: ClarificationKnownFacts,
+  rawInput: RunClarificationConversationAgentInput,
+  reason: string,
 ): ClarificationSession {
-    const knownFacts = {
-        ...(providedFacts ?? {}),
-        ...inferKnownFacts(input),
-    };
+  const input = normalizedInput(rawInput);
 
-    if (hasEnoughInformation(knownFacts) && (!needsHumanBoundary(input) || hasHumanBoundary(knownFacts))) {
-        return buildReadySession(input, knownFacts, "Enough clarification has been collected to compile a safe preview.");
-    }
+  const intent =
+    inferStructuredWorkflowIntent(input);
 
-    if (input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
-        return buildReadySession(input, knownFacts, "Question limit reached; compiling with the best available clarified facts.");
-    }
-
-    const nextQuestion = createFallbackQuestion(input, knownFacts);
-
-    if (questionWasAlreadyAnswered(input, nextQuestion) || hasAlreadyAskedKind(input, nextQuestion.kind)) {
-        return buildReadySession(input, knownFacts, "Repeated clarification detected; compiling with the best available clarified facts.");
-    }
-
-    return {
-        session_id: buildSessionId(input.originalInput, input.answers),
-        original_input: normalizeText(input.originalInput),
-        current_summary: buildCurrentSummary(input, knownFacts),
-        known_facts: knownFacts,
-        answers: input.answers,
-        next_question: nextQuestion,
-        status: "needs_answer",
-        ready_to_compile: false,
-        reason,
-    };
+  return buildDeterministicSessionFromIntent(
+    input,
+    intent,
+    reason,
+  );
 }
 
 export function normalizeAgentSession(
-    parsed: unknown,
-    input: RunClarificationConversationAgentInput,
+  parsed: unknown,
+  rawInput: RunClarificationConversationAgentInput,
 ): ClarificationSession {
-    const raw = parsed && typeof parsed === "object"
-        ? parsed as Record<string, unknown>
-        : {};
+  const input = normalizedInput(rawInput);
 
-    const inferredFacts = inferKnownFacts(input);
+  const raw = isRecord(parsed)
+    ? parsed
+    : {};
 
-    const candidate = {
-        session_id: buildSessionId(input.originalInput, input.answers),
-        original_input: normalizeText(input.originalInput),
-        current_summary: raw.current_summary || buildCurrentSummary(input, inferredFacts),
-        known_facts: {
-            ...(raw.known_facts && typeof raw.known_facts === "object" ? raw.known_facts : {}),
-            ...inferredFacts,
-        },
-        answers: input.answers,
-        next_question: raw.next_question ?? null,
-        status: raw.status,
-        ready_to_compile: raw.ready_to_compile,
-        rewritten_compile_prompt: raw.rewritten_compile_prompt,
-        reason: raw.reason || "Clarification agent updated the session.",
-    };
+  const deterministicIntent =
+    inferStructuredWorkflowIntent(input);
 
-    let parsedSession = clarificationSessionSchema.parse(candidate);
+  const providerIntent =
+    parseProviderWorkflowIntent(
+      raw.workflow_intent,
+    );
 
-    if (input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
-        return buildReadySession(
-            input,
-            parsedSession.known_facts,
-            "Question limit reached; compiling with the best available clarified facts.",
-        );
+  const intent =
+    mergeStructuredWorkflowIntent(
+      deterministicIntent,
+      providerIntent,
+    );
+
+  const candidate = {
+    session_id: buildSessionId(
+      input.originalInput,
+      input.answers,
+    ),
+    original_input: normalizeText(
+      input.originalInput,
+    ),
+    current_summary:
+      readUsableString(
+        raw.current_summary,
+      ) ??
+      buildCurrentSummary(intent),
+    intent,
+    answers: input.answers,
+    next_question:
+      raw.next_question ?? null,
+    status: raw.status,
+    ready_to_compile:
+      raw.ready_to_compile,
+    reason:
+      readUsableString(raw.reason) ??
+      "Clarification agent updated the session.",
+  };
+
+  const parsedSession =
+    clarificationSessionSchema.parse(
+      candidate,
+    );
+
+  const readiness =
+    assessStructuredWorkflowIntentReadiness(
+      intent,
+    );
+
+  if (readiness.ready) {
+    return buildReadySession(
+      input,
+      intent,
+      "Enough confirmed clarification has been collected to compile a safe preview.",
+    );
+  }
+
+  if (
+    input.answers.length >=
+    HARD_MAX_CLARIFICATION_QUESTIONS
+  ) {
+    return buildCannotContinueSession(
+      input,
+      intent,
+      `Clarification hard limit reached. Missing required fields: ${readiness.missing_fields.join(", ")}.`,
+    );
+  }
+
+  const providerQuestion =
+    parsedSession.next_question;
+
+  const providerWantsAnswer =
+    parsedSession.status ===
+      "needs_answer" &&
+    parsedSession.ready_to_compile ===
+      false &&
+    providerQuestion !== null;
+
+  if (providerWantsAnswer) {
+    const questionIsUsable =
+      isUsableProviderQuestion(
+        providerQuestion,
+      );
+
+    const questionMatchesReadiness =
+      questionMatchesMissingField(
+        providerQuestion,
+        readiness.missing_fields,
+      );
+
+    const questionWasAnswered =
+      questionWasAlreadyAnswered(
+        input,
+        providerQuestion,
+      );
+
+    if (
+      questionIsUsable &&
+      questionMatchesReadiness &&
+      !questionWasAnswered
+    ) {
+      return {
+        ...parsedSession,
+        intent,
+        current_summary:
+          candidate.current_summary,
+      };
     }
 
-    const isExplicitNeedsAnswer = parsedSession.status === "needs_answer"
-        && parsedSession.ready_to_compile === false
-        && parsedSession.next_question !== null;
+    const rejectionReasons: string[] =
+      [];
 
-    if (isExplicitNeedsAnswer) {
-        if (
-            questionWasAlreadyAnswered(input, parsedSession.next_question!)
-            || hasAlreadyAskedKind(input, parsedSession.next_question!.kind)
-        ) {
-            return buildReadySession(
-                input,
-                parsedSession.known_facts,
-                "The agent repeated an answered question; compiling with the best available clarified facts.",
-            );
-        }
-
-        return {
-            ...parsedSession,
-            rewritten_compile_prompt: undefined,
-        };
+    if (!questionIsUsable) {
+      rejectionReasons.push(
+        "the provider question was incomplete or malformed",
+      );
     }
 
-    const enoughInfo = hasEnoughInformation(parsedSession.known_facts);
-    const boundaryOk = !needsHumanBoundary(input) || hasHumanBoundary(parsedSession.known_facts);
-
-    if (parsedSession.ready_to_compile && parsedSession.status === "ready_to_compile" && enoughInfo && boundaryOk) {
-        parsedSession = buildReadySession(
-            input,
-            parsedSession.known_facts,
-            "Enough concrete clarification has been collected to compile a safe preview.",
-        );
-    } else if (parsedSession.ready_to_compile || parsedSession.status === "ready_to_compile") {
-        return buildDeterministicClarificationSession(
-            input,
-            "The provider marked the session ready without enough concrete facts; deterministic clarification continues.",
-            parsedSession.known_facts,
-        );
+    if (!questionMatchesReadiness) {
+      rejectionReasons.push(
+        `the provider question did not match the missing fields: ${readiness.missing_fields.join(", ")}`,
+      );
     }
 
-    if (parsedSession.ready_to_compile && !parsedSession.rewritten_compile_prompt) {
-        parsedSession = {
-            ...parsedSession,
-            rewritten_compile_prompt: buildCompilePrompt(input, parsedSession.known_facts),
-        };
+    if (questionWasAnswered) {
+      rejectionReasons.push(
+        "the provider repeated an answered question",
+      );
     }
 
-    if (!parsedSession.ready_to_compile && !parsedSession.next_question) {
-        throw new Error("A non-ready clarification session requires next_question.");
-    }
+    return buildDeterministicSessionFromIntent(
+      input,
+      intent,
+      `Provider question rejected because ${rejectionReasons.join(" and ")}. Deterministic clarification selected the next required field.`,
+    );
+  }
 
-    if (parsedSession.next_question && questionWasAlreadyAnswered(input, parsedSession.next_question)) {
-        return buildReadySession(
-            input,
-            parsedSession.known_facts,
-            "The agent repeated an answered question; compiling with the best available clarified facts.",
-        );
-    }
-
-    return parsedSession;
+  return buildDeterministicSessionFromIntent(
+    input,
+    intent,
+    parsedSession.ready_to_compile ||
+      parsedSession.status ===
+        "ready_to_compile"
+      ? "The provider marked the session ready without enough confirmed facts; deterministic clarification continues."
+      : "The provider response did not contain a usable next question; deterministic clarification continues.",
+  );
 }
 
-async function tryProvider(
-    provider: "groq" | "gemini",
-    userPrompt: string,
-): Promise<{ rawResponse: string; parsedResponse: unknown }> {
-    const rawResponse = provider === "groq"
-        ? await callGroqAgent(userPrompt, clarificationConversationSystemPrompt, {
-            modelEnv: "GROQ_CLARIFIER_MODEL",
-            fallbackModelEnv: "GROQ_AGENT_MODEL",
-            maxTokensEnv: "GROQ_CLARIFIER_MAX_TOKENS",
-            fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
-            defaultMaxTokens: 1000,
-            maxTokensCap: 1800,
-            truncationSuggestion: "Raise GROQ_CLARIFIER_MAX_TOKENS to around 1200-1800.",
-        })
-        : await callGeminiAgent(userPrompt, clarificationConversationSystemPrompt, {
-            modelEnv: "GEMINI_CLARIFIER_MODEL",
-            fallbackModelEnv: "GEMINI_AGENT_MODEL",
-            maxOutputTokensEnv: "GEMINI_CLARIFIER_MAX_OUTPUT_TOKENS",
-            fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
-            defaultMaxOutputTokens: 1000,
-            maxOutputTokensCap: 1800,
-            truncationSuggestion: "Raise GEMINI_CLARIFIER_MAX_OUTPUT_TOKENS to around 1200-1800.",
-        });
+function providerIsAvailable(
+  provider: AgentProvider,
+  dependencies:
+    ClarificationProviderDependencies,
+): boolean {
+  const override =
+    dependencies.availability?.[
+      provider
+    ];
 
-    return {
-        rawResponse,
-        parsedResponse: safeParseJSON(rawResponse),
-    };
+  if (override !== undefined) {
+    return override;
+  }
+
+  const keyName =
+    provider === "openai"
+      ? "OPENAI_API_KEY"
+      : provider === "groq"
+        ? "GROQ_API_KEY"
+        : "GEMINI_API_KEY";
+
+  return Boolean(process.env[keyName]);
+}
+
+function providerCall(
+  provider: AgentProvider,
+  dependencies:
+    ClarificationProviderDependencies,
+): ClarificationProviderCall {
+  const override =
+    dependencies.calls?.[provider];
+
+  if (override) {
+    return override;
+  }
+
+  if (provider === "openai") {
+    return (
+      userPrompt,
+      systemPrompt,
+    ) =>
+      callOpenAIAgent(
+        userPrompt,
+        systemPrompt,
+        {
+          modelEnv:
+            "OPENAI_CLARIFIER_MODEL",
+          fallbackModelEnv:
+            "OPENAI_AGENT_MODEL",
+          maxOutputTokensEnv:
+            "OPENAI_CLARIFIER_MAX_OUTPUT_TOKENS",
+          fallbackMaxOutputTokensEnv:
+            "OPENAI_AGENT_MAX_OUTPUT_TOKENS",
+          defaultMaxOutputTokens: 1000,
+          maxOutputTokensCap: 1800,
+          reasoningEffort: "minimal",
+          verbosity: "low",
+        },
+      );
+  }
+
+  if (provider === "groq") {
+    return (
+      userPrompt,
+      systemPrompt,
+    ) =>
+      callGroqAgent(
+        userPrompt,
+        systemPrompt,
+        {
+          modelEnv:
+            "GROQ_CLARIFIER_MODEL",
+          fallbackModelEnv:
+            "GROQ_AGENT_MODEL",
+          maxTokensEnv:
+            "GROQ_CLARIFIER_MAX_TOKENS",
+          fallbackMaxTokensEnv:
+            "GROQ_AGENT_MAX_TOKENS",
+          defaultMaxTokens: 1000,
+          maxTokensCap: 1800,
+          truncationSuggestion:
+            "Raise GROQ_CLARIFIER_MAX_TOKENS to around 1200-1800.",
+        },
+      );
+  }
+
+  return (
+    userPrompt,
+    systemPrompt,
+  ) =>
+    callGeminiAgent(
+      userPrompt,
+      systemPrompt,
+      {
+        modelEnv:
+          "GEMINI_CLARIFIER_MODEL",
+        fallbackModelEnv:
+          "GEMINI_AGENT_MODEL",
+        maxOutputTokensEnv:
+          "GEMINI_CLARIFIER_MAX_OUTPUT_TOKENS",
+        fallbackMaxOutputTokensEnv:
+          "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+        defaultMaxOutputTokens: 1000,
+        maxOutputTokensCap: 1800,
+        truncationSuggestion:
+          "Raise GEMINI_CLARIFIER_MAX_OUTPUT_TOKENS to around 1200-1800.",
+      },
+    );
 }
 
 export async function runClarificationConversationAgent(
-    input: RunClarificationConversationAgentInput,
+  rawInput:
+    RunClarificationConversationAgentInput,
+  dependencies:
+    ClarificationProviderDependencies = {},
 ): Promise<ClarificationSessionResponse> {
-    const preflightFacts = inferKnownFacts(input);
+  const input = normalizedInput(rawInput);
 
-    if (input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
-        return clarificationSessionResponseSchema.parse({
-            session: buildReadySession(input, preflightFacts, "Question limit reached; compiling with the best available clarified facts."),
-            used_ai: false,
-            provider: "deterministic" satisfies AgentProvider,
-            fallback_used: true,
-        });
-    }
+  const preflightIntent =
+    inferStructuredWorkflowIntent(input);
 
-    const userPrompt = buildClarificationConversationUserPrompt({
-        originalInput: input.originalInput,
-        answers: input.answers,
-    });
-
-    const providerOrder: Array<"groq" | "gemini"> = ["groq", "gemini"];
-    const providerErrors: string[] = [];
-
-    for (const provider of providerOrder) {
-        const keyName = provider === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY";
-
-        if (!process.env[keyName]) {
-            providerErrors.push(`${provider}: ${keyName} is not configured.`);
-            continue;
-        }
-
-        try {
-            const { rawResponse, parsedResponse } = await tryProvider(provider, userPrompt);
-            const session = normalizeAgentSession(parsedResponse, input);
-
-            return clarificationSessionResponseSchema.parse({
-                session,
-                used_ai: true,
-                provider,
-                fallback_used: false,
-                raw_response: rawResponse,
-            });
-        } catch (error) {
-            providerErrors.push(`${provider}: ${summarizeError(error)}`);
-        }
-    }
-
-    const session = buildDeterministicClarificationSession(
-        input,
-        providerErrors.length > 0
-            ? `Clarification agent fallback used. ${providerErrors.join(" | ")}`
-            : "Clarification agent fallback used.",
+  const preflightReadiness =
+    assessStructuredWorkflowIntentReadiness(
+      preflightIntent,
     );
 
-    return clarificationSessionResponseSchema.parse({
-        session,
+  if (preflightReadiness.ready) {
+    return clarificationSessionResponseSchema.parse(
+      {
+        session: buildReadySession(
+          input,
+          preflightIntent,
+          "Enough confirmed clarification has been collected to compile a safe preview.",
+        ),
         used_ai: false,
-        provider: "deterministic" satisfies AgentProvider,
+        provider: "deterministic",
+        fallback_used: false,
+        provider_attempts: [
+          {
+            provider: "deterministic",
+            attempted: true,
+            success: true,
+          },
+        ],
+      },
+    );
+  }
+
+  if (
+    input.answers.length >=
+    HARD_MAX_CLARIFICATION_QUESTIONS
+  ) {
+    return clarificationSessionResponseSchema.parse(
+      {
+        session:
+          buildCannotContinueSession(
+            input,
+            preflightIntent,
+            `Clarification hard limit reached. Missing required fields: ${preflightReadiness.missing_fields.join(", ")}.`,
+          ),
+        used_ai: false,
+        provider: "deterministic",
         fallback_used: true,
-    });
+        provider_attempts: [
+          {
+            provider: "deterministic",
+            attempted: true,
+            success: true,
+          },
+        ],
+      },
+    );
+  }
+
+  /*
+   * Six questions is a soft limit.
+   *
+   * After the soft limit, only deterministic questions for
+   * required readiness fields are allowed.
+   */
+  if (
+    input.answers.length >=
+    SOFT_MAX_CLARIFICATION_QUESTIONS
+  ) {
+    return clarificationSessionResponseSchema.parse(
+      {
+        session:
+          buildDeterministicSessionFromIntent(
+            input,
+            preflightIntent,
+            `Soft clarification limit reached. Continuing with required fields only: ${preflightReadiness.missing_fields.join(", ")}.`,
+          ),
+        used_ai: false,
+        provider: "deterministic",
+        fallback_used: true,
+        provider_attempts: [
+          {
+            provider: "deterministic",
+            attempted: true,
+            success: true,
+          },
+        ],
+      },
+    );
+  }
+
+  const userPrompt =
+    buildClarificationConversationUserPrompt(
+      {
+        originalInput:
+          input.originalInput,
+        answers: input.answers,
+        currentIntent:
+          preflightIntent,
+      },
+    );
+
+  const providerErrors: string[] = [];
+
+  const providerAttempts:
+    ClarificationSessionResponse["provider_attempts"] =
+      [];
+
+  for (
+    const provider of PROVIDER_ORDER
+  ) {
+    if (
+      !providerIsAvailable(
+        provider,
+        dependencies,
+      )
+    ) {
+      providerErrors.push(
+        `${provider}: unavailable`,
+      );
+
+      providerAttempts.push({
+        provider,
+        attempted: false,
+        success: false,
+        error_summary:
+          "Provider key is not configured.",
+      });
+
+      continue;
+    }
+
+    try {
+      const rawResponse =
+        await providerCall(
+          provider,
+          dependencies,
+        )(
+          userPrompt,
+          clarificationConversationSystemPrompt,
+        );
+
+      const session =
+        normalizeAgentSession(
+          safeParseJSON(rawResponse),
+          input,
+        );
+
+      providerAttempts.push({
+        provider,
+        attempted: true,
+        success: true,
+      });
+
+      return clarificationSessionResponseSchema.parse(
+        {
+          session,
+          used_ai: true,
+          provider,
+          fallback_used: false,
+          provider_attempts:
+            providerAttempts,
+          raw_response: rawResponse,
+        },
+      );
+    } catch (error) {
+      const errorSummary =
+        summarizeError(error);
+
+      providerErrors.push(
+        `${provider}: ${errorSummary}`,
+      );
+
+      providerAttempts.push({
+        provider,
+        attempted: true,
+        success: false,
+        error_summary:
+          errorSummary,
+      });
+    }
+  }
+
+  const session =
+    buildDeterministicSessionFromIntent(
+      input,
+      preflightIntent,
+      providerErrors.length > 0
+        ? `Clarification agent fallback used. ${providerErrors.join(" | ")}`
+        : "Clarification agent fallback used.",
+    );
+
+  providerAttempts.push({
+    provider: "deterministic",
+    attempted: true,
+    success: true,
+  });
+
+  return clarificationSessionResponseSchema.parse(
+    {
+      session,
+      used_ai: false,
+      provider: "deterministic",
+      fallback_used: true,
+      provider_attempts:
+        providerAttempts,
+    },
+  );
 }

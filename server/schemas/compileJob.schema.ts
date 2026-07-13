@@ -126,14 +126,17 @@ export const agentTraceEventSchema = z
   .strict() satisfies z.ZodType<AgentTraceEvent>;
 
 export const clarificationFieldSchema = z.enum([
+  "task_type",
   "trigger",
+  "input_source",
   "input_data",
-  "output",
+  "desired_output",
+  "output_destination",
+  "notification_target",
   "decision_rules",
   "human_owner",
   "approval_boundary",
   "external_action_boundary",
-  "data_source",
   "success_criteria",
 ]) satisfies z.ZodType<ClarificationField>;
 
@@ -205,6 +208,7 @@ export const safetyCriticReviewSchema = z
   .strict() satisfies z.ZodType<SafetyCriticReview>;
 
 const agentOutputProviderSchema = z.enum([
+  "openai",
   "groq",
   "gemini",
   "deterministic",
@@ -333,6 +337,16 @@ const agentProviderDebugAttemptSchema = z
     warning_summary: z.string().optional(),
     raw_response: z.string().optional(),
     parsed_response: z.unknown().optional(),
+    validation_issues: z
+      .array(
+        z.object({
+          path: z.string(),
+          message: z.string(),
+          code: z.string(),
+        }).strict(),
+      )
+      .optional(),
+    raw_response_preview: z.string().optional(),
   })
   .strict();
 

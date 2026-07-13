@@ -17,9 +17,15 @@ import { scanSignals } from "../services/signalScanner";
 import { routeCompileRequest } from "../services/routerAgent";
 import { runSafetyCriticAgent } from "../services/safetyCriticAgent";
 import { buildSafetyCriticReview } from "../services/safetyCritic";
-import { parseCompileAnalysisInput } from "../services/structuredCompileInput";
+import { normalizeCompileRequest } from "../services/structuredCompileInput";
+import { assessStructuredWorkflowIntentReadiness } from "../services/structuredIntentReadiness";
 
-const compileModes = ["demo", "rule_only", "balanced", "full"] as const satisfies readonly CompileMode[];
+const compileModes = [
+  "demo",
+  "rule_only",
+  "balanced",
+  "full",
+] as const satisfies readonly CompileMode[];
 
 const llmCallLimits: Record<CompileMode, number> = {
   demo: 0,
@@ -28,7 +34,9 @@ const llmCallLimits: Record<CompileMode, number> = {
   full: 4,
 };
 
-export type EmitCompileProgress = (event: CompileProgressEvent) => void | Promise<void>;
+export type EmitCompileProgress = (
+  event: CompileProgressEvent,
+) => void | Promise<void>;
 
 type CompileBody = {
   input?: unknown;
@@ -36,7 +44,9 @@ type CompileBody = {
 };
 
 export function isCompileMode(value: unknown): value is CompileMode {
-  return typeof value === "string" && compileModes.includes(value as CompileMode);
+  return (
+    typeof value === "string" && compileModes.includes(value as CompileMode)
+  );
 }
 
 function progressTimestamp() {
@@ -54,7 +64,11 @@ async function emitProgress(
   } as CompileProgressEvent);
 }
 
-function agentCompletionStatus(output: { used_ai?: boolean; fallback_used?: boolean; status?: unknown }) {
+function agentCompletionStatus(output: {
+  used_ai?: boolean;
+  fallback_used?: boolean;
+  status?: unknown;
+}) {
   if (output.status === "skipped") return "skipped";
   if (output.status === "failed_validation") return "failed";
   if (output.used_ai) return "ai_success";
@@ -62,7 +76,10 @@ function agentCompletionStatus(output: { used_ai?: boolean; fallback_used?: bool
   return "deterministic_success";
 }
 
-function routerCompletionStatus(decision: { used_ai?: boolean; fallback_used?: boolean }) {
+function routerCompletionStatus(decision: {
+  used_ai?: boolean;
+  fallback_used?: boolean;
+}) {
   if (decision.used_ai) return "ai_success";
   if (decision.fallback_used) return "fallback_success";
   return "deterministic_success";
@@ -74,9 +91,12 @@ export async function runCompilePipeline(input: {
   emit?: EmitCompileProgress;
 }): Promise<CompileJob> {
   const { rawInput, mode, emit } = input;
-  const analysisInput = parseCompileAnalysisInput(rawInput);
-  const semanticInput = analysisInput.intent;
-  const signals = scanSignals(semanticInput);
+  const analysisInput = normalizeCompileRequest(rawInput);
+  const structuredIntent = analysisInput.intent;
+  const semanticInput = analysisInput.semantic_intent;
+  const intentReadiness =
+    assessStructuredWorkflowIntentReadiness(structuredIntent);
+  const signals = scanSignals(structuredIntent);
   const risks = scanRisks(signals);
   const readiness = scoreReadiness(signals, risks);
   await emitProgress(emit, {
@@ -86,7 +106,13 @@ export async function runCompilePipeline(input: {
     kind: "agent",
     message: "Routing request with available providers.",
   });
-  const routerResult = await routeCompileRequest(semanticInput, signals, risks, readiness, mode);
+  const routerResult = await routeCompileRequest(
+    semanticInput,
+    signals,
+    risks,
+    readiness,
+    mode,
+  );
   await emitProgress(emit, {
     type: "step_completed",
     step_id: "router",
@@ -106,7 +132,8 @@ export async function runCompilePipeline(input: {
     message: "Checking whether required workflow details are present.",
   });
   const clarificationPlan = buildClarificationPlan({
-    processInput: semanticInput,
+    intent: structuredIntent,
+    intentReadiness,
     signals,
     risks,
     readiness,
@@ -142,7 +169,9 @@ export async function runCompilePipeline(input: {
     type: "step_completed",
     step_id: "clarification_agent",
     label: "Compile Clarifier",
-    status: !clarificationPlan.needed ? "skipped" : agentCompletionStatus(clarificationAgentResult.output),
+    status: !clarificationPlan.needed
+      ? "skipped"
+      : agentCompletionStatus(clarificationAgentResult.output),
     provider: clarificationAgentResult.output.provider,
     message: !clarificationPlan.needed
       ? "No clarification agent work needed."
@@ -159,20 +188,24 @@ export async function runCompilePipeline(input: {
   // Success criteria / verification questions are useful implementation follow-ups,
   // but they should not block Blueprint Architect or Safety Critic Agent from
   // producing a non-executing preview.
-  const blockingMissingFields = clarificationPlan.missing_fields.filter((field) => field !== "success_criteria");
-  const shouldSkipDesignAgents = blockingMissingFields.length > 0;
+  const blockingMissingFields = clarificationPlan.missing_fields.filter(
+    (field) => field !== "success_criteria",
+  );
+  const shouldSkipDesignAgents = !intentReadiness.ready;
 
-  const displayedPrimitives = signals.workflow_primitives.filter((primitive) => {
-    if (primitive === "approval" && !risks.requires_human_review) {
-      return false;
-    }
+  const displayedPrimitives = signals.workflow_primitives.filter(
+    (primitive) => {
+      if (primitive === "approval" && !risks.requires_human_review) {
+        return false;
+      }
 
-    if (primitive === "risk_detection" && risks.categories.length === 0) {
-      return false;
-    }
+      if (primitive === "risk_detection" && risks.categories.length === 0) {
+        return false;
+      }
 
-    return true;
-  });
+      return true;
+    },
+  );
 
   const detectedPrimitiveSummary =
     displayedPrimitives.length > 0
@@ -183,9 +216,15 @@ export async function runCompilePipeline(input: {
     ? `Clarification needed: ${clarificationPlan.missing_fields.join(", ")}.`
     : "No clarification needed.";
 
-  const clarificationAgentSummary = clarificationAgentResult.output.used_ai
-    ? `Clarification Agent improved ${clarificationAgentResult.output.questions.length} question(s).`
-    : `Clarification Agent fallback: ${clarificationAgentResult.output.reason}`;
+  const clarificationAgentSkipped = !clarificationPlan.needed;
+
+  const clarificationAgentSummary = clarificationAgentSkipped
+    ? "Clarification Agent was skipped because the deterministic planner found no missing information."
+    : clarificationAgentResult.output.used_ai
+      ? `Clarification Agent improved ${clarificationAgentResult.output.questions.length} question(s).`
+      : clarificationAgentResult.output.fallback_used
+        ? `Clarification Agent used deterministic fallback: ${clarificationAgentResult.output.reason}`
+        : clarificationAgentResult.output.reason;
 
   const now = new Date().toISOString();
   const jobId = `compile_${Date.now()}`;
@@ -200,13 +239,14 @@ export async function runCompilePipeline(input: {
   const result = buildBlueprint({
     jobId,
     processInput: semanticInput,
+    intent: structuredIntent,
     signals,
     risks,
     readiness,
     mode,
   });
 
-  for (const constraint of analysisInput.safetyConstraints) {
+  for (const constraint of analysisInput.safety_constraints) {
     const assumption = `Clarification safety constraint: ${constraint}`;
 
     if (!result.assumptions.includes(assumption)) {
@@ -250,15 +290,18 @@ export async function runCompilePipeline(input: {
     fallback_used: true,
     confidence: "high" as const,
     status: "skipped" as const,
-    reason: "Blueprint Architect Agent skipped because blocking deterministic clarification is needed before proposing an implementation-ready blueprint.",
+    reason:
+      "Blueprint Architect Agent skipped because blocking deterministic clarification is needed before proposing an implementation-ready blueprint.",
     workflow_name: "Clarification-first blueprint proposal",
-    summary: "The request needs more detail before the AI Blueprint Architect should propose a workflow.",
+    summary:
+      "The request needs more detail before the AI Blueprint Architect should propose a workflow.",
     proposed_steps: [
       {
         id: "collect_missing_details",
         label: "Collect missing details",
         primitive: "intake" as const,
-        description: "Ask the missing clarification questions before designing the workflow.",
+        description:
+          "Ask the missing clarification questions before designing the workflow.",
         input: "User process description and clarification plan",
         output: "Clarified workflow requirements",
         automation_policy: "assist_only" as const,
@@ -269,7 +312,8 @@ export async function runCompilePipeline(input: {
         id: "review_safe_boundaries",
         label: "Review safe boundaries",
         primitive: "risk_detection" as const,
-        description: "Confirm what must remain draft-only, human-approved, or blocked.",
+        description:
+          "Confirm what must remain draft-only, human-approved, or blocked.",
         input: "Clarified requirements",
         output: "Safe automation boundary",
         automation_policy: "human_approval" as const,
@@ -280,7 +324,8 @@ export async function runCompilePipeline(input: {
         id: "recompile_after_clarification",
         label: "Recompile after clarification",
         primitive: "reporting" as const,
-        description: "Run FlowForge again after the missing details are answered.",
+        description:
+          "Run FlowForge again after the missing details are answered.",
         input: "Clarified process description",
         output: "Updated non-executing blueprint preview",
         automation_policy: "blocked_in_mvp" as const,
@@ -292,8 +337,12 @@ export async function runCompilePipeline(input: {
       {
         id: "review_before_design",
         label: "Review before design",
-        reason: "Clarification is required before a safe implementation-ready workflow can be proposed.",
-        applies_to_step_ids: ["collect_missing_details", "review_safe_boundaries"],
+        reason:
+          "Clarification is required before a safe implementation-ready workflow can be proposed.",
+        applies_to_step_ids: [
+          "collect_missing_details",
+          "review_safe_boundaries",
+        ],
         required: true,
       },
     ],
@@ -303,19 +352,27 @@ export async function runCompilePipeline(input: {
       label: category.replaceAll("_", " "),
       risk_level: risks.risk_level,
       reason: "Detected before clarification was complete.",
-      recommendation: "Answer missing details and keep sensitive or external actions human-reviewed.",
+      recommendation:
+        "Answer missing details and keep sensitive or external actions human-reviewed.",
     })),
     safe_to_automate: ["Collect clarification answers for review."],
     must_remain_draft_only: signals.has_external_action
-      ? ["Any external message or action must remain draft-only until reviewed."]
+      ? [
+          "Any external message or action must remain draft-only until reviewed.",
+        ]
       : [],
     requires_human_approval: risks.requires_human_review
       ? ["A human owner must approve the clarified workflow boundary."]
       : [],
     blocked_or_not_recommended: [],
-    assumptions: ["FlowForge should not spend blueprint-design AI calls until deterministic clarification is complete."],
-    open_questions: clarificationPlan.questions.map((question) => question.question),
-    safer_alternative: "Ask the clarification questions first, then recompile the workflow.",
+    assumptions: [
+      "FlowForge should not spend blueprint-design AI calls until deterministic clarification is complete.",
+    ],
+    open_questions: clarificationPlan.questions.map(
+      (question) => question.question,
+    ),
+    safer_alternative:
+      "Ask the clarification questions first, then recompile the workflow.",
   };
 
   const skippedBlueprintArchitectDebug: AgentDebugInfo = {
@@ -323,7 +380,8 @@ export async function runCompilePipeline(input: {
     agent_label: "Blueprint Architect Agent",
     mode,
     system_prompt: "",
-    user_prompt: "Skipped before prompting because blocking deterministic clarification is needed.",
+    user_prompt:
+      "Skipped before prompting because blocking deterministic clarification is needed.",
     provider_attempts: [
       {
         provider: "deterministic",
@@ -352,25 +410,28 @@ export async function runCompilePipeline(input: {
 
   const blueprintArchitectAgentResult = shouldSkipDesignAgents
     ? {
-      output: skippedBlueprintArchitectOutput,
-      llm_calls_made: 0,
-      debug: skippedBlueprintArchitectDebug,
-    }
+        output: skippedBlueprintArchitectOutput,
+        llm_calls_made: 0,
+        debug: skippedBlueprintArchitectDebug,
+      }
     : await runBlueprintArchitectAgent({
-      processInput: semanticInput,
-      mode,
-      signals,
-      risks,
-      readiness,
-      routerDecision: routerResult.decision,
-      clarificationPlan,
-    });
+        intent: structuredIntent,
+        safetyConstraints: analysisInput.safety_constraints,
+        mode,
+        signals,
+        risks,
+        readiness,
+        routerDecision: routerResult.decision,
+        clarificationPlan,
+      });
 
   await emitProgress(emit, {
     type: "step_completed",
     step_id: "blueprint_architect_agent",
     label: "Blueprint Architect",
-    status: shouldSkipDesignAgents ? "skipped" : agentCompletionStatus(blueprintArchitectAgentResult.output),
+    status: shouldSkipDesignAgents
+      ? "skipped"
+      : agentCompletionStatus(blueprintArchitectAgentResult.output),
     provider: blueprintArchitectAgentResult.output.provider,
     message: shouldSkipDesignAgents
       ? "Blueprint Architect skipped because clarification is needed first."
@@ -379,9 +440,13 @@ export async function runCompilePipeline(input: {
         : blueprintArchitectAgentResult.output.reason,
   });
 
-  const blueprintArchitectSummary = blueprintArchitectAgentResult.output.used_ai
-    ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
-    : `Blueprint Architect fallback: ${blueprintArchitectAgentResult.output.reason}`;
+  const blueprintArchitectSummary = shouldSkipDesignAgents
+    ? "Blueprint Architect Agent was skipped because blocking clarification is needed first."
+    : blueprintArchitectAgentResult.output.used_ai
+      ? `Blueprint Architect proposed ${blueprintArchitectAgentResult.output.proposed_steps.length} step(s).`
+      : blueprintArchitectAgentResult.output.fallback_used
+        ? `Blueprint Architect used deterministic fallback: ${blueprintArchitectAgentResult.output.reason}`
+        : blueprintArchitectAgentResult.output.reason;
 
   const skippedSafetyCriticAgentOutput = {
     provider: "deterministic" as const,
@@ -389,30 +454,41 @@ export async function runCompilePipeline(input: {
     fallback_used: true,
     confidence: "high" as const,
     status: "skipped" as const,
-    reason: "Safety Critic Agent skipped because blocking deterministic clarification is needed before critiquing an implementation-ready blueprint.",
-    critic_summary: "Clarify the workflow before asking the AI Safety Critic to critique the proposed automation.",
+    reason:
+      "Safety Critic Agent skipped because blocking deterministic clarification is needed before critiquing an implementation-ready blueprint.",
+    critic_summary:
+      "Clarify the workflow before asking the AI Safety Critic to critique the proposed automation.",
     concerns: [
       {
         id: "needs_clarification_before_critique",
         type: "needs_clarification" as const,
         severity: "warning" as const,
         title: "Clarification needed before AI critique",
-        explanation: "The workflow is missing required details, so the AI critic would be reviewing an unstable blueprint.",
-        recommendation: "Answer the clarification questions and recompile before requesting AI critique.",
+        explanation:
+          "The workflow is missing required details, so the AI critic would be reviewing an unstable blueprint.",
+        recommendation:
+          "Answer the clarification questions and recompile before requesting AI critique.",
         related_step_ids: result.steps.map((step) => step.id),
         related_risk_ids: result.risks.map((risk) => risk.id),
         related_gate_ids: result.human_approval_gates.map((gate) => gate.id),
       },
     ],
-    recommended_human_gates: result.human_approval_gates.map((gate) => gate.label),
+    recommended_human_gates: result.human_approval_gates.map(
+      (gate) => gate.label,
+    ),
     draft_only_warnings: signals.has_external_action
-      ? ["Any generated external message, reply, notification, or email must remain draft-only."]
+      ? [
+          "Any generated external message, reply, notification, or email must remain draft-only.",
+        ]
       : [],
-    blocked_or_not_recommended: result.not_safe_to_automate.length > 0
-      ? result.not_safe_to_automate
-      : result.not_recommended,
-    safer_alternative: "Answer the clarification questions, revise the process description, and recompile.",
-    final_advice: "Do not treat this as implementation-ready until the missing details are answered.",
+    blocked_or_not_recommended:
+      result.not_safe_to_automate.length > 0
+        ? result.not_safe_to_automate
+        : result.not_recommended,
+    safer_alternative:
+      "Answer the clarification questions, revise the process description, and recompile.",
+    final_advice:
+      "Do not treat this as implementation-ready until the missing details are answered.",
   };
 
   const skippedSafetyCriticDebug: AgentDebugInfo = {
@@ -420,7 +496,8 @@ export async function runCompilePipeline(input: {
     agent_label: "Safety Critic Agent",
     mode,
     system_prompt: "",
-    user_prompt: "Skipped before prompting because blocking deterministic clarification is needed.",
+    user_prompt:
+      "Skipped before prompting because blocking deterministic clarification is needed.",
     provider_attempts: [
       {
         provider: "deterministic",
@@ -437,15 +514,21 @@ export async function runCompilePipeline(input: {
     final_output: skippedSafetyCriticAgentOutput,
   };
 
-  function getSafetyCriticAgentDebug(resultWithMaybeDebug: unknown): AgentDebugInfo {
-    const maybeDebug = (resultWithMaybeDebug as { debug?: AgentDebugInfo }).debug;
+  function getSafetyCriticAgentDebug(
+    resultWithMaybeDebug: unknown,
+  ): AgentDebugInfo {
+    const maybeDebug = (resultWithMaybeDebug as { debug?: AgentDebugInfo })
+      .debug;
 
     if (maybeDebug) {
       return maybeDebug;
     }
 
-    const output = (resultWithMaybeDebug as { output: typeof skippedSafetyCriticAgentOutput }).output;
-    const llmCallsMade = (resultWithMaybeDebug as { llm_calls_made?: number }).llm_calls_made ?? 0;
+    const output = (
+      resultWithMaybeDebug as { output: typeof skippedSafetyCriticAgentOutput }
+    ).output;
+    const llmCallsMade =
+      (resultWithMaybeDebug as { llm_calls_made?: number }).llm_calls_made ?? 0;
 
     return {
       agent_id: "safety_critic_agent",
@@ -483,27 +566,29 @@ export async function runCompilePipeline(input: {
 
   const safetyCriticAgentResult = shouldSkipDesignAgents
     ? {
-      output: skippedSafetyCriticAgentOutput,
-      llm_calls_made: 0,
-      debug: skippedSafetyCriticDebug,
-    }
+        output: skippedSafetyCriticAgentOutput,
+        llm_calls_made: 0,
+        debug: skippedSafetyCriticDebug,
+      }
     : await runSafetyCriticAgent({
-      processInput: semanticInput,
-      mode,
-      signals,
-      risks,
-      readiness,
-      routerDecision: routerResult.decision,
-      clarificationPlan,
-      deterministicBlueprint: result,
-      blueprintArchitectOutput: blueprintArchitectAgentResult.output,
-    });
+        processInput: semanticInput,
+        mode,
+        signals,
+        risks,
+        readiness,
+        routerDecision: routerResult.decision,
+        clarificationPlan,
+        deterministicBlueprint: result,
+        blueprintArchitectOutput: blueprintArchitectAgentResult.output,
+      });
 
   await emitProgress(emit, {
     type: "step_completed",
     step_id: "safety_critic_agent",
     label: "Safety Critic",
-    status: shouldSkipDesignAgents ? "skipped" : agentCompletionStatus(safetyCriticAgentResult.output),
+    status: shouldSkipDesignAgents
+      ? "skipped"
+      : agentCompletionStatus(safetyCriticAgentResult.output),
     provider: safetyCriticAgentResult.output.provider,
     message: shouldSkipDesignAgents
       ? "Safety Critic skipped because clarification is needed first."
@@ -512,9 +597,13 @@ export async function runCompilePipeline(input: {
         : safetyCriticAgentResult.output.reason,
   });
 
-  const safetyCriticAgentSummary = safetyCriticAgentResult.output.used_ai
-    ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
-    : `Safety Critic Agent fallback: ${safetyCriticAgentResult.output.reason}`;
+  const safetyCriticAgentSummary = shouldSkipDesignAgents
+    ? "Safety Critic Agent was skipped because blocking clarification is needed first."
+    : safetyCriticAgentResult.output.used_ai
+      ? `Safety Critic Agent found ${safetyCriticAgentResult.output.concerns.length} concern(s).`
+      : safetyCriticAgentResult.output.fallback_used
+        ? `Safety Critic Agent used deterministic fallback: ${safetyCriticAgentResult.output.reason}`
+        : safetyCriticAgentResult.output.reason;
 
   await emitProgress(emit, {
     type: "step_started",
@@ -536,7 +625,8 @@ export async function runCompilePipeline(input: {
     {
       id: "rule_based_signal_scan",
       label: "Rule-Based Signal Scan",
-      description: "Summarize visible process structure with deterministic rules.",
+      description:
+        "Summarize visible process structure with deterministic rules.",
       status: "done",
       tool_name: "signalScanner",
       output_summary: detectedPrimitiveSummary,
@@ -544,7 +634,8 @@ export async function runCompilePipeline(input: {
     {
       id: "rule_based_risk_review",
       label: "Rule-Based Risk Review",
-      description: "Summarize risk level and review requirements with deterministic rules.",
+      description:
+        "Summarize risk level and review requirements with deterministic rules.",
       status: "done",
       tool_name: "riskScanner",
       output_summary: `Risk level is ${risks.risk_level}; human review ${risks.requires_human_review ? "is required" : "is not required"}.`,
@@ -552,7 +643,8 @@ export async function runCompilePipeline(input: {
     {
       id: "clarification_planner",
       label: "Clarification Planner",
-      description: "Determine whether clarification is needed before building a reliable blueprint.",
+      description:
+        "Determine whether clarification is needed before building a reliable blueprint.",
       status: "done",
       tool_name: "clarificationPlanner",
       output_summary: clarificationSummary,
@@ -560,8 +652,10 @@ export async function runCompilePipeline(input: {
     {
       id: "clarification_agent",
       label: "Clarification Agent",
-      description: "Use an AI agent, when available, to improve missing-detail questions.",
-      status: "done",
+      description: clarificationAgentSkipped
+        ? "Skipped because the deterministic clarification planner found no missing information."
+        : "Use an AI agent, when available, to improve missing-detail questions.",
+      status: clarificationAgentSkipped ? "skipped" : "done",
       tool_name: "clarificationAgent",
       output_summary: clarificationAgentSummary,
       token_cost: clarificationAgentResult.llm_calls_made,
@@ -580,7 +674,8 @@ export async function runCompilePipeline(input: {
     {
       id: "dynamic_blueprint_preview",
       label: "Dynamic Blueprint Preview",
-      description: "Build a deterministic safe automation blueprint from scanner output.",
+      description:
+        "Build a deterministic safe automation blueprint from scanner output.",
       status: "done",
       tool_name: "blueprintBuilder",
       output_summary: `${result.workflow_name} is ready for UI preview.`,
@@ -588,7 +683,8 @@ export async function runCompilePipeline(input: {
     {
       id: "safety_critic_review",
       label: "Safety Critic Review",
-      description: "Review the blueprint boundary and explain what must stay gated, draft-only, or blocked.",
+      description:
+        "Review the blueprint boundary and explain what must stay gated, draft-only, or blocked.",
       status: "done",
       tool_name: "safetyCritic",
       output_summary: safetyCriticReview.summary,
@@ -607,10 +703,10 @@ export async function runCompilePipeline(input: {
   ];
 
   const totalAgentLlmCalls =
-    routerResult.llm_calls_made
-    + clarificationAgentResult.llm_calls_made
-    + blueprintArchitectAgentResult.llm_calls_made
-    + safetyCriticAgentResult.llm_calls_made;
+    routerResult.llm_calls_made +
+    clarificationAgentResult.llm_calls_made +
+    blueprintArchitectAgentResult.llm_calls_made +
+    safetyCriticAgentResult.llm_calls_made;
 
   const tokenUsage: TokenUsage = {
     mode,
@@ -654,20 +750,29 @@ export async function runCompilePipeline(input: {
         id: "trace_initialize",
         timestamp: now,
         actor: "compiler_agent",
-        action: "Created rule-based compile job",
+        action: "Initialized deterministic compile base",
         status: "completed",
-        output_summary: "Rule-based compile state created.",
+        output_summary:
+          "Created the deterministic base state used by all compile modes before optional AI agents run.",
         metadata: {
-          provider_calls: 0,
+          compile_mode: mode,
+          provider_calls_at_initialization: 0,
           external_execution: false,
         },
       },
       ...routerResult.attempts.map((attempt, index) => ({
         id: `trace_router_${attempt.provider}_${index}`,
         timestamp: new Date().toISOString(),
-        actor: attempt.provider === "deterministic" ? "system" as const : "llm" as const,
+        actor:
+          attempt.provider === "deterministic"
+            ? ("system" as const)
+            : ("llm" as const),
         action: `Router attempt: ${attempt.provider}`,
-        status: attempt.success ? "completed" as const : (attempt.attempted ? "failed" as const : "skipped" as const),
+        status: attempt.success
+          ? ("completed" as const)
+          : attempt.attempted
+            ? ("failed" as const)
+            : ("skipped" as const),
         reason: attempt.skipped_reason || attempt.error_summary,
         metadata: {
           validation_failed: attempt.validation_failed,
@@ -702,23 +807,39 @@ export async function runCompilePipeline(input: {
       {
         id: "trace_clarification_agent",
         timestamp: now,
-        actor: clarificationAgentResult.output.used_ai ? "llm" : "system",
-        action: "Ran Clarification Agent",
-        status: "completed",
+        actor: clarificationAgentSkipped
+          ? "system"
+          : clarificationAgentResult.output.used_ai
+            ? "llm"
+            : "system",
+        action: clarificationAgentSkipped
+          ? "Skipped Clarification Agent"
+          : "Ran Clarification Agent",
+        status: clarificationAgentSkipped ? "skipped" : "completed",
         tool_name: "clarificationAgent",
         output_summary: clarificationAgentSummary,
+        reason: clarificationAgentSkipped
+          ? "The deterministic clarification planner found no missing fields."
+          : undefined,
         metadata: {
           used_ai: clarificationAgentResult.output.used_ai,
-          fallback_used: clarificationAgentResult.output.fallback_used,
-          provider: clarificationAgentResult.output.provider,
+          fallback_used: clarificationAgentSkipped
+            ? false
+            : clarificationAgentResult.output.fallback_used,
+          provider: clarificationAgentSkipped
+            ? "none"
+            : clarificationAgentResult.output.provider,
           question_count: clarificationAgentResult.output.questions.length,
+          skipped_because_clarification_not_needed: clarificationAgentSkipped,
         },
       },
       {
         id: "trace_blueprint_architect_agent",
         timestamp: now,
         actor: blueprintArchitectAgentResult.output.used_ai ? "llm" : "system",
-        action: shouldSkipDesignAgents ? "Skipped Blueprint Architect Agent" : "Ran Blueprint Architect Agent",
+        action: shouldSkipDesignAgents
+          ? "Skipped Blueprint Architect Agent"
+          : "Ran Blueprint Architect Agent",
         status: shouldSkipDesignAgents ? "skipped" : "completed",
         tool_name: "blueprintArchitectAgent",
         output_summary: blueprintArchitectSummary,
@@ -726,7 +847,8 @@ export async function runCompilePipeline(input: {
           used_ai: blueprintArchitectAgentResult.output.used_ai,
           fallback_used: blueprintArchitectAgentResult.output.fallback_used,
           provider: blueprintArchitectAgentResult.output.provider,
-          proposed_step_count: blueprintArchitectAgentResult.output.proposed_steps.length,
+          proposed_step_count:
+            blueprintArchitectAgentResult.output.proposed_steps.length,
           skipped_because_clarification_needed: shouldSkipDesignAgents,
           blocking_missing_fields: blockingMissingFields.join(", "),
         },
@@ -742,7 +864,8 @@ export async function runCompilePipeline(input: {
         metadata: {
           readiness_score: readiness.score,
           risk_count: risks.categories.length,
-          separated_safety_constraint_count: analysisInput.safetyConstraints.length,
+          separated_safety_constraint_count:
+            analysisInput.safety_constraints.length,
         },
       },
       {
@@ -762,7 +885,9 @@ export async function runCompilePipeline(input: {
         id: "trace_safety_critic_agent",
         timestamp: now,
         actor: safetyCriticAgentResult.output.used_ai ? "llm" : "system",
-        action: shouldSkipDesignAgents ? "Skipped Safety Critic Agent" : "Ran Safety Critic Agent",
+        action: shouldSkipDesignAgents
+          ? "Skipped Safety Critic Agent"
+          : "Ran Safety Critic Agent",
         status: shouldSkipDesignAgents ? "skipped" : "completed",
         tool_name: "safetyCriticAgent",
         output_summary: safetyCriticAgentSummary,
@@ -804,7 +929,9 @@ export async function runCompilePipeline(input: {
     step_id: "final_guard",
     label: "Final Guard",
     status: "deterministic_success",
-    message: validation.data.safety_critic?.next_safe_action || "Final guard completed.",
+    message:
+      validation.data.safety_critic?.next_safe_action ||
+      "Final guard completed.",
   });
   await emitProgress(emit, {
     type: "done",

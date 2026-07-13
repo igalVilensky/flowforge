@@ -15,6 +15,7 @@ import {
 import { clarificationAgentOutputSchema } from "../schemas/agentOutputs.schema";
 import { callGeminiAgent } from "./geminiProvider";
 import { callGroqAgent } from "./groqProvider";
+import { callOpenAIAgent } from "./openaiProvider";
 
 export type RunClarificationAgentInput = {
     processInput: string;
@@ -42,7 +43,7 @@ function summarizeError(error: unknown): string {
     }
 
     if (error instanceof Error) {
-        return error.message;
+        return error.message.replace(/\s*\|?\s*Response body:[\s\S]*/i, "").slice(0, 300);
     }
 
     return "Unknown error.";
@@ -211,6 +212,59 @@ export async function runClarificationAgent(input: RunClarificationAgentInput): 
 
     let llmCallsMade = 0;
     const providerAttempts: AgentProviderDebugAttempt[] = [];
+
+    if (process.env.OPENAI_API_KEY) {
+        let rawResponse: string | undefined;
+        let parsedResponse: unknown;
+
+        try {
+            llmCallsMade += 1;
+            rawResponse = await callOpenAIAgent(prompt, clarificationAgentSystemPrompt, {
+                modelEnv: "OPENAI_CLARIFIER_MODEL",
+                fallbackModelEnv: "OPENAI_AGENT_MODEL",
+                defaultMaxOutputTokens: 1000,
+                maxOutputTokensCap: 1800,
+            });
+            parsedResponse = safeParseJSON(rawResponse);
+            const output = normalizeAgentOutput(parsedResponse, "openai", input);
+
+            providerAttempts.push({
+                provider: "openai",
+                attempted: true,
+                success: true,
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
+
+            return {
+                output,
+                llm_calls_made: llmCallsMade,
+                debug: buildDebugInfo({
+                    mode: input.mode,
+                    userPrompt: prompt,
+                    providerAttempts,
+                    output,
+                    llmCallsMade,
+                }),
+            };
+        } catch (error) {
+            providerAttempts.push({
+                provider: "openai",
+                attempted: true,
+                success: false,
+                error_summary: summarizeError(error),
+                raw_response: rawResponse,
+                parsed_response: parsedResponse,
+            });
+        }
+    } else {
+        providerAttempts.push({
+            provider: "openai",
+            attempted: false,
+            success: false,
+            error_summary: "OPENAI_API_KEY is not configured.",
+        });
+    }
 
     if (process.env.GROQ_API_KEY) {
         let rawResponse: string | undefined;

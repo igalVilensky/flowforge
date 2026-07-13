@@ -4,7 +4,11 @@ import type { CompileJob } from "../../shared/types/compileJob";
 import type {
   CompactN8nGenerationInput,
   N8nGenerateResponse,
+  N8nGeneratorProviderAttempt,
   N8nWorkflow,
+  N8nWorkflowProcessingTrace,
+  N8nWorkflowTransformation,
+  N8nWorkflowValidationIssue,
 } from "../../shared/types/n8nWorkflow";
 import {
   buildN8nWorkflowGeneratorUserPrompt,
@@ -12,34 +16,78 @@ import {
 } from "../prompts/n8nWorkflowGeneratorPrompt";
 import { n8nWorkflowSchema } from "../schemas/n8nWorkflow.schema";
 import { callGroq } from "./groqProvider";
+import {
+  OpenAIAPIError,
+  callOpenAIAgent,
+  resolveOpenAIModelSelection,
+  type OpenAIFetch,
+} from "./openaiProvider";
 import { buildCompactN8nGenerationInput } from "./n8nImplementationBriefBuilder";
 
 export const n8nGeneratorNotConfiguredMessage =
-  "n8n JSON generator is not configured. Add GROQ_N8N_API_KEY to enable this feature.";
+  "n8n JSON generator is not configured. Add OPENAI_API_KEY or GROQ_N8N_API_KEY to enable this feature.";
 
 export const n8nGeneratorProviderLimitMessage =
-  "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact implementation brief, but this request still exceeded the provider limit. Try a shorter workflow or reduce workflow details.";
+  "n8n JSON generation exceeded the configured provider output or rate limit. Increase the n8n generation token budget or try a smaller workflow.";
 
-export type N8nWorkflowValidationIssue = {
-  path: string;
-  message: string;
-  code: string;
+type N8nAiProvider = "openai" | "groq";
+
+type ProviderAttempt = N8nGeneratorProviderAttempt;
+
+export type N8nWorkflowValidationTrace = {
+  provider: N8nAiProvider;
+  parsed_workflow: unknown;
+  normalized_workflow: unknown;
+  validation_issues: N8nWorkflowValidationIssue[];
 };
 
+export type N8nWorkflowGeneratorDependencies = {
+  calls?: Partial<Record<N8nAiProvider, (prompt: string) => Promise<string>>>;
+  openaiFetch?: OpenAIFetch;
+  onValidationFailure?: (trace: N8nWorkflowValidationTrace) => void;
+};
+
+export function resolveN8nOpenAIModelSelection() {
+  return resolveOpenAIModelSelection({
+    modelEnv: "OPENAI_N8N_MODEL",
+    fallbackModelEnv: "OPENAI_AGENT_MODEL",
+    defaultModel: "gpt-5-nano",
+  });
+}
+
 export class N8nWorkflowGeneratorConfigError extends Error {
-  constructor() {
+  provider_attempts: ProviderAttempt[];
+  provider: "none";
+  used_ai: boolean;
+  fallback_used: boolean;
+  warnings: string[];
+  workflow: null;
+
+  constructor(providerAttempts: ProviderAttempt[] = []) {
     super(n8nGeneratorNotConfiguredMessage);
     this.name = "N8nWorkflowGeneratorConfigError";
+    this.provider_attempts = providerAttempts;
+    this.provider = "none";
+    this.used_ai = false;
+    this.fallback_used = false;
+    this.warnings = [];
+    this.workflow = null;
   }
 }
 
 export class N8nWorkflowGeneratorValidationError extends Error {
   issues: N8nWorkflowValidationIssue[];
+  processing_trace?: N8nWorkflowProcessingTrace;
 
-  constructor(message: string, issues: N8nWorkflowValidationIssue[]) {
+  constructor(
+    message: string,
+    issues: N8nWorkflowValidationIssue[],
+    processingTrace?: N8nWorkflowProcessingTrace,
+  ) {
     super(message);
     this.name = "N8nWorkflowGeneratorValidationError";
     this.issues = issues;
+    this.processing_trace = processingTrace;
   }
 }
 
@@ -50,16 +98,81 @@ export class N8nWorkflowGeneratorProviderLimitError extends Error {
   }
 }
 
-export function estimateN8nPromptBytes(input: CompactN8nGenerationInput): {
-  compactPayloadBytes: number;
-  promptBytes: number;
-} {
-  const prompt = buildN8nWorkflowGeneratorUserPrompt(input);
+export class N8nWorkflowGeneratorProvidersFailedError extends Error {
+  provider_attempts: ProviderAttempt[];
+  provider: N8nAiProvider | "none";
+  used_ai: boolean;
+  fallback_used: boolean;
+  warnings: string[];
+  workflow: null;
 
-  return {
-    compactPayloadBytes: Buffer.byteLength(JSON.stringify(input), "utf8"),
-    promptBytes: Buffer.byteLength(`${n8nWorkflowGeneratorSystemPrompt}\n${prompt}`, "utf8"),
-  };
+  constructor(providerAttempts: ProviderAttempt[]) {
+    const attemptedProviders = providerAttempts.filter(
+      (attempt) => attempt.attempted,
+    );
+
+    const details = attemptedProviders
+      .map((attempt) => {
+        const result = attempt.success
+          ? "success"
+          : attempt.error_summary || "failed";
+
+        return `${attempt.provider}: ${result}`;
+      })
+      .join(" | ");
+
+    super(
+      details
+        ? `n8n generation failed after provider fallback. ${details}`
+        : "n8n generation failed because no configured provider could be attempted.",
+    );
+
+    this.name = "N8nWorkflowGeneratorProvidersFailedError";
+
+    this.provider_attempts = providerAttempts;
+
+    this.provider = attemptedProviders.at(-1)?.provider ?? "none";
+
+    this.used_ai = attemptedProviders.length > 0;
+
+    this.fallback_used = attemptedProviders.length > 1;
+
+    this.warnings = [];
+    this.workflow = null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function valuesDiffer(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) !== JSON.stringify(right);
+}
+
+function recordTransformation(
+  target: N8nWorkflowTransformation[],
+  input: {
+    id: string;
+    description: string;
+    functionNames: string[];
+    before: unknown;
+    after: unknown;
+    details?: string[];
+  },
+) {
+  if (!valuesDiffer(input.before, input.after)) return;
+
+  target.push({
+    id: input.id,
+    description: input.description,
+    function_names: input.functionNames,
+    ...(input.details?.length ? { details: input.details } : {}),
+  });
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
 function formatIssuePath(path: ZodIssue["path"]): string {
@@ -74,54 +187,24 @@ function formatIssues(issues: ZodIssue[]): N8nWorkflowValidationIssue[] {
   }));
 }
 
-function parseStrictJson(rawText: string): unknown {
-  const trimmed = rawText.trim();
+export function estimateN8nPromptBytes(input: CompactN8nGenerationInput): {
+  compactPayloadBytes: number;
+  promptBytes: number;
+} {
+  const prompt = buildN8nWorkflowGeneratorUserPrompt(input);
 
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // Try progressively more tolerant text cleanup below.
-  }
-
-  const withoutFence = stripMarkdownJsonFence(trimmed);
-
-  if (withoutFence !== trimmed) {
-    try {
-      return JSON.parse(withoutFence);
-    } catch {
-      // Continue to balanced-object extraction.
-    }
-  }
-
-  const extractedObject = extractFirstTopLevelJsonObject(withoutFence);
-
-  if (extractedObject) {
-    try {
-      return JSON.parse(extractedObject);
-    } catch {
-      // Fall through to the FlowForge validation error below.
-    }
-  }
-
-  throw new N8nWorkflowGeneratorValidationError(
-    "n8n generator returned invalid JSON.",
-    [
-      {
-        path: "(root)",
-        message: "Model output must be one valid JSON object with no markdown or surrounding explanation.",
-        code: "invalid_json",
-      },
-      {
-        path: "(root)",
-        message: `Raw output preview: ${previewRawModelOutput(rawText)}`,
-        code: "invalid_json_preview",
-      },
-    ],
-  );
+  return {
+    compactPayloadBytes: Buffer.byteLength(JSON.stringify(input), "utf8"),
+    promptBytes: Buffer.byteLength(
+      `${n8nWorkflowGeneratorSystemPrompt}\n${prompt}`,
+      "utf8",
+    ),
+  };
 }
 
 function stripMarkdownJsonFence(rawText: string): string {
   const match = rawText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+
   return match?.[1] ? match[1].trim() : rawText;
 }
 
@@ -148,14 +231,14 @@ function extractFirstTopLevelJsonObject(rawText: string): string | null {
         escaped = false;
       } else if (character === "\\") {
         escaped = true;
-      } else if (character === "\"") {
+      } else if (character === '"') {
         inString = false;
       }
 
       continue;
     }
 
-    if (character === "\"") {
+    if (character === '"') {
       inString = true;
       continue;
     }
@@ -175,16 +258,97 @@ function extractFirstTopLevelJsonObject(rawText: string): string | null {
 }
 
 function previewRawModelOutput(rawText: string): string {
-  const normalized = rawText.replace(/\s+/g, " ").trim();
+  return (
+    boundedDiagnosticText(redactDiagnosticSecrets(rawText), 600) ||
+    "(empty output)"
+  );
+}
 
-  if (!normalized) return "(empty output)";
-  if (normalized.length <= 240) return normalized;
+function boundedDiagnosticText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
 
-  return `${normalized.slice(0, 239)}...`;
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function redactDiagnosticSecrets(value: string): string {
+  let redacted = value;
+
+  for (const secret of [
+    process.env.OPENAI_API_KEY,
+    process.env.GROQ_N8N_API_KEY,
+  ]) {
+    if (secret?.trim()) {
+      redacted = redacted.replaceAll(secret.trim(), "[REDACTED]");
+    }
+  }
+
+  return redacted
+    .replace(
+      /(["']?authorization["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^"',\s}]+/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/\bbearer\s+[^"',\s}]+/gi, "Bearer [REDACTED]")
+    .replace(
+      /\b(?:OPENAI_API_KEY|GROQ_N8N_API_KEY)\s*[:=]\s*[^\s,"'}]+/gi,
+      (match) => `${match.split(/[=:]/, 1)[0]}=[REDACTED]`,
+    )
+    .replace(/\b(?:sk|gsk)_[a-z0-9_-]{8,}\b/gi, "[REDACTED]")
+    .replace(/\bsk-(?:proj-)?[a-z0-9_-]{8,}\b/gi, "[REDACTED]");
+}
+
+function parseStrictJson(rawText: string): unknown {
+  const trimmed = rawText.trim();
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Continue with safe cleanup.
+  }
+
+  const withoutFence = stripMarkdownJsonFence(trimmed);
+
+  if (withoutFence !== trimmed) {
+    try {
+      return JSON.parse(withoutFence);
+    } catch {
+      // Continue with object extraction.
+    }
+  }
+
+  const extractedObject = extractFirstTopLevelJsonObject(withoutFence);
+
+  if (extractedObject) {
+    try {
+      return JSON.parse(extractedObject);
+    } catch {
+      // Fall through to the validation error.
+    }
+  }
+
+  throw new N8nWorkflowGeneratorValidationError(
+    "n8n generator returned invalid JSON.",
+    [
+      {
+        path: "(root)",
+        message: "Model output must contain one valid JSON object.",
+        code: "invalid_json",
+      },
+      {
+        path: "(root)",
+        message: `Raw output preview: ${previewRawModelOutput(rawText)}`,
+        code: "invalid_json_preview",
+      },
+    ],
+  );
 }
 
 function slugifyNodeId(value: unknown, fallback: string): string {
   const source = typeof value === "string" && value.trim() ? value : fallback;
+
   const slug = source
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
@@ -194,42 +358,36 @@ function slugifyNodeId(value: unknown, fallback: string): string {
   return slug || fallback;
 }
 
-function nodeAlias(value: unknown): string {
-  return typeof value === "string"
-    ? value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-    : "";
-}
-
 function uniqueNodeId(baseId: string, usedIds: Set<string>): string {
   let candidate = baseId;
   let suffix = 2;
 
   while (usedIds.has(candidate)) {
     candidate = `${baseId}_${suffix}`;
+
     suffix += 1;
   }
 
   usedIds.add(candidate);
+
   return candidate;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+function nodeAlias(value: unknown): string {
+  return typeof value === "string"
+    ? value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+    : "";
 }
 
 function isGenericGeneratedWorkflowName(value: unknown): boolean {
-  if (typeof value !== "string") return true;
+  const normalized = normalizeText(value).toLowerCase();
 
-  const normalized = value
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return !normalized
-    || [
+  return (
+    !normalized ||
+    [
       "classification workflow",
       "extraction workflow",
       "safe automation preview",
@@ -237,10 +395,37 @@ function isGenericGeneratedWorkflowName(value: unknown): boolean {
       "draft n8n workflow",
       "n8n workflow",
       "workflow",
-    ].includes(normalized);
+      "external communication review workflow",
+    ].includes(normalized)
+  );
 }
 
-export function normalizeGeneratedWorkflowName(input: unknown, workflowName: string): unknown {
+export function normalizeGeneratedWorkflowEnvelope(input: unknown): unknown {
+  if (
+    !isRecord(input) ||
+    Array.isArray(input.nodes) ||
+    isRecord(input.connections) ||
+    !isRecord(input.workflow) ||
+    !Array.isArray(input.workflow.nodes) ||
+    !isRecord(input.workflow.connections)
+  ) {
+    return input;
+  }
+
+  const normalized = {
+    ...input,
+    ...input.workflow,
+  };
+
+  delete normalized.workflow;
+
+  return normalized;
+}
+
+export function normalizeGeneratedWorkflowName(
+  input: unknown,
+  workflowName: string,
+): unknown {
   if (!isRecord(input)) {
     return input;
   }
@@ -256,7 +441,7 @@ export function normalizeGeneratedWorkflowName(input: unknown, workflowName: str
 }
 
 export function normalizeGeneratedWorkflowActiveFlag(input: unknown): unknown {
-  if (!isRecord(input) || input.active !== undefined) {
+  if (!isRecord(input)) {
     return input;
   }
 
@@ -267,41 +452,89 @@ export function normalizeGeneratedWorkflowActiveFlag(input: unknown): unknown {
 }
 
 export function normalizeGeneratedWorkflowIds(input: unknown): unknown {
-  if (!input || typeof input !== "object" || !Array.isArray((input as { nodes?: unknown }).nodes)) {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
     return input;
   }
 
-  const workflow = input as Record<string, unknown> & { nodes: unknown[] };
   const usedIds = new Set<string>();
 
   return {
-    ...workflow,
-    nodes: workflow.nodes.map((node, index) => {
-      if (!node || typeof node !== "object") {
+    ...input,
+    nodes: input.nodes.map((node, index) => {
+      if (!isRecord(node)) {
         return node;
       }
 
-      const record = node as Record<string, unknown>;
-      const existingId = typeof record.id === "string" ? record.id.trim() : "";
-      const baseId = slugifyNodeId(existingId || record.name, `node_${index + 1}`);
+      const existingId = normalizeText(node.id);
+
+      const baseId = slugifyNodeId(
+        existingId || node.name,
+        `node_${index + 1}`,
+      );
 
       return {
-        ...record,
+        ...node,
         id: uniqueNodeId(baseId, usedIds),
       };
     }),
   };
 }
 
+export function normalizeGeneratedWorkflowNodeShape(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    nodes: input.nodes.map((node) => {
+      if (!isRecord(node)) {
+        return node;
+      }
+
+      const normalized = {
+        ...node,
+      };
+
+      if (normalized.parameters == null) {
+        normalized.parameters = {};
+      }
+
+      if (typeof normalized.typeVersion === "string") {
+        const parsedTypeVersion = Number(normalized.typeVersion);
+
+        if (Number.isFinite(parsedTypeVersion) && parsedTypeVersion > 0) {
+          normalized.typeVersion = parsedTypeVersion;
+        }
+      }
+
+      for (const optionalKey of [
+        "credentials",
+        "disabled",
+        "notes",
+        "notesInFlow",
+      ] as const) {
+        if (normalized[optionalKey] === null) {
+          delete normalized[optionalKey];
+        }
+      }
+
+      return normalized;
+    }),
+  };
+}
+
+function fallbackNodePosition(index: number): [number, number] {
+  return [index * 260, 0];
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function fallbackNodePosition(index: number): [number, number] {
-  return [(index % 4) * 260, Math.floor(index / 4) * 180];
-}
-
-export function normalizeGeneratedWorkflowNodePositions(input: unknown): unknown {
+export function normalizeGeneratedWorkflowNodePositions(
+  input: unknown,
+): unknown {
   if (!isRecord(input) || !Array.isArray(input.nodes)) {
     return input;
   }
@@ -313,65 +546,55 @@ export function normalizeGeneratedWorkflowNodePositions(input: unknown): unknown
         return node;
       }
 
-      const fallbackPosition = fallbackNodePosition(index);
       const position = Array.isArray(node.position) ? node.position : [];
+
+      const fallback = fallbackNodePosition(index);
 
       return {
         ...node,
         position: [
-          isFiniteNumber(position[0]) ? position[0] : fallbackPosition[0],
-          isFiniteNumber(position[1]) ? position[1] : fallbackPosition[1],
+          isFiniteNumber(position[0]) ? position[0] : fallback[0],
+
+          isFiniteNumber(position[1]) ? position[1] : fallback[1],
         ],
       };
     }),
   };
 }
 
-function buildNodeNameAliases(input: Record<string, unknown>): Map<string, string> {
+function buildNodeNameAliases(
+  input: Record<string, unknown>,
+): Map<string, string> {
   const aliases = new Map<string, string>();
+
   const nodes = Array.isArray(input.nodes) ? input.nodes : [];
-  const firstWordCandidates = new Map<string, string[]>();
 
   for (const node of nodes) {
     if (!isRecord(node) || typeof node.name !== "string" || !node.name.trim()) {
       continue;
     }
 
-    const nameAlias = nodeAlias(node.name);
-    aliases.set(nameAlias, node.name);
+    aliases.set(nodeAlias(node.name), node.name);
 
-    const firstWord = nodeAlias(node.name.split(/\s+/)[0]);
-
-    if (firstWord) {
-      firstWordCandidates.set(firstWord, [...(firstWordCandidates.get(firstWord) ?? []), node.name]);
-    }
-
-    if (typeof node.id === "string" && node.id.trim()) {
+    if (typeof node.id === "string") {
       aliases.set(nodeAlias(node.id), node.name);
-    }
-
-    if (nameAlias.includes("manual_review")) {
-      aliases.set("review", node.name);
-      aliases.set("manual", node.name);
-      aliases.set("manual_review", node.name);
-      aliases.set("review_gate", node.name);
-    }
-  }
-
-  for (const [firstWord, names] of firstWordCandidates) {
-    if (names.length === 1 && !aliases.has(firstWord)) {
-      aliases.set(firstWord, names[0] ?? "");
     }
   }
 
   return aliases;
 }
 
-function resolveConnectionNodeName(value: string, aliases: Map<string, string>): string {
+function resolveConnectionNodeName(
+  value: string,
+  aliases: Map<string, string>,
+): string {
   return aliases.get(nodeAlias(value)) ?? value;
 }
 
-function normalizeConnectionTarget(target: unknown, aliases: Map<string, string>): unknown {
+function normalizeConnectionTarget(
+  target: unknown,
+  aliases: Map<string, string>,
+): unknown {
   if (typeof target === "string") {
     return {
       node: resolveConnectionNodeName(target, aliases),
@@ -384,46 +607,68 @@ function normalizeConnectionTarget(target: unknown, aliases: Map<string, string>
     return target;
   }
 
-  const resolvedNodeName = resolveConnectionNodeName(target.node, aliases);
-
-  if (
-    typeof target.type === "string"
-    && typeof target.index === "number"
-    && target.node === resolvedNodeName
-  ) {
-    return target;
-  }
-
   return {
     ...target,
-    node: resolvedNodeName,
+    node: resolveConnectionNodeName(target.node, aliases),
     type: typeof target.type === "string" ? target.type : "main",
     index: typeof target.index === "number" ? target.index : 0,
   };
 }
 
-function normalizeConnectionGroup(group: unknown, aliases: Map<string, string>): unknown {
+function normalizeConnectionGroup(
+  group: unknown,
+  aliases: Map<string, string>,
+): unknown {
   if (Array.isArray(group)) {
     return group.map((target) => normalizeConnectionTarget(target, aliases));
   }
 
-  if (typeof group === "string" || (isRecord(group) && typeof group.node === "string")) {
+  if (
+    typeof group === "string" ||
+    (isRecord(group) && typeof group.node === "string")
+  ) {
     return [normalizeConnectionTarget(group, aliases)];
   }
 
   return group;
 }
 
-function normalizeConnectionOutput(output: unknown, aliases: Map<string, string>): unknown {
+function normalizeConnectionOutput(
+  output: unknown,
+  aliases: Map<string, string>,
+): unknown {
   if (Array.isArray(output)) {
     return output.map((group) => normalizeConnectionGroup(group, aliases));
   }
 
-  if (typeof output === "string" || (isRecord(output) && typeof output.node === "string")) {
+  if (
+    typeof output === "string" ||
+    (isRecord(output) && typeof output.node === "string")
+  ) {
     return [[normalizeConnectionTarget(output, aliases)]];
   }
 
   return output;
+}
+
+function unwrapSingleConnectionWrapper(
+  nodeConnections: Record<string, unknown>,
+): Record<string, unknown> {
+  if (Object.hasOwn(nodeConnections, "main")) {
+    return nodeConnections;
+  }
+
+  const entries = Object.entries(nodeConnections);
+
+  if (entries.length !== 1) {
+    return nodeConnections;
+  }
+
+  const wrapped = entries[0]?.[1];
+
+  return isRecord(wrapped) && Object.hasOwn(wrapped, "main")
+    ? wrapped
+    : nodeConnections;
 }
 
 export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
@@ -432,21 +677,27 @@ export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
   }
 
   const aliases = buildNodeNameAliases(input);
-  const normalizedConnections = Object.fromEntries(
-    Object.entries(input.connections).map(([sourceNodeName, nodeConnections]) => {
+
+  const connections = Object.fromEntries(
+    Object.entries(input.connections).map(([sourceName, nodeConnections]) => {
       if (!isRecord(nodeConnections)) {
-        return [sourceNodeName, nodeConnections];
+        return [sourceName, nodeConnections];
       }
 
-      const resolvedSourceNodeName = resolveConnectionNodeName(sourceNodeName, aliases);
+      const resolvedSource = resolveConnectionNodeName(sourceName, aliases);
+
+      const unwrappedConnections =
+        unwrapSingleConnectionWrapper(nodeConnections);
 
       return [
-        resolvedSourceNodeName,
+        resolvedSource,
         Object.fromEntries(
-          Object.entries(nodeConnections).map(([connectionType, output]) => [
-            connectionType,
-            normalizeConnectionOutput(output, aliases),
-          ]),
+          Object.entries(unwrappedConnections).map(
+            ([connectionType, output]) => [
+              connectionType,
+              normalizeConnectionOutput(output, aliases),
+            ],
+          ),
         ),
       ];
     }),
@@ -454,461 +705,626 @@ export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
 
   return {
     ...input,
-    connections: normalizedConnections,
+    connections,
   };
 }
 
-const externalActionTargetMarkers = [
-  "email",
-  "gmail",
-  "http",
-  "reply",
-  "sendgrid",
-  "slack",
-  "webhook",
-  "zendesk",
-];
+export function normalizeGeneratedWorkflowConnectionsAfterNodeRemoval(
+  input: unknown,
+): unknown {
+  const normalized = normalizeGeneratedWorkflowConnections(input);
 
-const externalActionVerbMarkers = [
-  "archive",
-  "charge",
-  "delete",
-  "pay",
-  "payment",
-  "post",
-  "publish",
-  "refund",
-  "reply",
-  "send",
-  "update",
-  "write",
-];
-
-const safePlaceholderNameMarkers = [
-  "approval",
-  "blocked",
-  "draft",
-  "manual",
-  "no-op",
-  "noop",
-  "pending",
-  "placeholder",
-  "review",
-  "sample",
-];
-
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value) ?? String(value ?? "");
-  } catch {
-    return String(value ?? "");
+  if (
+    !isRecord(normalized) ||
+    !Array.isArray(normalized.nodes) ||
+    !isRecord(normalized.connections)
+  ) {
+    return normalized;
   }
+
+  const nodeNames = new Set(
+    normalized.nodes
+      .filter(isRecord)
+      .map((node) => normalizeText(node.name))
+      .filter(Boolean),
+  );
+
+  const connections: Record<string, unknown> = {};
+
+  for (const [sourceName, nodeConnections] of Object.entries(
+    normalized.connections,
+  )) {
+    if (!nodeNames.has(sourceName) || !isRecord(nodeConnections)) {
+      continue;
+    }
+
+    const cleaned: Record<string, unknown> = {};
+
+    for (const [connectionType, output] of Object.entries(nodeConnections)) {
+      if (!Array.isArray(output)) {
+        cleaned[connectionType] = output;
+        continue;
+      }
+
+      const groups = output
+        .map((group) => {
+          if (!Array.isArray(group)) {
+            return group;
+          }
+
+          return group.filter((target) => {
+            const targetName = connectionTargetName(target);
+
+            return !targetName || nodeNames.has(targetName);
+          });
+        })
+        .filter((group) => !Array.isArray(group) || group.length > 0);
+
+      if (groups.length > 0) {
+        cleaned[connectionType] = groups;
+      }
+    }
+
+    if (Object.keys(cleaned).length > 0) {
+      connections[sourceName] = cleaned;
+    }
+  }
+
+  return {
+    ...normalized,
+    connections,
+  };
 }
 
-function includesAny(value: string, markers: readonly string[]): boolean {
-  return markers.some((marker) => value.includes(marker));
+function safeReviewValues(
+  compactInput: CompactN8nGenerationInput,
+  existing: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const owner = compactInput.human_owner || "responsible human reviewer";
+
+  const approvalBoundary =
+    compactInput.approval_boundary ||
+    "Human approval is required before external action.";
+
+  const externalBoundary =
+    compactInput.external_action_boundary ||
+    "No external action is allowed before human review.";
+
+  return {
+    ...existing,
+    ...canonicalContextValues(compactInput),
+    review_owner: owner,
+    review_status: "pending",
+    manual_review_required: true,
+    requires_human_approval: true,
+    draft_only: true,
+    send_status: "not_sent",
+    approval_boundary: approvalBoundary,
+    external_action_boundary: externalBoundary,
+    next_action: `${owner} reviews and approves the package before any external communication or production action.`,
+  };
 }
 
-function normalizedNodeName(node: Record<string, unknown>): string {
-  return typeof node.name === "string" ? node.name.toLowerCase() : "";
+function fieldKey(field: string): string {
+  return field
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
-function normalizedNodeText(node: Record<string, unknown>): string {
-  return [
-    node.name,
-    node.type,
-    safeStringify(node.parameters),
-    safeStringify(node.credentials),
-    typeof node.notes === "string" ? node.notes : "",
-  ]
-    .join(" ")
-    .toLowerCase();
-}
-
-function isSupportNodeName(nodeName: string): boolean {
-  return includesAny(nodeName, ["support", "customer", "ticket", "inbox", "message"]);
-}
-
-function isDraftReplyNodeName(nodeName: string): boolean {
-  return nodeName.includes("draft")
-    || nodeName.includes("reply")
-    || nodeName.includes("response suggestion");
-}
-
-function isReviewOrApprovalNodeName(nodeName: string): boolean {
-  return nodeName.includes("review")
-    || nodeName.includes("approval")
-    || nodeName.includes("approve")
-    || nodeName.includes("pending");
-}
-
-function isSampleSupportMessageNodeName(nodeName: string): boolean {
-  return nodeName.includes("sample") && isSupportNodeName(nodeName);
-}
-
-function isClassifyNodeName(nodeName: string): boolean {
-  return nodeName.includes("classify") || nodeName.includes("categorize");
-}
-
-function isSupportClassificationNodeName(nodeName: string): boolean {
-  return isClassifyNodeName(nodeName)
-    && (
-      isSupportNodeName(nodeName)
-      || nodeName.includes("topic")
-      || nodeName.includes("urgency")
+function canonicalFieldKeys(compactInput: CompactN8nGenerationInput): string[] {
+  return compactInput.extracted_fields
+    .map(fieldKey)
+    .filter(
+      (field, index, fields) =>
+        Boolean(field) && fields.indexOf(field) === index,
     );
 }
 
-function isSupportDraftFlowNodeName(nodeName: string): boolean {
-  return isSupportNodeName(nodeName)
-    || isDraftReplyNodeName(nodeName)
-    || isReviewOrApprovalNodeName(nodeName);
+function canonicalFieldExpressions(
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    canonicalFieldKeys(compactInput).map((field) => [
+      field,
+      `={{ $json.${field} }}`,
+    ]),
+  );
 }
 
-function safeDraftReviewFields(values: Record<string, unknown> = {}): Record<string, unknown> {
+function canonicalContextValues(
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
   return {
-    ...values,
-    review_status: values.review_status || "pending",
-    send_status: values.send_status || "not_sent",
-    draft_only: values.draft_only ?? true,
-    requires_human_approval: values.requires_human_approval ?? true,
+    domain: compactInput.domain,
+    source: compactInput.source,
+    source_system: compactInput.source,
+    source_type: compactInput.source_type,
+    source_is_placeholder: true,
+    human_owner: compactInput.human_owner,
+    approval_boundary: compactInput.approval_boundary,
+    external_action_boundary: compactInput.external_action_boundary,
   };
 }
 
-function isLikelyExternalActionPlaceholder(node: Record<string, unknown>): boolean {
-  const nodeName = normalizedNodeName(node);
-  const text = normalizedNodeText(node);
+function samplePayloadForInput(
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    ...canonicalContextValues(compactInput),
+    sample_only: true,
+  };
 
-  if (includesAny(nodeName, safePlaceholderNameMarkers)) {
-    return false;
+  for (const field of compactInput.extracted_fields) {
+    const key = fieldKey(field);
+
+    if (key) {
+      if (key.includes("name")) {
+        payload[key] = "Alex Example";
+      } else if (key.includes("id")) {
+        payload[key] = "APP-TEST-001";
+      } else if (key.includes("email")) {
+        payload[key] = "alex.example@example.com";
+      } else if (key.includes("course")) {
+        payload[key] = "Web Development";
+      } else if (key.includes("summary")) {
+        payload[key] = "Synthetic sample application for workflow testing.";
+      } else if (key.includes("url") || key.includes("link")) {
+        payload[key] = "https://example.com/portfolio";
+      } else if (key.includes("source")) {
+        payload[key] = "Test source";
+      } else if (key.includes("role")) {
+        payload[key] = "Frontend Developer";
+      } else if (key.includes("priority") || key.includes("category")) {
+        payload[key] = "normal";
+      } else if (key.includes("amount")) {
+        payload[key] = 100;
+      } else {
+        payload[key] = "Sample value";
+      }
+    }
   }
 
-  if (nodeName.includes("extract") || isClassifyNodeName(nodeName)) {
-    return false;
-  }
-
-  if (nodeName.includes("prepare") && includesAny(nodeName, ["review", "task", "summary"])) {
-    return false;
-  }
-
-  return includesAny(text, externalActionTargetMarkers)
-    && includesAny(text, externalActionVerbMarkers);
+  return payload;
 }
 
-function normalizeExternalActionPlaceholderNode(
+function sampleCodeForInput(compactInput: CompactN8nGenerationInput): string {
+  return `return [{ json: ${JSON.stringify(
+    samplePayloadForInput(compactInput),
+    null,
+    2,
+  )} }];`;
+}
+
+function extractionCodeForInput(
+  compactInput: CompactN8nGenerationInput,
+): string {
+  const entries = compactInput.extracted_fields
+    .map((field) => {
+      const key = fieldKey(field);
+
+      return `      ${JSON.stringify(key)}: item.json[${JSON.stringify(
+        key,
+      )}] ?? ""`;
+    })
+    .join(",\n");
+
+  return [
+    "return items.map((item) => ({",
+    "  json: {",
+    entries || '    extracted_value: item.json.extracted_value ?? ""',
+    "  }",
+    "}));",
+  ].join("\n");
+}
+
+function reviewPackageValues(
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {
+    ...canonicalFieldExpressions(compactInput),
+    ...canonicalContextValues(compactInput),
+  };
+
+  const classificationKey = fieldKey(compactInput.classification_target);
+
+  if (classificationKey) {
+    values[classificationKey] = `={{ $json.${classificationKey} }}`;
+  }
+
+  for (const output of compactInput.internal_outputs) {
+    const key = fieldKey(output);
+
+    if (key && !Object.hasOwn(values, key)) {
+      values[key] = true;
+    }
+  }
+
+  return values;
+}
+
+function reviewPackageCodeForInput(
+  compactInput: CompactN8nGenerationInput,
+): string {
+  const assignments = Object.entries(reviewPackageValues(compactInput))
+    .map(([key, value]) => {
+      const assignment =
+        typeof value === "string" && value.startsWith("={{ $json.")
+          ? `item.json[${JSON.stringify(key)}] ?? ""`
+          : JSON.stringify(value);
+
+      return `      ${JSON.stringify(key)}: ${assignment}`;
+    })
+    .join(",\n");
+
+  return [
+    "return items.map((item) => ({",
+    "  json: {",
+    assignments,
+    "  }",
+    "}));",
+  ].join("\n");
+}
+
+function normalizedNodeName(node: Record<string, unknown>): string {
+  return normalizeText(node.name).toLowerCase();
+}
+
+function isPendingReviewNodeName(name: string): boolean {
+  const normalized = normalizeText(name).toLowerCase();
+
+  return (
+    normalized.includes("mark pending human review") ||
+    (normalized.includes("pending") && normalized.includes("review"))
+  );
+}
+
+function isReviewPackageNodeName(name: string): boolean {
+  const normalized = normalizeText(name).toLowerCase();
+
+  return (
+    normalized.includes("prepare") &&
+    normalized.includes("review") &&
+    !isPendingReviewNodeName(normalized)
+  );
+}
+
+function classificationCodeForInput(
+  compactInput: CompactN8nGenerationInput,
+): string {
+  const targetKey = fieldKey(
+    compactInput.classification_target || "classification",
+  );
+  const canonicalAssignments = canonicalFieldKeys(compactInput).map(
+    (field) =>
+      `      ${JSON.stringify(field)}: item.json[${JSON.stringify(field)}] ?? "",`,
+  );
+
+  if (compactInput.domain === "admissions") {
+    return [
+      "return items.map((item) => {",
+      "  const requiredFields = [",
+      ...compactInput.extracted_fields.map(
+        (field) => `    ${JSON.stringify(fieldKey(field))},`,
+      ),
+      "  ];",
+      "",
+      '  const missingFields = requiredFields.filter((field) => !String(item.json[field] || "").trim());',
+      "",
+      '  let priority = "normal";',
+      '  let priority_reason = "Standard processing";',
+      "",
+      '  if (missingFields.length > 0) {',
+      '    priority = "needs_manual_review";',
+      '    priority_reason = "Missing required fields";',
+      '  } else {',
+      '    const hasUsefulSignal = Boolean(',
+      '      item.json.portfolio_link ||',
+      '      (item.json.application_source && String(item.json.application_source).toLowerCase().includes("referral"))',
+      '    );',
+      '    if (hasUsefulSignal) {',
+      '      priority = "high";',
+      '      priority_reason = "Strong candidate signal detected";',
+      '    }',
+      '  }',
+      "",
+      "  return {",
+      "    json: {",
+      ...canonicalAssignments,
+      `      ${JSON.stringify(targetKey)}: priority,`,
+      "      priority,",
+      "      priority_reason,",
+      "      missing_fields: missingFields,",
+      "      classification_is_internal_triage_only: true",
+      "    }",
+      "  };",
+      "});",
+    ].join("\n");
+  }
+
+  return [
+    "return items.map((item) => ({",
+    "  json: {",
+    ...canonicalAssignments,
+    `    ${JSON.stringify(targetKey)}: item.json[${JSON.stringify(targetKey)}] || "needs_manual_review",`,
+    "    classification_is_internal_only: true",
+    "  }",
+    "}));",
+  ].join("\n");
+}
+
+function reviewCodeForInput(compactInput: CompactN8nGenerationInput): string {
+  const reviewValues = safeReviewValues(compactInput);
+
+  const assignments = Object.entries(reviewValues)
+    .map(
+      ([key, value]) =>
+        `      ${JSON.stringify(key)}: ${JSON.stringify(value)}`,
+    )
+    .join(",\n");
+
+  return [
+    "return items.map((item) => ({",
+    "  json: {",
+    assignments,
+    "  }",
+    "}));",
+  ].join("\n");
+}
+
+function normalizeCodeNodeParameters(
   node: Record<string, unknown>,
-): Record<string, unknown> | null {
-  if (
-    node.type !== "n8n-nodes-base.code"
-    && node.type !== "n8n-nodes-base.set"
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  const existingParameters = isRecord(node.parameters) ? node.parameters : {};
+
+  const nodeName = normalizedNodeName(node);
+  let canonicalCode = "";
+  let updatedNode = { ...node };
+
+  if (nodeName.includes("extract")) {
+    updatedNode.notes = "Normalizes pre-extracted sample fields. In production, replace this with an AI extraction node to parse raw email text.";
+  }
+
+  if (nodeName.includes("sample")) {
+    canonicalCode = sampleCodeForInput(compactInput);
+  } else if (nodeName.includes("normalize") || nodeName.includes("extract")) {
+    canonicalCode = extractionCodeForInput(compactInput);
+  } else if (
+    nodeName.includes("classify") ||
+    nodeName.includes("categorize") ||
+    nodeName.includes("triage")
   ) {
-    return null;
+    canonicalCode = classificationCodeForInput(compactInput);
+  } else if (isReviewPackageNodeName(nodeName)) {
+    canonicalCode = reviewPackageCodeForInput(compactInput);
+  } else if (
+    isPendingReviewNodeName(nodeName) ||
+    nodeName.includes("approval") ||
+    nodeName.includes("human review")
+  ) {
+    canonicalCode = reviewCodeForInput(compactInput);
   }
 
-  if (!isLikelyExternalActionPlaceholder(node)) {
-    return null;
+  return {
+    ...updatedNode,
+    parameters: canonicalCode
+      ? {
+          jsCode: canonicalCode,
+        }
+      : {
+          ...existingParameters,
+          ...(typeof existingParameters.jsCode !== "string" &&
+          typeof existingParameters.code === "string"
+            ? {
+                jsCode: existingParameters.code,
+              }
+            : {}),
+        },
+  };
+}
+
+function normalizeSetNodeParameters(
+  node: Record<string, unknown>,
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  const existingParameters = isRecord(node.parameters) ? node.parameters : {};
+
+  const nodeName = normalizedNodeName(node);
+  let updatedNode = { ...node };
+
+  if (nodeName.includes("extract")) {
+    updatedNode.notes = "Normalizes pre-extracted sample fields. In production, replace this with an AI extraction node to parse raw email text.";
   }
 
-  const safetyNote = "Disabled no-op placeholder. Do not send external messages until manual review and approval are complete.";
+  let values: Record<string, unknown> | null = null;
 
-  if (node.type === "n8n-nodes-base.code") {
-    return {
-      ...node,
-      disabled: true,
-      notes: typeof node.notes === "string" && node.notes.trim()
-        ? `${node.notes} ${safetyNote}`
-        : safetyNote,
-      parameters: {
-        jsCode: [
-          "return items.map((item) => ({",
-          "  json: {",
-          "    ...item.json,",
-          "    review_status: \"pending\",",
-          "    send_status: \"not_sent\",",
-          "    draft_only: true,",
-          "    requires_human_approval: true,",
-          "    safety_note: \"No-op placeholder. Manual approval required before any external message is sent.\"",
-          "  }",
-          "}));",
-        ].join("\n"),
-      },
+  if (nodeName.includes("sample")) {
+    values = samplePayloadForInput(compactInput);
+  } else if (nodeName.includes("normalize") || nodeName.includes("extract")) {
+    values = canonicalFieldExpressions(compactInput);
+  } else if (
+    nodeName.includes("classify") ||
+    nodeName.includes("categorize") ||
+    nodeName.includes("triage")
+  ) {
+    const classificationKey = fieldKey(
+      compactInput.classification_target || "classification",
+    );
+
+    values = {
+      ...canonicalFieldExpressions(compactInput),
+      [classificationKey]: "needs_manual_review",
+      classification_is_internal_only: true,
     };
+  } else if (isReviewPackageNodeName(nodeName)) {
+    values = reviewPackageValues(compactInput);
+  } else if (
+    isPendingReviewNodeName(nodeName) ||
+    nodeName.includes("approval") ||
+    nodeName.includes("human review")
+  ) {
+    values = safeReviewValues(compactInput);
   }
 
-  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const values = isRecord(parameters.values) ? { ...parameters.values } : {};
+  return {
+    ...updatedNode,
+    typeVersion: 1, // Enforce supported set node format
+    parameters: values
+      ? {
+          values,
+          keepOnlySet: false,
+        }
+      : existingParameters,
+  };
+}
+
+function normalizeStickyNoteParameters(
+  node: Record<string, unknown>,
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  const content = [
+    `Domain: ${compactInput.domain}.`,
+    `Source represented safely: ${compactInput.source} (${compactInput.source_type}).`,
+    `Human owner: ${compactInput.human_owner}.`,
+    compactInput.approval_boundary,
+    compactInput.external_action_boundary,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return {
     ...node,
-    disabled: true,
-    notes: typeof node.notes === "string" && node.notes.trim()
-      ? `${node.notes} ${safetyNote}`
-      : safetyNote,
     parameters: {
-      ...parameters,
-      values: safeDraftReviewFields({
-        ...values,
-        safety_note: values.safety_note || "No-op placeholder. Manual approval required before any external message is sent.",
-      }),
+      content,
     },
   };
 }
 
-function normalizeCodeNodeParameters(node: Record<string, unknown>): Record<string, unknown> {
-  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const nodeName = normalizedNodeName(node);
+function isUnsafeExternalNode(node: Record<string, unknown>): boolean {
+  const type = normalizeText(node.type).toLowerCase();
 
-  const existingJsCode = typeof parameters.jsCode === "string" ? parameters.jsCode : "";
-  const legacyCode = typeof parameters.code === "string" ? parameters.code : "";
+  return (
+    type.includes("gmail") ||
+    type.includes("slack") ||
+    type.includes("http") ||
+    type.includes("webhook") ||
+    type.includes("sendgrid") ||
+    type.includes("zendesk") ||
+    type.includes("emailSend".toLowerCase())
+  );
+}
 
-  if (!existingJsCode && legacyCode) {
-    parameters.jsCode = legacyCode;
-    delete parameters.code;
-  }
+function normalizeUnsafeExternalNode(
+  node: Record<string, unknown>,
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown> {
+  const safeNode = { ...node };
 
-  const isSampleNode = nodeName.includes("sample");
-  const isExtractNode = nodeName.includes("extract");
-  const isClassifyNode = nodeName.includes("classify");
-
-  if (isSampleSupportMessageNodeName(nodeName)) {
-    parameters.jsCode = [
-      "return [{",
-      "  json: {",
-      "    source_channel: \"support inbox sample\",",
-      "    subject: \"Cannot access account\",",
-      "    customer_name: \"Sample Customer\",",
-      "    customer_message: \"Sample support message for safe draft testing only. Do not send.\",",
-      "    issue_summary: \"Customer cannot access account.\",",
-      "    topic: \"account_access\",",
-      "    urgency: \"high\",",
-      "    account_identifier: \"\",",
-      "    review_status: \"pending\",",
-      "    send_status: \"not_sent\",",
-      "    draft_only: true,",
-      "    requires_human_approval: true",
-      "  }",
-      "}];",
-    ].join("\n");
-  } else if (isSampleNode) {
-    parameters.jsCode = [
-      "return [{",
-      "  json: {",
-      "    subject: \"Job Application\",",
-      "    body: \"Sample application email for safe draft testing only.\",",
-      "    candidate_name: \"\",",
-      "    role: \"\",",
-      "    portfolio_link: \"\",",
-      "    application_source: \"\"",
-      "  }",
-      "}];",
-    ].join("\n");
-  }
-
-  if (isExtractNode && isSupportNodeName(nodeName)) {
-    parameters.jsCode = [
-      "return items.map((item) => {",
-      "  const body = String(item.json.customer_message || item.json.body || \"\");",
-      "",
-      "  return {",
-      "    json: {",
-      "      ...item.json,",
-      "      customer_name: item.json.customer_name || \"\",",
-      "      issue_summary: item.json.issue_summary || body.slice(0, 240),",
-      "      urgency: item.json.urgency || \"\",",
-      "      account_identifier: item.json.account_identifier || \"\",",
-      "      review_status: \"pending\",",
-      "      send_status: \"not_sent\",",
-      "      draft_only: true,",
-      "      requires_human_approval: true",
-      "    }",
-      "  };",
-      "});",
-    ].join("\n");
-  } else if (isExtractNode && nodeName.includes("candidate")) {
-    parameters.jsCode = [
-      "return items.map((item) => ({",
-      "  json: {",
-      "    ...item.json,",
-      "    candidate_name: item.json.candidate_name || \"\",",
-      "    role: item.json.role || \"\",",
-      "    portfolio_link: item.json.portfolio_link || \"\",",
-      "    application_source: item.json.application_source || \"\"",
-      "  }",
-      "}));",
-    ].join("\n");
-  }
-
-  if (isClassifyNode && isSupportClassificationNodeName(nodeName)) {
-    parameters.jsCode = [
-      "return items.map((item) => {",
-      "  const text = `${item.json.issue_summary || \"\"} ${item.json.customer_message || \"\"} ${item.json.body || \"\"}`.toLowerCase();",
-      "  const topic = text.includes(\"refund\") || text.includes(\"charge\")",
-      "    ? \"billing\"",
-      "    : text.includes(\"login\") || text.includes(\"access\") || text.includes(\"password\")",
-      "      ? \"account_access\"",
-      "      : \"general_support\";",
-      "  const urgency = /urgent|cannot|unable|blocked|down|complaint|threat|refund|charge/.test(text)",
-      "    ? \"high\"",
-      "    : \"normal\";",
-      "",
-      "  return {",
-      "    json: {",
-      "      ...item.json,",
-      "      topic,",
-      "      urgency,",
-      "      priority: urgency,",
-      "      review_status: \"pending\",",
-      "      send_status: \"not_sent\",",
-      "      draft_only: true,",
-      "      requires_human_approval: true",
-      "    }",
-      "  };",
-      "});",
-    ].join("\n");
-  } else if (isClassifyNode) {
-    parameters.jsCode = [
-      "return items.map((item) => {",
-      "  const role = String(item.json.role || \"\").toLowerCase();",
-      "  const portfolio = String(item.json.portfolio_link || \"\");",
-      "  const source = String(item.json.application_source || \"\").toLowerCase();",
-      "",
-      "  const priority = portfolio || role.includes(\"senior\") || source.includes(\"referral\")",
-      "    ? \"high\"",
-      "    : \"normal\";",
-      "",
-      "  return {",
-      "    json: {",
-      "      ...item.json,",
-      "      priority",
-      "    }",
-      "  };",
-      "});",
-    ].join("\n");
-  }
-
-  if (isDraftReplyNodeName(nodeName)) {
-    parameters.jsCode = [
-      "return items.map((item) => {",
-      "  const issue = String(item.json.issue_summary || item.json.customer_message || \"the support request\");",
-      "  const draftReply = `Thanks for contacting support. We reviewed: ${issue}. A support team lead should review this draft before any reply is sent.`;",
-      "",
-      "  return {",
-      "    json: {",
-      "      ...item.json,",
-      "      draft_reply: draftReply,",
-      "      internal_response_suggestion: draftReply,",
-      "      review_status: \"pending\",",
-      "      send_status: \"not_sent\",",
-      "      draft_only: true,",
-      "      requires_human_approval: true",
-      "    }",
-      "  };",
-      "});",
-    ].join("\n");
-  } else if (isReviewOrApprovalNodeName(nodeName) && isSupportDraftFlowNodeName(nodeName)) {
-    parameters.jsCode = [
-      "return items.map((item) => ({",
-      "  json: {",
-      "    ...item.json,",
-      "    review_owner: item.json.review_owner || \"support team lead\",",
-      "    review_status: \"pending\",",
-      "    send_status: \"not_sent\",",
-      "    draft_only: true,",
-      "    requires_human_approval: true,",
-      "    manual_review_required: true,",
-      "    next_action: \"Support team lead reviews the draft before any reply is sent.\"",
-      "  }",
-      "}));",
-    ].join("\n");
-  }
+  delete safeNode.credentials;
 
   return {
-    ...node,
-    parameters,
+    ...safeNode,
+    type: "n8n-nodes-base.set",
+    disabled: true,
+    notes: "Disabled safe-preview placeholder. No external action is executed.",
+    parameters: {
+      values: safeReviewValues(compactInput, {
+        blocked_external_action: normalizeText(node.name) || "external action",
+        action_status: "blocked",
+      }),
+      keepOnlySet: false,
+    },
   };
 }
 
-function normalizeStickyNoteParameters(node: Record<string, unknown>): Record<string, unknown> {
-  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const hasText =
-    typeof parameters.content === "string"
-    || typeof parameters.text === "string"
-    || typeof parameters.note === "string";
-
-  if (!hasText) {
-    parameters.content = "Manual review required before sending external messages, contacting customers or candidates, or connecting production systems.";
+function hasMeaningfulConditionValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
   }
 
-  return {
-    ...node,
-    parameters,
-  };
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(hasMeaningfulConditionValue);
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).some(hasMeaningfulConditionValue);
+  }
+
+  return false;
 }
 
-function normalizeSetNodeParameters(node: Record<string, unknown>): Record<string, unknown> {
-  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const values = isRecord(parameters.values) ? { ...parameters.values } : {};
-  const nodeName = normalizedNodeName(node);
-
-  if (nodeName.includes("extract candidate")) {
-    parameters.values = {
-      candidate_name: values.candidate_name || "={{ $json.candidate_name }}",
-      role: values.role || "={{ $json.role }}",
-      portfolio_link: values.portfolio_link || "={{ $json.portfolio_link }}",
-      application_source: values.application_source || "={{ $json.application_source }}",
-    };
+function hasMeaningfulIfBranches(
+  connections: unknown,
+  nodeName: string,
+): boolean {
+  if (!isRecord(connections)) {
+    return false;
   }
 
-  const currentValues = isRecord(parameters.values) ? parameters.values : values;
-  const shouldAddSupportSafetyFields = isSupportDraftFlowNodeName(nodeName);
+  const nodeConnections = connections[nodeName];
 
-  if (isSampleSupportMessageNodeName(nodeName)) {
-    parameters.values = safeDraftReviewFields({
-      ...currentValues,
-      source_channel: currentValues.source_channel || "support inbox sample",
-      customer_name: currentValues.customer_name || "Sample Customer",
-      customer_message: currentValues.customer_message || "Sample support message for safe draft testing only. Do not send.",
-      issue_summary: currentValues.issue_summary || "Customer needs support review.",
-    });
-  } else if (nodeName.includes("extract support")) {
-    parameters.values = safeDraftReviewFields({
-      ...currentValues,
-      customer_name: currentValues.customer_name || "={{ $json.customer_name }}",
-      issue_summary: currentValues.issue_summary || "={{ $json.issue_summary }}",
-      urgency: currentValues.urgency || "={{ $json.urgency }}",
-      account_identifier: currentValues.account_identifier || "={{ $json.account_identifier }}",
-    });
-  } else if (isSupportClassificationNodeName(nodeName)) {
-    parameters.values = safeDraftReviewFields({
-      ...currentValues,
-      topic: currentValues.topic || "={{ $json.topic }}",
-      urgency: currentValues.urgency || "={{ $json.urgency }}",
-      priority: currentValues.priority || "={{ $json.priority }}",
-    });
-  } else if (isDraftReplyNodeName(nodeName)) {
-    parameters.values = safeDraftReviewFields({
-      ...currentValues,
-      draft_reply: currentValues.draft_reply || "Draft reply for support lead review only. Do not send automatically.",
-      internal_response_suggestion: currentValues.internal_response_suggestion || "Draft-only support response suggestion.",
-    });
-  } else if (isReviewOrApprovalNodeName(nodeName)) {
-    parameters.values = safeDraftReviewFields({
-      ...currentValues,
-      review_owner: currentValues.review_owner || "support team lead",
-      manual_review_required: currentValues.manual_review_required ?? true,
-      next_action: currentValues.next_action || "Manual review required before any reply is sent.",
-    });
-  } else if (shouldAddSupportSafetyFields) {
-    parameters.values = safeDraftReviewFields(currentValues);
+  if (!isRecord(nodeConnections)) {
+    return false;
   }
 
-  return {
-    ...node,
-    parameters,
-  };
+  const main = nodeConnections.main;
+
+  if (!Array.isArray(main) || main.length < 2) {
+    return false;
+  }
+
+  const branchTargets = main
+    .slice(0, 2)
+    .map((group) =>
+      Array.isArray(group)
+        ? group
+            .map(connectionTargetName)
+            .filter((name): name is string => Boolean(name))
+        : [],
+    );
+
+  return (
+    branchTargets.every((targets) => targets.length > 0) &&
+    branchTargets[0]?.some((target) => !branchTargets[1]?.includes(target)) ===
+      true
+  );
 }
 
-export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknown {
+function isMeaninglessClassificationIfNode(
+  node: Record<string, unknown>,
+  connections: unknown,
+): boolean {
+  if (node.type !== "n8n-nodes-base.if") {
+    return false;
+  }
+
+  const name = normalizedNodeName(node);
+
+  if (
+    !name.includes("classify") &&
+    !name.includes("categorize") &&
+    !name.includes("triage")
+  ) {
+    return false;
+  }
+
+  const parameters = isRecord(node.parameters) ? node.parameters : {};
+
+  return (
+    !hasMeaningfulConditionValue(parameters.conditions) ||
+    !hasMeaningfulIfBranches(connections, normalizeText(node.name))
+  );
+}
+
+export function normalizeGeneratedWorkflowNodeParameters(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
   if (!isRecord(input) || !Array.isArray(input.nodes)) {
     return input;
   }
@@ -916,26 +1332,54 @@ export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknow
   return {
     ...input,
     nodes: input.nodes.map((node) => {
-      if (!isRecord(node) || typeof node.type !== "string") {
+      if (!isRecord(node)) {
         return node;
       }
 
-      const externalActionPlaceholder = normalizeExternalActionPlaceholderNode(node);
+      if (node.type === "n8n-nodes-base.manualTrigger") {
+        return {
+          ...node,
+          parameters: {},
+        };
+      }
 
-      if (externalActionPlaceholder) {
-        return externalActionPlaceholder;
+      if (node.type === "n8n-nodes-base.scheduleTrigger") {
+        const existingParameters = isRecord(node.parameters) ? node.parameters : {};
+        const newParameters: Record<string, unknown> = {};
+        if (existingParameters.rule !== undefined) {
+          newParameters.rule = existingParameters.rule;
+        }
+        return {
+          ...node,
+          parameters: newParameters,
+        };
+      }
+
+      if (isUnsafeExternalNode(node)) {
+        return normalizeUnsafeExternalNode(node, compactInput);
+      }
+
+      if (isMeaninglessClassificationIfNode(node, input.connections)) {
+        return normalizeCodeNodeParameters(
+          {
+            ...node,
+            type: "n8n-nodes-base.code",
+            typeVersion: 2,
+          },
+          compactInput,
+        );
       }
 
       if (node.type === "n8n-nodes-base.code") {
-        return normalizeCodeNodeParameters(node);
-      }
-
-      if (node.type === "n8n-nodes-base.stickyNote") {
-        return normalizeStickyNoteParameters(node);
+        return normalizeCodeNodeParameters(node, compactInput);
       }
 
       if (node.type === "n8n-nodes-base.set") {
-        return normalizeSetNodeParameters(node);
+        return normalizeSetNodeParameters(node, compactInput);
+      }
+
+      if (node.type === "n8n-nodes-base.stickyNote") {
+        return normalizeStickyNoteParameters(node, compactInput);
       }
 
       return node;
@@ -943,85 +1387,18 @@ export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknow
   };
 }
 
-function connectionTargetNodeName(target: unknown): string | null {
-  if (!isRecord(target) || typeof target.node !== "string" || !target.node.trim()) {
-    return null;
-  }
-
-  return target.node;
+function connectionTargetName(target: unknown): string | null {
+  return isRecord(target) &&
+    typeof target.node === "string" &&
+    target.node.trim()
+    ? target.node
+    : null;
 }
 
-function getConnectionTargetsForSource(connections: Record<string, unknown>, sourceNodeName: string): string[] {
-  const nodeConnections = connections[sourceNodeName];
-
-  if (!isRecord(nodeConnections)) {
-    return [];
-  }
-
-  const targets: string[] = [];
-
-  for (const output of Object.values(nodeConnections)) {
-    if (!Array.isArray(output)) {
-      continue;
-    }
-
-    for (const group of output) {
-      if (!Array.isArray(group)) {
-        continue;
-      }
-
-      for (const target of group) {
-        const targetName = connectionTargetNodeName(target);
-
-        if (targetName) {
-          targets.push(targetName);
-        }
-      }
-    }
-  }
-
-  return targets;
-}
-
-function getSourcesTargetingNode(connections: Record<string, unknown>, targetNodeName: string): string[] {
-  const sources: string[] = [];
-
-  for (const [sourceNodeName, nodeConnections] of Object.entries(connections)) {
-    if (!isRecord(nodeConnections)) {
-      continue;
-    }
-
-    for (const output of Object.values(nodeConnections)) {
-      if (!Array.isArray(output)) {
-        continue;
-      }
-
-      for (const group of output) {
-        if (!Array.isArray(group)) {
-          continue;
-        }
-
-        const hasTarget = group.some((target) => connectionTargetNodeName(target) === targetNodeName);
-
-        if (hasTarget) {
-          sources.push(sourceNodeName);
-        }
-      }
-    }
-  }
-
-  return [...new Set(sources)];
-}
-
-function createMainConnection(targetNodeName: string): Record<string, unknown> {
-  return {
-    node: targetNodeName,
-    type: "main",
-    index: 0,
-  };
-}
-
-function removeTargetsFromConnectionOutput(output: unknown, nodesToRemove: ReadonlySet<string>): unknown {
+function removeNodeNamesFromOutput(
+  output: unknown,
+  names: ReadonlySet<string>,
+): unknown {
   if (!Array.isArray(output)) {
     return output;
   }
@@ -1033,287 +1410,1482 @@ function removeTargetsFromConnectionOutput(output: unknown, nodesToRemove: Reado
       }
 
       return group.filter((target) => {
-        const targetName = connectionTargetNodeName(target);
-        return !targetName || !nodesToRemove.has(targetName);
+        const targetName = connectionTargetName(target);
+
+        return !targetName || !names.has(targetName);
       });
     })
     .filter((group) => !Array.isArray(group) || group.length > 0);
 }
 
-function removeTargetsFromNodeConnections(
-  nodeConnections: Record<string, unknown>,
-  nodesToRemove: ReadonlySet<string>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-
-  for (const [connectionType, output] of Object.entries(nodeConnections)) {
-    const cleanedOutput = removeTargetsFromConnectionOutput(output, nodesToRemove);
-
-    if (Array.isArray(cleanedOutput) && cleanedOutput.length === 0) {
-      continue;
-    }
-
-    result[connectionType] = cleanedOutput;
-  }
-
-  return result;
-}
-
-function addMainConnection(
-  connections: Record<string, unknown>,
-  sourceNodeName: string,
-  targetNodeName: string,
-): void {
-  if (sourceNodeName === targetNodeName) {
-    return;
-  }
-
-  const sourceConnections = isRecord(connections[sourceNodeName])
-    ? { ...connections[sourceNodeName] }
-    : {};
-
-  const mainOutput = Array.isArray(sourceConnections.main)
-    ? [...sourceConnections.main]
-    : [];
-
-  const firstGroup = Array.isArray(mainOutput[0])
-    ? [...mainOutput[0]]
-    : [];
-
-  const alreadyConnected = firstGroup.some((target) => connectionTargetNodeName(target) === targetNodeName);
-
-  if (!alreadyConnected) {
-    firstGroup.push(createMainConnection(targetNodeName));
-  }
-
-  sourceConnections.main = [firstGroup, ...mainOutput.slice(1)];
-  connections[sourceNodeName] = sourceConnections;
-}
-
-function isStickyNoteNode(node: unknown): boolean {
-  return isRecord(node) && node.type === "n8n-nodes-base.stickyNote" && typeof node.name === "string";
-}
-
 export function normalizeStickyNoteConnections(input: unknown): unknown {
-  if (!isRecord(input) || !Array.isArray(input.nodes) || !isRecord(input.connections)) {
+  if (
+    !isRecord(input) ||
+    !Array.isArray(input.nodes) ||
+    !isRecord(input.connections)
+  ) {
     return input;
   }
 
   const stickyNoteNames = new Set(
     input.nodes
-      .filter(isStickyNoteNode)
+      .filter(
+        (node) =>
+          isRecord(node) &&
+          node.type === "n8n-nodes-base.stickyNote" &&
+          typeof node.name === "string",
+      )
       .map((node) => (node as Record<string, unknown>).name)
-      .filter((name): name is string => typeof name === "string" && Boolean(name.trim())),
+      .filter((name): name is string => typeof name === "string"),
   );
 
   if (stickyNoteNames.size === 0) {
     return input;
   }
 
-  const originalConnections = input.connections;
-  const cleanedConnections: Record<string, unknown> = {};
+  const connections: Record<string, unknown> = {};
 
-  for (const [sourceNodeName, nodeConnections] of Object.entries(originalConnections)) {
-    if (stickyNoteNames.has(sourceNodeName)) {
+  for (const [sourceName, nodeConnections] of Object.entries(
+    input.connections,
+  )) {
+    if (stickyNoteNames.has(sourceName)) {
       continue;
     }
 
     if (!isRecord(nodeConnections)) {
-      cleanedConnections[sourceNodeName] = nodeConnections;
+      connections[sourceName] = nodeConnections;
+
       continue;
     }
 
-    const cleanedNodeConnections = removeTargetsFromNodeConnections(nodeConnections, stickyNoteNames);
+    const cleaned: Record<string, unknown> = {};
 
-    if (Object.keys(cleanedNodeConnections).length > 0) {
-      cleanedConnections[sourceNodeName] = cleanedNodeConnections;
-    }
-  }
+    for (const [connectionType, output] of Object.entries(nodeConnections)) {
+      const normalized = removeNodeNamesFromOutput(output, stickyNoteNames);
 
-  for (const stickyNoteName of stickyNoteNames) {
-    const previousSources = getSourcesTargetingNode(originalConnections, stickyNoteName).filter(
-      (source) => !stickyNoteNames.has(source),
-    );
-
-    const nextTargets = getConnectionTargetsForSource(originalConnections, stickyNoteName).filter(
-      (target) => !stickyNoteNames.has(target),
-    );
-
-    for (const previousSource of previousSources) {
-      for (const nextTarget of nextTargets) {
-        addMainConnection(cleanedConnections, previousSource, nextTarget);
+      if (!Array.isArray(normalized) || normalized.length > 0) {
+        cleaned[connectionType] = normalized;
       }
+    }
+
+    if (Object.keys(cleaned).length > 0) {
+      connections[sourceName] = cleaned;
     }
   }
 
   return {
     ...input,
-    connections: cleanedConnections,
+    connections,
   };
 }
 
-function isReviewSetNode(node: unknown): node is Record<string, unknown> {
-  if (!isRecord(node)) return false;
-
-  const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
-  const nodeType = typeof node.type === "string" ? node.type : "";
-
-  return nodeType === "n8n-nodes-base.set"
-    && nodeName.includes("review")
-    && (
-      nodeName.includes("task")
-      || nodeName.includes("gate")
-      || nodeName.includes("pending")
-    );
-}
-
-function findDuplicateReviewSetNodeNames(nodes: unknown[]): Set<string> {
-  const reviewSetNodes = nodes.filter(isReviewSetNode);
-
-  if (reviewSetNodes.length <= 1) {
-    return new Set();
+function isReviewMarkerNode(node: unknown): node is Record<string, unknown> {
+  if (!isRecord(node)) {
+    return false;
   }
 
-  const preferredNode = reviewSetNodes.find((node) => {
-    const nodeName = typeof node.name === "string" ? node.name.toLowerCase() : "";
+  const name = normalizeText(node.name).toLowerCase();
 
-    return nodeName.startsWith("prepare ")
-      || nodeName.includes("prepare admissions")
-      || nodeName.includes("prepare support")
-      || nodeName.includes("prepare finance");
-  }) ?? reviewSetNodes[0];
-
-  const preferredName = typeof preferredNode?.name === "string" ? preferredNode.name : "";
-
-  return new Set(
-    reviewSetNodes
-      .map((node) => typeof node.name === "string" ? node.name : "")
-      .filter((name) => name && name !== preferredName),
+  return (
+    (node.type === "n8n-nodes-base.set" ||
+      node.type === "n8n-nodes-base.code") &&
+    isPendingReviewNodeName(name)
   );
 }
 
-function removeNodesFromConnections(
-  connections: Record<string, unknown>,
-  nodeNamesToRemove: ReadonlySet<string>,
-): Record<string, unknown> {
-  const cleanedConnections: Record<string, unknown> = {};
+export function normalizeDuplicateReviewSetNodes(input: unknown): unknown {
+  if (
+    !isRecord(input) ||
+    !Array.isArray(input.nodes) ||
+    !isRecord(input.connections)
+  ) {
+    return input;
+  }
 
-  for (const [sourceNodeName, nodeConnections] of Object.entries(connections)) {
-    if (nodeNamesToRemove.has(sourceNodeName)) {
+  const reviewNodes = input.nodes.filter(isReviewMarkerNode);
+
+  if (reviewNodes.length <= 1) {
+    return input;
+  }
+
+  const preferred =
+    reviewNodes.find((node) => {
+      const name = normalizeText(node.name).toLowerCase();
+
+      return name.includes("mark pending");
+    }) ?? reviewNodes[0];
+
+  const preferredName = normalizeText(preferred?.name);
+
+  const duplicateNames = new Set(
+    reviewNodes
+      .map((node) => normalizeText(node.name))
+      .filter((name) => name && name !== preferredName),
+  );
+
+  if (duplicateNames.size === 0) {
+    return input;
+  }
+
+  const nodes = input.nodes.filter(
+    (node) =>
+      !(
+        isRecord(node) &&
+        typeof node.name === "string" &&
+        duplicateNames.has(node.name)
+      ),
+  );
+
+  const connections: Record<string, unknown> = {};
+
+  for (const [sourceName, nodeConnections] of Object.entries(
+    input.connections,
+  )) {
+    if (duplicateNames.has(sourceName)) {
       continue;
     }
 
     if (!isRecord(nodeConnections)) {
-      cleanedConnections[sourceNodeName] = nodeConnections;
+      connections[sourceName] = nodeConnections;
+
       continue;
     }
 
-    const cleanedNodeConnections = removeTargetsFromNodeConnections(nodeConnections, nodeNamesToRemove);
+    const cleaned: Record<string, unknown> = {};
 
-    if (Object.keys(cleanedNodeConnections).length > 0) {
-      cleanedConnections[sourceNodeName] = cleanedNodeConnections;
+    for (const [connectionType, output] of Object.entries(nodeConnections)) {
+      const normalized = removeNodeNamesFromOutput(output, duplicateNames);
+
+      if (!Array.isArray(normalized) || normalized.length > 0) {
+        cleaned[connectionType] = normalized;
+      }
     }
-  }
 
-  return cleanedConnections;
-}
-
-export function normalizeDuplicateReviewSetNodes(input: unknown): unknown {
-  if (!isRecord(input) || !Array.isArray(input.nodes) || !isRecord(input.connections)) {
-    return input;
-  }
-
-  const duplicateReviewNodeNames = findDuplicateReviewSetNodeNames(input.nodes);
-
-  if (duplicateReviewNodeNames.size === 0) {
-    return input;
+    if (Object.keys(cleaned).length > 0) {
+      connections[sourceName] = cleaned;
+    }
   }
 
   return {
     ...input,
-    nodes: input.nodes.filter((node) => {
-      if (!isRecord(node) || typeof node.name !== "string") {
-        return true;
+    nodes,
+    connections,
+  };
+}
+
+function recommendedPendingReviewName(
+  compactInput: CompactN8nGenerationInput,
+): string | null {
+  return (
+    compactInput.recommended_nodes.find((name) =>
+      isPendingReviewNodeName(name),
+    ) ?? null
+  );
+}
+
+export function ensureRecommendedPendingReviewNode(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  const recommendedName = recommendedPendingReviewName(compactInput);
+
+  if (!recommendedName) {
+    return input;
+  }
+
+  const existingIndex = input.nodes.findIndex(
+    (node) =>
+      isRecord(node) && isPendingReviewNodeName(normalizeText(node.name)),
+  );
+
+  const reviewNode = {
+    id: "mark_pending_human_review",
+    name: recommendedName,
+    type: "n8n-nodes-base.set",
+    typeVersion: 1,
+    position: [input.nodes.length * 260, 0],
+    parameters: {
+      values: safeReviewValues(compactInput),
+      keepOnlySet: false,
+    },
+  };
+
+  if (existingIndex >= 0) {
+    return {
+      ...input,
+      nodes: input.nodes.map((node, index) =>
+        index === existingIndex && isRecord(node)
+          ? {
+              ...node,
+              name: recommendedName,
+              type: "n8n-nodes-base.set",
+              typeVersion: 1,
+              parameters: reviewNode.parameters,
+            }
+          : node,
+      ),
+    };
+  }
+
+  const usedIds = new Set(
+    input.nodes
+      .filter(isRecord)
+      .map((node) => normalizeText(node.id))
+      .filter(Boolean),
+  );
+
+  return {
+    ...input,
+    nodes: [
+      ...input.nodes,
+      {
+        ...reviewNode,
+        id: uniqueNodeId(reviewNode.id, usedIds),
+      },
+    ],
+  };
+}
+
+function isExecutableNode(node: unknown): node is Record<string, unknown> {
+  return (
+    isRecord(node) &&
+    node.type !== "n8n-nodes-base.stickyNote" &&
+    node.disabled !== true &&
+    normalizeText(node.name).length > 0
+  );
+}
+
+function isTriggerNode(node: Record<string, unknown>): boolean {
+  return (
+    node.type === "n8n-nodes-base.manualTrigger" ||
+    node.type === "n8n-nodes-base.scheduleTrigger"
+  );
+}
+
+function mainConnectionTargets(
+  connections: unknown,
+  sourceName: string,
+): string[] {
+  if (!isRecord(connections)) {
+    return [];
+  }
+
+  const source = connections[sourceName];
+
+  if (!isRecord(source)) {
+    return [];
+  }
+
+  const main = source.main;
+
+  if (!Array.isArray(main)) {
+    return [];
+  }
+
+  return main.flatMap((group) =>
+    Array.isArray(group)
+      ? group
+          .map(connectionTargetName)
+          .filter((name): name is string => Boolean(name))
+      : [],
+  );
+}
+
+function reachableNodeNames(
+  connections: unknown,
+  startName: string,
+): Set<string> {
+  const reachable = new Set<string>();
+  const pending = [startName];
+
+  while (pending.length > 0) {
+    const current = pending.shift();
+
+    if (!current || reachable.has(current)) {
+      continue;
+    }
+
+    reachable.add(current);
+
+    for (const target of mainConnectionTargets(connections, current)) {
+      if (!reachable.has(target)) {
+        pending.push(target);
+      }
+    }
+  }
+
+  return reachable;
+}
+
+function canReachNode(
+  connections: unknown,
+  sourceName: string,
+  targetName: string,
+): boolean {
+  return reachableNodeNames(connections, sourceName).has(targetName);
+}
+
+function orderedExecutableNodes(
+  nodes: unknown[],
+  compactInput: CompactN8nGenerationInput,
+): Record<string, unknown>[] {
+  const executable = nodes.filter(isExecutableNode);
+  const ordered: Record<string, unknown>[] = [];
+  const usedNames = new Set<string>();
+
+  const addNode = (node: Record<string, unknown> | undefined) => {
+    const name = node ? normalizeText(node.name) : "";
+
+    if (node && name && !usedNames.has(name)) {
+      ordered.push(node);
+      usedNames.add(name);
+    }
+  };
+
+  const findByRecommendedName = (recommendedName: string) => {
+    const alias = nodeAlias(recommendedName);
+
+    return executable.find((node) => nodeAlias(node.name) === alias);
+  };
+
+  const recommendedTrigger = compactInput.recommended_nodes
+    .map(findByRecommendedName)
+    .find((node) => node && isTriggerNode(node));
+
+  addNode(recommendedTrigger ?? executable.find(isTriggerNode));
+
+  for (const recommendedName of compactInput.recommended_nodes) {
+    const node = findByRecommendedName(recommendedName);
+
+    if (node && !isPendingReviewNodeName(normalizeText(node.name))) {
+      addNode(node);
+    }
+  }
+
+  for (const node of executable) {
+    if (
+      !isTriggerNode(node) &&
+      !isPendingReviewNodeName(normalizeText(node.name))
+    ) {
+      addNode(node);
+    }
+  }
+
+  for (const node of executable) {
+    if (isPendingReviewNodeName(normalizeText(node.name))) {
+      addNode(node);
+    }
+  }
+
+  return ordered;
+}
+
+function graphNeedsRepair(
+  connections: unknown,
+  orderedNodes: Record<string, unknown>[],
+  compactInput: CompactN8nGenerationInput,
+): boolean {
+  if (orderedNodes.length <= 1) {
+    return false;
+  }
+
+  if (!isRecord(connections) || Object.keys(connections).length === 0) {
+    return true;
+  }
+
+  const first = orderedNodes[0];
+  const firstName = normalizeText(first?.name);
+
+  if (
+    !first ||
+    !isTriggerNode(first) ||
+    mainConnectionTargets(connections, firstName).length === 0
+  ) {
+    return true;
+  }
+
+  const reachable = reachableNodeNames(connections, firstName);
+
+  if (orderedNodes.some((node) => !reachable.has(normalizeText(node.name)))) {
+    return true;
+  }
+
+  const recommendedPresent = compactInput.recommended_nodes
+    .map((recommendedName) => {
+      const alias = nodeAlias(recommendedName);
+
+      return orderedNodes.find((node) => nodeAlias(node.name) === alias);
+    })
+    .filter((node): node is Record<string, unknown> => Boolean(node));
+
+  for (let index = 0; index < recommendedPresent.length - 1; index += 1) {
+    const sourceName = normalizeText(recommendedPresent[index]?.name);
+    const targetName = normalizeText(recommendedPresent[index + 1]?.name);
+
+    if (!canReachNode(connections, sourceName, targetName)) {
+      return true;
+    }
+  }
+
+  const terminal = orderedNodes.at(-1);
+  const terminalName = normalizeText(terminal?.name);
+
+  if (
+    terminal &&
+    isPendingReviewNodeName(terminalName) &&
+    mainConnectionTargets(connections, terminalName).length > 0
+  ) {
+    return true;
+  }
+
+  return orderedNodes.some((node) => {
+    const name = normalizeText(node.name).toLowerCase();
+
+    return (
+      node.type === "n8n-nodes-base.code" &&
+      (name.includes("classify") ||
+        name.includes("categorize") ||
+        name.includes("triage")) &&
+      isRecord(connections) &&
+      isRecord(connections[normalizeText(node.name)]) &&
+      Array.isArray(
+        (connections[normalizeText(node.name)] as Record<string, unknown>).main,
+      ) &&
+      (
+        (connections[normalizeText(node.name)] as Record<string, unknown>)
+          .main as unknown[]
+      ).length > 1
+    );
+  });
+}
+
+export function repairGeneratedWorkflowGraph(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  const orderedNodes = orderedExecutableNodes(input.nodes, compactInput);
+
+  if (!graphNeedsRepair(input.connections, orderedNodes, compactInput)) {
+    return input;
+  }
+
+  const connections: Record<string, unknown> = {};
+  const positions = new Map<string, [number, number]>();
+
+  orderedNodes.forEach((node, index) => {
+    const name = normalizeText(node.name);
+
+    positions.set(name, [index * 260, 0]);
+
+    const next = orderedNodes[index + 1];
+
+    if (next) {
+      connections[name] = {
+        main: [
+          [
+            {
+              node: normalizeText(next.name),
+              type: "main",
+              index: 0,
+            },
+          ],
+        ],
+      };
+    }
+  });
+
+  return {
+    ...input,
+    nodes: input.nodes.map((node) => {
+      if (!isRecord(node)) {
+        return node;
       }
 
-      return !duplicateReviewNodeNames.has(node.name);
+      const position = positions.get(normalizeText(node.name));
+
+      return position
+        ? {
+            ...node,
+            position,
+          }
+        : node;
     }),
-    connections: removeNodesFromConnections(input.connections, duplicateReviewNodeNames),
+    connections,
+  };
+}
+
+function applyDeterministicLayout(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) {
+    return input;
+  }
+
+  const orderedNodes = orderedExecutableNodes(input.nodes, compactInput);
+
+  return {
+    ...input,
+    nodes: input.nodes.map((node) => {
+      if (!isRecord(node)) {
+        return node;
+      }
+
+      const name = normalizeText(node.name);
+
+      if (node.type === "n8n-nodes-base.stickyNote") {
+        return node;
+      }
+
+      const index = orderedNodes.findIndex((n) => normalizeText(n.name) === name);
+
+      if (index >= 0) {
+        const y = node.disabled === true ? 220 : 0;
+        return {
+          ...node,
+          position: [index * 260, y],
+        };
+      }
+
+      return node;
+    }),
+  };
+}
+
+const implementationBriefRootFields = [
+  "workflow_goal",
+  "trigger_description",
+  "source",
+  "source_type",
+  "source_is_placeholder",
+  "domain",
+  "extracted_fields",
+  "classification_target",
+  "classification_rules",
+  "internal_outputs",
+  "human_owner",
+  "human_approval_gates",
+  "approval_boundary",
+  "external_action_boundary",
+  "blocked_or_not_safe_actions",
+  "warnings",
+  "recommended_nodes",
+  "draft_only",
+] as const;
+
+function enforceCanonicalMetadata(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
+  if (!isRecord(input)) {
+    return input;
+  }
+
+  const existingMeta = isRecord(input.meta) ? input.meta : {};
+
+  const normalized: Record<string, unknown> = {};
+
+  for (const key of [
+    "name",
+    "nodes",
+    "connections",
+    "active",
+    "settings",
+    "tags",
+    "meta",
+    "pinData",
+    "staticData",
+  ]) {
+    if (Object.hasOwn(input, key)) {
+      normalized[key] = input[key];
+    }
+  }
+
+  return {
+    ...normalized,
+    active: false,
+    meta: {
+      ...existingMeta,
+      flowforge_preview: true,
+      domain: compactInput.domain,
+      source: compactInput.source,
+      source_type: compactInput.source_type,
+      source_is_placeholder: true,
+      extracted_fields: canonicalFieldKeys(compactInput),
+      classification_target: compactInput.classification_target,
+      human_owner: compactInput.human_owner,
+      approval_boundary: compactInput.approval_boundary,
+      external_action_boundary: compactInput.external_action_boundary,
+      safety_status: compactInput.safety_status,
+    },
   };
 }
 
 function workflowWarnings(workflow: N8nWorkflow): string[] {
   const disabledNodes = workflow.nodes.filter((node) => node.disabled === true);
+
   const warnings = [
     "Draft only. Review before importing. Credentials are placeholders. Production side effects remain disabled.",
   ];
 
   if (disabledNodes.length > 0) {
-    warnings.push(`${disabledNodes.length} external or side-effect placeholder node(s) are disabled in the draft.`);
+    warnings.push(
+      `${disabledNodes.length} external or side-effect placeholder node(s) are disabled in the draft.`,
+    );
   }
 
   return warnings;
 }
 
-function isProviderLimitError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
+function providerConfigured(provider: N8nAiProvider): boolean {
+  if (provider === "openai") {
+    return Boolean(process.env.OPENAI_API_KEY);
+  }
 
-  return /413|payload too large|rate_limit_exceeded|tpm limit|requested tokens|tokens per minute/i.test(message);
+  /*
+   * n8n generation must use its dedicated Groq account.
+   * Do not silently use the general GROQ_API_KEY.
+   */
+  return Boolean(process.env.GROQ_N8N_API_KEY);
 }
 
-export async function runN8nWorkflowGeneratorAgent(input: {
-  compileJob: CompileJob;
-}): Promise<N8nGenerateResponse> {
-  if (!process.env.GROQ_N8N_API_KEY) {
-    throw new N8nWorkflowGeneratorConfigError();
+async function callN8nProvider(
+  provider: N8nAiProvider,
+  prompt: string,
+  dependencies?: N8nWorkflowGeneratorDependencies,
+): Promise<string> {
+  const injectedCall = dependencies?.calls?.[provider];
+
+  if (injectedCall) {
+    return injectedCall(prompt);
   }
 
-  const compactInput = buildCompactN8nGenerationInput(input.compileJob);
-  const prompt = buildN8nWorkflowGeneratorUserPrompt(compactInput);
-  let rawResponse: string;
+  if (provider === "openai") {
+    return callOpenAIAgent(prompt, n8nWorkflowGeneratorSystemPrompt, {
+      modelEnv: "OPENAI_N8N_MODEL",
 
-  try {
-    rawResponse = await callGroq(prompt, n8nWorkflowGeneratorSystemPrompt, {
-      apiKeyEnv: "GROQ_N8N_API_KEY",
-      modelEnv: "GROQ_N8N_MODEL",
-      maxTokensEnv: "GROQ_N8N_MAX_TOKENS",
-      defaultMaxTokens: 4096,
-      maxTokensCap: 6000,
-      timeoutMs: 45000,
-      truncationSuggestion: "Raise GROQ_N8N_MAX_TOKENS to 4096 or 5000.",
-      jsonMode: false,
+      fallbackModelEnv: "OPENAI_AGENT_MODEL",
+
+      maxOutputTokensEnv: "OPENAI_N8N_MAX_OUTPUT_TOKENS",
+
+      fallbackMaxOutputTokensEnv: "OPENAI_AGENT_MAX_OUTPUT_TOKENS",
+
+      defaultMaxOutputTokens: 4500,
+      maxOutputTokensCap: 6000,
+
+      timeoutEnv: "OPENAI_N8N_TIMEOUT_MS",
+
+      reasoningEffort: "minimal",
+      verbosity: "low",
+      structuredOutputMode: "none",
+      fetchImpl: dependencies?.openaiFetch,
     });
-  } catch (error) {
-    if (isProviderLimitError(error)) {
-      throw new N8nWorkflowGeneratorProviderLimitError();
+  }
+
+  return callGroq(prompt, n8nWorkflowGeneratorSystemPrompt, {
+    /*
+     * Always use the dedicated n8n Groq key.
+     */
+    apiKeyEnv: "GROQ_N8N_API_KEY",
+
+    modelEnv: "GROQ_N8N_MODEL",
+
+    maxTokensEnv: "GROQ_N8N_MAX_TOKENS",
+
+    defaultMaxTokens: 4096,
+    maxTokensCap: 6000,
+    timeoutMs: 45000,
+
+    truncationSuggestion: "Raise GROQ_N8N_MAX_TOKENS to 4096 or 5000.",
+
+    jsonMode: false,
+  });
+}
+
+function summarizeProviderError(error: unknown): string {
+  if (error instanceof N8nWorkflowGeneratorValidationError) {
+    const issueSummary = boundedValidationIssues(error.issues)
+      .map((issue) => `${issue.path}: ${issue.message}`)
+      .join("; ");
+
+    return boundedDiagnosticText(
+      redactDiagnosticSecrets(
+        `${error.message}${issueSummary ? ` ${issueSummary}` : ""}`,
+      ),
+      800,
+    );
+  }
+
+  if (error instanceof OpenAIAPIError) {
+    return boundedDiagnosticText(redactDiagnosticSecrets(error.message), 500);
+  }
+
+  if (error instanceof Error) {
+    return boundedDiagnosticText(
+      redactDiagnosticSecrets(
+        error.message.replace(/\s*\|?\s*Response body:[\s\S]*/i, ""),
+      ),
+      500,
+    );
+  }
+
+  return boundedDiagnosticText(
+    redactDiagnosticSecrets(String(error ?? "Unknown provider error.")),
+    500,
+  );
+}
+
+function boundedValidationIssues(
+  issues: readonly N8nWorkflowValidationIssue[],
+): N8nWorkflowValidationIssue[] {
+  return issues.slice(0, 5).map((issue) => ({
+    path: boundedDiagnosticText(redactDiagnosticSecrets(issue.path), 180),
+    message: boundedDiagnosticText(redactDiagnosticSecrets(issue.message), 420),
+    code: boundedDiagnosticText(redactDiagnosticSecrets(issue.code), 80),
+  }));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parameterTextContainsFieldKey(
+  parameterText: string,
+  field: string,
+): boolean {
+  const escapedField = escapeRegExp(field);
+
+  const patterns = [
+    new RegExp(`"${escapedField}"\\s*:`, "i"),
+    new RegExp(`\\$json\\.${escapedField}\\b`, "i"),
+    new RegExp(`\\$json\\[["']${escapedField}["']\\]`, "i"),
+    new RegExp(`item\\.json\\.${escapedField}\\b`, "i"),
+    new RegExp(`item\\.json\\[["']${escapedField}["']\\]`, "i"),
+    new RegExp(`"name"\\s*:\\s*"${escapedField}"`, "i"),
+  ];
+
+  return patterns.some((pattern) => pattern.test(parameterText));
+}
+
+function conflictingLegacyFieldKeys(
+  parameterText: string,
+  compactInput: CompactN8nGenerationInput,
+): string[] {
+  const canonicalKeys = new Set(canonicalFieldKeys(compactInput));
+
+  const possibleLegacyFields = [
+    "candidate_name",
+    "role",
+    "portfolio_link",
+    "application_source",
+  ];
+
+  return possibleLegacyFields.filter(
+    (field) =>
+      !canonicalKeys.has(field) &&
+      parameterTextContainsFieldKey(parameterText, field),
+  );
+}
+
+function validateGeneratedWorkflowQuality(
+  workflow: N8nWorkflow,
+  compactInput: CompactN8nGenerationInput,
+): N8nWorkflowValidationIssue[] {
+  const issues: N8nWorkflowValidationIssue[] = [];
+
+  const addIssue = (path: string, message: string) => {
+    issues.push({
+      path,
+      message,
+      code: "custom",
+    });
+  };
+
+  const executableNodes = workflow.nodes.filter(isExecutableNode);
+  const trigger = executableNodes.find(isTriggerNode);
+
+  if (
+    executableNodes.length > 1 &&
+    Object.keys(workflow.connections).length === 0
+  ) {
+    addIssue(
+      "connections",
+      "Multiple executable nodes require a connected main execution path.",
+    );
+  }
+
+  if (executableNodes.length > 1 && !trigger) {
+    addIssue(
+      "nodes",
+      "A multi-node direct workflow requires a manual or schedule trigger.",
+    );
+  }
+
+  if (trigger) {
+    const triggerName = normalizeText(trigger.name);
+    const reachable = reachableNodeNames(workflow.connections, triggerName);
+
+    if (
+      executableNodes.length > 1 &&
+      mainConnectionTargets(workflow.connections, triggerName).length === 0
+    ) {
+      addIssue(
+        `connections.${triggerName}`,
+        "The workflow trigger must connect to the executable main path.",
+      );
     }
 
-    throw error;
+    for (const node of executableNodes) {
+      const nodeName = normalizeText(node.name);
+
+      if (!reachable.has(nodeName)) {
+        addIssue(
+          `connections.${nodeName}`,
+          `Executable node "${nodeName}" is unreachable from trigger "${triggerName}".`,
+        );
+      }
+    }
   }
 
+  const expectedReviewName = recommendedPendingReviewName(compactInput);
+  const pendingReviewNode = workflow.nodes.find((node) =>
+    isPendingReviewNodeName(node.name),
+  );
+
+  if (expectedReviewName && !pendingReviewNode) {
+    addIssue(
+      "nodes",
+      `Recommended terminal review node "${expectedReviewName}" is missing.`,
+    );
+  }
+
+  if (pendingReviewNode) {
+    const reviewName = pendingReviewNode.name;
+
+    if (pendingReviewNode.type !== "n8n-nodes-base.set") {
+      addIssue(
+        `nodes.${reviewName}.type`,
+        "The terminal pending-review marker must be a safe Set node.",
+      );
+    }
+
+    if (mainConnectionTargets(workflow.connections, reviewName).length > 0) {
+      addIssue(
+        `connections.${reviewName}`,
+        "The pending-human-review node must be terminal.",
+      );
+    }
+
+    const parameters = isRecord(pendingReviewNode.parameters)
+      ? pendingReviewNode.parameters
+      : {};
+    const values = isRecord(parameters.values) ? parameters.values : {};
+    const expectedValues = safeReviewValues(compactInput);
+
+    for (const [key, value] of Object.entries(expectedValues)) {
+      if (values[key] !== value) {
+        addIssue(
+          `nodes.${reviewName}.parameters.values.${key}`,
+          `Pending-review field "${key}" must preserve the canonical value.`,
+        );
+      }
+    }
+  }
+
+  const manualTrigger = executableNodes.find(node => node.type === "n8n-nodes-base.manualTrigger");
+  if (manualTrigger && Object.keys(isRecord(manualTrigger.parameters) ? manualTrigger.parameters : {}).length > 0) {
+    addIssue(
+      `nodes.${manualTrigger.name}.parameters`,
+      "Manual trigger parameters must be empty.",
+    );
+  }
+
+  for (const node of workflow.nodes) {
+    if (node.type === "n8n-nodes-base.set" && node.typeVersion !== 1) {
+      addIssue(
+        `nodes.${node.name}.typeVersion`,
+        "Set nodes must use the compatible typeVersion 1 format.",
+      );
+    }
+  }
+
+  const canonicalKeys = canonicalFieldKeys(compactInput);
+  const fieldNodes = workflow.nodes.filter((node) => {
+    if (
+      node.disabled === true ||
+      node.type === "n8n-nodes-base.stickyNote"
+    ) {
+      return false;
+    }
+
+    if (
+      node.type !== "n8n-nodes-base.set" &&
+      node.type !== "n8n-nodes-base.code"
+    ) {
+      return false;
+    }
+
+    const name = node.name.toLowerCase();
+
+    return (
+      name.includes("sample") ||
+      name.includes("extract") ||
+      name.includes("normalize") ||
+      name.includes("classify") ||
+      name.includes("categorize") ||
+      name.includes("triage") ||
+      isReviewPackageNodeName(name)
+    );
+  });
+
+  for (const node of fieldNodes) {
+    const parameterText = JSON.stringify(node.parameters);
+
+    for (const key of canonicalKeys) {
+      if (!parameterText.includes(key)) {
+        addIssue(
+          `nodes.${node.name}.parameters`,
+          `Canonical extracted field "${key}" is missing from this field-processing node.`,
+        );
+      }
+    }
+
+    const conflictingFields = conflictingLegacyFieldKeys(
+      parameterText,
+      compactInput,
+    );
+
+    if (conflictingFields.length > 0) {
+      addIssue(
+        `nodes.${node.name}.parameters`,
+        `Field-processing node contains noncanonical extracted fields: ${conflictingFields.join(
+          ", ",
+        )}. Expected extracted fields: ${canonicalKeys.join(", ")}.`,
+      );
+    }
+  }
+
+  const sampleNode = fieldNodes.find((node) =>
+    node.name.toLowerCase().includes("sample"),
+  );
+  const sampleParameterText = sampleNode
+    ? JSON.stringify(sampleNode.parameters)
+    : "";
+
+  if (
+    sampleNode &&
+    (!sampleParameterText.includes(compactInput.source) ||
+      !sampleParameterText.includes(compactInput.source_type) ||
+      !sampleParameterText.includes(compactInput.domain) ||
+      !sampleParameterText.includes(compactInput.human_owner) ||
+      !sampleParameterText.includes(compactInput.approval_boundary) ||
+      !sampleParameterText.includes(compactInput.external_action_boundary))
+  ) {
+    addIssue(
+      `nodes.${sampleNode?.name}.parameters.values`,
+      "The sample intake node must preserve the canonical source and source type.",
+    );
+  }
+
+
+  const contextValues = [
+    compactInput.domain,
+    compactInput.source,
+    compactInput.source_type,
+    compactInput.human_owner,
+    compactInput.approval_boundary,
+    compactInput.external_action_boundary,
+  ];
+
+  for (const node of workflow.nodes.filter(
+    (candidate) =>
+      candidate.type === "n8n-nodes-base.stickyNote" ||
+      isReviewPackageNodeName(candidate.name),
+  )) {
+    const parameterText = JSON.stringify(node.parameters);
+
+    if (
+      contextValues.some((value) => value && !parameterText.includes(value))
+    ) {
+      addIssue(
+        `nodes.${node.name}.parameters`,
+        "Review-package and guidance nodes must preserve canonical domain, source, owner, and boundary context.",
+      );
+    }
+  }
+
+  for (const node of workflow.nodes) {
+    if (isMeaninglessClassificationIfNode(node, workflow.connections)) {
+      addIssue(
+        `nodes.${node.name}`,
+        "Classification If nodes require meaningful conditions and connected true/false branches.",
+      );
+    }
+  }
+
+  for (const field of implementationBriefRootFields) {
+    if (Object.hasOwn(workflow, field)) {
+      addIssue(
+        field,
+        `Implementation-brief field "${field}" must not leak into the downloadable workflow root.`,
+      );
+    }
+  }
+
+  const meta = isRecord(workflow.meta) ? workflow.meta : {};
+  const canonicalMeta: Record<string, unknown> = {
+    domain: compactInput.domain,
+    source: compactInput.source,
+    source_type: compactInput.source_type,
+    human_owner: compactInput.human_owner,
+    approval_boundary: compactInput.approval_boundary,
+    external_action_boundary: compactInput.external_action_boundary,
+  };
+
+  for (const [key, value] of Object.entries(canonicalMeta)) {
+    if (meta[key] !== value) {
+      addIssue(
+        `meta.${key}`,
+        `Workflow metadata field "${key}" must preserve the canonical implementation brief value.`,
+      );
+    }
+  }
+
+  return issues;
+}
+
+function changedNodeTypeDetails(before: unknown, after: unknown): string[] {
+  if (!isRecord(before) || !Array.isArray(before.nodes) || !isRecord(after) || !Array.isArray(after.nodes)) {
+    return [];
+  }
+
+  const beforeNodes = before.nodes.filter(isRecord);
+  const afterNodes = after.nodes.filter(isRecord);
+
+  return afterNodes.flatMap((node) => {
+    const name = normalizeText(node.name);
+    const previous = beforeNodes.find((candidate) => normalizeText(candidate.name) === name);
+
+    if (!previous || previous.type === node.type) return [];
+
+    return [`${name || "Unnamed node"}: ${normalizeText(previous.type)} → ${normalizeText(node.type)}`];
+  });
+}
+
+function canonicalMetadataChanges(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): { fields: string[]; details: string[] } {
+  const existingMeta = isRecord(input) && isRecord(input.meta) ? input.meta : {};
+  const canonicalValues: Record<string, unknown> = {
+    domain: compactInput.domain,
+    source: compactInput.source,
+    source_type: compactInput.source_type,
+    source_is_placeholder: true,
+    extracted_fields: canonicalFieldKeys(compactInput),
+    classification_target: compactInput.classification_target,
+    human_owner: compactInput.human_owner,
+    approval_boundary: compactInput.approval_boundary,
+    external_action_boundary: compactInput.external_action_boundary,
+    safety_status: compactInput.safety_status,
+  };
+  const fields = Object.entries(canonicalValues)
+    .filter(([key, value]) => valuesDiffer(existingMeta[key], value))
+    .map(([key]) => key);
+  const details = fields.map((key) => {
+    const previous = existingMeta[key];
+    const value = canonicalValues[key];
+    const renderedValue = Array.isArray(value) ? value.join(", ") : String(value);
+
+    return previous === undefined
+      ? `${key} added from the structured implementation input: ${renderedValue}`
+      : `${key} replaced with the structured implementation value: ${renderedValue}`;
+  });
+
+  return { fields, details };
+}
+
+function normalizeAndValidateGeneratedWorkflow(
+  rawResponse: string,
+  compactInput: CompactN8nGenerationInput,
+  provider: N8nAiProvider,
+  onValidationFailure?: (trace: N8nWorkflowValidationTrace) => void,
+): { workflow: N8nWorkflow; processing: N8nWorkflowProcessingTrace } {
   const parsed = parseStrictJson(rawResponse);
-  const named = normalizeGeneratedWorkflowName(parsed, compactInput.workflow_name);
+  const normalizationActions: N8nWorkflowTransformation[] = [];
+  const repairActions: N8nWorkflowTransformation[] = [];
+
+  const unwrapped = normalizeGeneratedWorkflowEnvelope(parsed);
+  recordTransformation(normalizationActions, {
+    id: "workflow_envelope",
+    description: "Removed an extra provider wrapper around the n8n workflow.",
+    functionNames: ["normalizeGeneratedWorkflowEnvelope()"],
+    before: parsed,
+    after: unwrapped,
+  });
+
+  const named = normalizeGeneratedWorkflowName(
+    unwrapped,
+    compactInput.workflow_name,
+  );
+  recordTransformation(normalizationActions, {
+    id: "workflow_name",
+    description: "Replaced a generic provider title with the canonical workflow name.",
+    functionNames: ["normalizeGeneratedWorkflowName()"],
+    before: unwrapped,
+    after: named,
+  });
+
   const inactive = normalizeGeneratedWorkflowActiveFlag(named);
+  recordTransformation(normalizationActions, {
+    id: "inactive_preview",
+    description: "Forced the generated workflow to remain inactive for safe preview.",
+    functionNames: ["normalizeGeneratedWorkflowActiveFlag()"],
+    before: named,
+    after: inactive,
+  });
+
   const normalizedIds = normalizeGeneratedWorkflowIds(inactive);
-  const normalizedConnections = normalizeGeneratedWorkflowConnections(normalizedIds);
-  const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(normalizedConnections);
-  const normalizedStickyNotes = normalizeStickyNoteConnections(normalizedParameters);
-  const normalizedDuplicates = normalizeDuplicateReviewSetNodes(normalizedStickyNotes);
-  const normalized = normalizeGeneratedWorkflowNodePositions(normalizedDuplicates);
+  recordTransformation(normalizationActions, {
+    id: "node_ids",
+    description: "Normalized missing or duplicate node identifiers.",
+    functionNames: ["normalizeGeneratedWorkflowIds()"],
+    before: inactive,
+    after: normalizedIds,
+  });
+
+  const normalizedNodeShape =
+    normalizeGeneratedWorkflowNodeShape(normalizedIds);
+  recordTransformation(normalizationActions, {
+    id: "node_shape",
+    description: "Normalized node parameter objects, versions, and optional values.",
+    functionNames: ["normalizeGeneratedWorkflowNodeShape()"],
+    before: normalizedIds,
+    after: normalizedNodeShape,
+  });
+
+  const normalizedConnections =
+    normalizeGeneratedWorkflowConnections(normalizedNodeShape);
+  recordTransformation(normalizationActions, {
+    id: "connection_shape",
+    description: "Normalized provider connection aliases into n8n's connection structure.",
+    functionNames: ["normalizeGeneratedWorkflowConnections()"],
+    before: normalizedNodeShape,
+    after: normalizedConnections,
+  });
+
+  const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(
+    normalizedConnections,
+    compactInput,
+  );
+  recordTransformation(normalizationActions, {
+    id: "node_parameters",
+    description: "Rebuilt generated node parameters from the canonical fields and safe-preview rules.",
+    functionNames: ["normalizeGeneratedWorkflowNodeParameters()"],
+    before: normalizedConnections,
+    after: normalizedParameters,
+    details: changedNodeTypeDetails(normalizedConnections, normalizedParameters),
+  });
+
+  const normalizedStickyNotes =
+    normalizeStickyNoteConnections(normalizedParameters);
+  recordTransformation(normalizationActions, {
+    id: "sticky_note_connections",
+    description: "Removed sticky notes from the executable connection path.",
+    functionNames: ["normalizeStickyNoteConnections()"],
+    before: normalizedParameters,
+    after: normalizedStickyNotes,
+  });
+
+  const normalizedDuplicates = normalizeDuplicateReviewSetNodes(
+    normalizedStickyNotes,
+  );
+  recordTransformation(repairActions, {
+    id: "duplicate_review_nodes",
+    description: "Removed duplicate pending-review marker nodes.",
+    functionNames: ["normalizeDuplicateReviewSetNodes()"],
+    before: normalizedStickyNotes,
+    after: normalizedDuplicates,
+  });
+
+  const completedReviewPath = ensureRecommendedPendingReviewNode(
+    normalizedDuplicates,
+    compactInput,
+  );
+  recordTransformation(repairActions, {
+    id: "pending_review_node",
+    description: "Added the required terminal pending-human-review node.",
+    functionNames: ["ensureRecommendedPendingReviewNode()"],
+    before: normalizedDuplicates,
+    after: completedReviewPath,
+  });
+
+  const finalConnections =
+    normalizeGeneratedWorkflowConnectionsAfterNodeRemoval(completedReviewPath);
+  recordTransformation(repairActions, {
+    id: "removed_node_connections",
+    description: "Removed connections that referenced nodes removed during repair.",
+    functionNames: ["normalizeGeneratedWorkflowConnectionsAfterNodeRemoval()"],
+    before: completedReviewPath,
+    after: finalConnections,
+  });
+
+  const repairedGraph = repairGeneratedWorkflowGraph(
+    finalConnections,
+    compactInput,
+  );
+  recordTransformation(repairActions, {
+    id: "workflow_graph",
+    description: "Rebuilt the main execution path because generated connections were incomplete or unsafe.",
+    functionNames: ["repairGeneratedWorkflowGraph()"],
+    before: finalConnections,
+    after: repairedGraph,
+  });
+
+  const layedOutGraph = applyDeterministicLayout(
+    repairedGraph,
+    compactInput,
+  );
+  recordTransformation(normalizationActions, {
+    id: "deterministic_layout",
+    description: "Applied a deterministic left-to-right node layout.",
+    functionNames: ["applyDeterministicLayout()"],
+    before: repairedGraph,
+    after: layedOutGraph,
+  });
+
+  const normalizedPositions =
+    normalizeGeneratedWorkflowNodePositions(layedOutGraph);
+  recordTransformation(normalizationActions, {
+    id: "node_positions",
+    description: "Replaced missing or invalid node positions.",
+    functionNames: ["normalizeGeneratedWorkflowNodePositions()"],
+    before: layedOutGraph,
+    after: normalizedPositions,
+  });
+
+  const canonicalChanges = canonicalMetadataChanges(normalizedPositions, compactInput);
+
+  const normalized = enforceCanonicalMetadata(
+    normalizedPositions,
+    compactInput,
+  );
+  recordTransformation(repairActions, {
+    id: "canonical_metadata",
+    description: "Restored authoritative compile fields in workflow metadata.",
+    functionNames: ["enforceCanonicalMetadata()"],
+    before: normalizedPositions,
+    after: normalized,
+    details: canonicalChanges.details,
+  });
+
   const validation = n8nWorkflowSchema.safeParse(normalized);
 
   if (!validation.success) {
+    const issues = formatIssues(validation.error.issues);
+
+    try {
+      onValidationFailure?.({
+        provider,
+        parsed_workflow: parsed,
+        normalized_workflow: normalized,
+        validation_issues: issues,
+      });
+    } catch {
+      // Diagnostics must never alter provider routing.
+    }
+
+    const processing: N8nWorkflowProcessingTrace = {
+      normalization_actions: normalizationActions,
+      repair_actions: repairActions,
+      canonical_fields_restored: canonicalChanges.fields,
+      schema_validation_passed: false,
+      quality_validation_passed: false,
+      validation_issues: issues,
+    };
+
     throw new N8nWorkflowGeneratorValidationError(
       "Generated n8n workflow JSON did not pass FlowForge safety validation.",
-      formatIssues(validation.error.issues),
+      issues,
+      processing,
+    );
+  }
+
+  const qualityIssues = validateGeneratedWorkflowQuality(
+    validation.data,
+    compactInput,
+  );
+
+  if (qualityIssues.length > 0) {
+    try {
+      onValidationFailure?.({
+        provider,
+        parsed_workflow: parsed,
+        normalized_workflow: validation.data,
+        validation_issues: qualityIssues,
+      });
+    } catch {
+      // Diagnostics must never alter provider routing.
+    }
+
+    const processing: N8nWorkflowProcessingTrace = {
+      normalization_actions: normalizationActions,
+      repair_actions: repairActions,
+      canonical_fields_restored: canonicalChanges.fields,
+      schema_validation_passed: true,
+      quality_validation_passed: false,
+      validation_issues: qualityIssues,
+    };
+
+    throw new N8nWorkflowGeneratorValidationError(
+      "Generated n8n workflow JSON did not pass FlowForge direct-workflow quality validation.",
+      qualityIssues,
+      processing,
     );
   }
 
   return {
-    workflow_json: validation.data,
-    warnings: workflowWarnings(validation.data),
-    provider: "groq",
-    used_ai: true,
-    fallback_used: false,
+    workflow: validation.data,
+    processing: {
+      normalization_actions: normalizationActions,
+      repair_actions: repairActions,
+      canonical_fields_restored: canonicalChanges.fields,
+      schema_validation_passed: true,
+      quality_validation_passed: true,
+      validation_issues: [],
+    },
   };
+}
+
+export async function runN8nWorkflowGeneratorAgent(
+  input: {
+    compileJob: CompileJob;
+  },
+  dependencies?: N8nWorkflowGeneratorDependencies,
+): Promise<N8nGenerateResponse> {
+  /*
+   * Provider order is intentional:
+   *
+   * 1. OpenAI
+   * 2. Dedicated n8n Groq account
+   */
+  const providers: readonly N8nAiProvider[] = ["openai", "groq"];
+
+  const compactInput = buildCompactN8nGenerationInput(input.compileJob);
+
+  const prompt = buildN8nWorkflowGeneratorUserPrompt(compactInput);
+
+  const providerAttempts: ProviderAttempt[] = [];
+
+  for (const provider of providers) {
+    if (!providerConfigured(provider)) {
+      providerAttempts.push({
+        provider,
+        attempted: false,
+        success: false,
+        error_summary:
+          provider === "openai"
+            ? "OPENAI_API_KEY is not configured."
+            : "GROQ_N8N_API_KEY is not configured.",
+      });
+
+      continue;
+    }
+
+    let rawResponse: string | undefined;
+
+    try {
+      rawResponse = await callN8nProvider(provider, prompt, dependencies);
+
+      const generated = normalizeAndValidateGeneratedWorkflow(
+        rawResponse,
+        compactInput,
+        provider,
+        dependencies?.onValidationFailure,
+      );
+
+      /*
+       * A provider is a fallback only when an earlier provider
+       * was actually attempted and failed.
+       *
+       * A provider that was merely unconfigured does not count
+       * as a runtime fallback.
+       */
+      const fallbackUsed = providerAttempts.some(
+        (attempt) => attempt.attempted && !attempt.success,
+      );
+
+      providerAttempts.push({
+        provider,
+        attempted: true,
+        success: true,
+        processing_trace: generated.processing,
+      });
+
+      return {
+        workflow_json: generated.workflow,
+
+        warnings: workflowWarnings(generated.workflow),
+
+        provider,
+
+        used_ai: true,
+
+        fallback_used: fallbackUsed,
+
+        provider_attempts: providerAttempts,
+
+        generation_trace: {
+          implementation_input: compactInput,
+          processing: generated.processing,
+        },
+      };
+    } catch (error) {
+      const validationIssues =
+        error instanceof N8nWorkflowGeneratorValidationError
+          ? boundedValidationIssues(error.issues)
+          : undefined;
+
+      providerAttempts.push({
+        provider,
+        attempted: true,
+        success: false,
+        error_summary: summarizeProviderError(error),
+        ...(validationIssues
+          ? {
+              validation_issues: validationIssues,
+            }
+          : {}),
+        ...(provider === "openai" && rawResponse
+          ? {
+              raw_response_preview: previewRawModelOutput(rawResponse),
+            }
+          : {}),
+        ...(error instanceof N8nWorkflowGeneratorValidationError && error.processing_trace
+          ? {
+              processing_trace: error.processing_trace,
+            }
+          : {}),
+      });
+    }
+  }
+
+  /*
+   * Do not replace the detailed provider history with a generic
+   * rate-limit exception. The API/UI needs these fields to show
+   * what happened to OpenAI and Groq separately.
+   */
+  if (!providerAttempts.some((attempt) => attempt.attempted)) {
+    throw new N8nWorkflowGeneratorConfigError(providerAttempts);
+  }
+
+  throw new N8nWorkflowGeneratorProvidersFailedError(providerAttempts);
 }

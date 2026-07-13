@@ -3,16 +3,41 @@ import type {
   CompactN8nGenerationInput,
   N8nImplementationBrief,
 } from "../../shared/types/n8nWorkflow";
+import { normalizeCompileRequest } from "./structuredCompileInput";
 
-type BriefDomain = "admissions" | "support" | "finance" | "generic";
+type BriefDomain =
+  | "admissions"
+  | "support"
+  | "finance"
+  | "marketing"
+  | "generic";
 
-function truncateText(value: unknown, maxLength: number): string {
-  const text = typeof value === "string" ? value : String(value ?? "");
-  const normalized = text.replace(/\s+/g, " ").trim();
+type CanonicalRequestFacts = {
+  humanOwner: string;
+  approvalBoundary: string;
+  externalActionBoundary: string;
+};
 
-  if (normalized.length <= maxLength) return normalized;
+function truncateText(
+  value: unknown,
+  maxLength: number,
+): string {
+  const text =
+    typeof value === "string"
+      ? value
+      : String(value ?? "");
 
-  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+  const normalized = text
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized
+    .slice(0, Math.max(0, maxLength - 3))
+    .trimEnd()}...`;
 }
 
 function normalizeInput(value: string): string {
@@ -24,19 +49,34 @@ function normalizeInput(value: string): string {
     .trim();
 }
 
-function addUnique(items: string[], item: unknown, maxLength = 160): void {
-  const text = truncateText(item, maxLength);
+function addUnique(
+  items: string[],
+  item: unknown,
+  maxLength = 160,
+): void {
+  const text = truncateText(
+    item,
+    maxLength,
+  );
 
   if (text && !items.includes(text)) {
     items.push(text);
   }
 }
 
-function uniqueStrings(items: unknown[], maxItems: number, maxLength: number): string[] {
+function uniqueStrings(
+  items: unknown[],
+  maxItems: number,
+  maxLength: number,
+): string[] {
   const result: string[] = [];
 
   for (const item of items) {
-    addUnique(result, item, maxLength);
+    addUnique(
+      result,
+      item,
+      maxLength,
+    );
 
     if (result.length >= maxItems) {
       break;
@@ -46,66 +86,338 @@ function uniqueStrings(items: unknown[], maxItems: number, maxLength: number): s
   return result;
 }
 
-function hasAny(input: string, phrases: readonly string[]): boolean {
-  return phrases.some((phrase) => input.includes(phrase));
-}
-
-function joinList(items: readonly string[]): string {
-  if (items.length === 0) return "";
-  if (items.length === 1) return items[0] ?? "";
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-
-  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
+function hasAny(
+  input: string,
+  phrases: readonly string[],
+): boolean {
+  return phrases.some((phrase) =>
+    input.includes(phrase),
+  );
 }
 
 function titleCase(value: string): string {
-  return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+  return value.replace(
+    /\b[a-z]/g,
+    (letter) => letter.toUpperCase(),
+  );
 }
 
-function humanGateText(gate: unknown): string {
-  if (!gate || typeof gate !== "object") {
-    return truncateText(gate, 160);
-  }
+function originalRequest(
+  compileJob: CompileJob,
+): string {
+  const canonicalOriginalInput =
+    normalizeCompileRequest(
+      compileJob.input.raw,
+    ).intent.original_input.trim();
 
-  const record = gate as Record<string, unknown>;
-  const label = truncateText(record.label || record.name || record.title || "Human approval gate", 80);
-  const reason = truncateText(record.reason || record.description || "", 90);
-
-  return reason ? `${label}: ${reason}` : label;
+  return (
+    canonicalOriginalInput ||
+    compileJob.input.raw ||
+    compileJob.input.trimmed
+  ).trim();
 }
 
-function findingText(finding: unknown): string {
-  if (!finding || typeof finding !== "object") {
-    return truncateText(finding, 180);
-  }
-
-  const record = finding as Record<string, unknown>;
-  const severity = truncateText(record.severity, 24);
-  const title = truncateText(record.title || record.label || record.type || "Safety finding", 80);
-  const recommendation = truncateText(record.recommendation || record.explanation || "", 90);
-  const prefix = severity ? `${severity}: ` : "";
-
-  return recommendation ? `${prefix}${title}: ${recommendation}` : `${prefix}${title}`;
-}
-
-function detectDomain(input: string): BriefDomain {
-  if (hasAny(input, ["admissions", "candidate", "applicant", "job application", "application email", "portfolio"])) {
+function detectDomain(
+  input: string,
+): BriefDomain {
+  if (
+    hasAny(input, [
+      "admissions",
+      "admission application",
+      "student application",
+      "programme application",
+      "program application",
+      "applicant",
+      "enrolment",
+      "enrollment",
+    ])
+  ) {
     return "admissions";
   }
 
-  if (hasAny(input, ["support", "ticket", "customer", "helpdesk", "zendesk", "complaint"])) {
+  if (
+    hasAny(input, [
+      "support",
+      "ticket",
+      "customer",
+      "helpdesk",
+      "zendesk",
+      "complaint",
+    ])
+  ) {
     return "support";
   }
 
-  if (hasAny(input, ["invoice", "refund", "billing", "payment", "charge", "receipt"])) {
+  if (
+    hasAny(input, [
+      "invoice",
+      "refund",
+      "billing",
+      "payment",
+      "charge",
+      "receipt",
+    ])
+  ) {
     return "finance";
+  }
+
+  if (
+    hasAny(input, [
+      "marketing",
+      "campaign",
+      "social media",
+      "linkedin post",
+      "instagram",
+      "promotional content",
+      "product launch",
+    ])
+  ) {
+    return "marketing";
   }
 
   return "generic";
 }
 
-function detectTriggerDescription(input: string, compileJob: CompileJob): string {
-  if (hasAny(input, ["every morning", "each morning"])) {
+function cleanPersonOrRole(
+  value: string,
+): string {
+  return value
+    .replace(
+      /^(?:the|a|an)\s+/i,
+      "",
+    )
+    .replace(
+      /\s+(?:must|should|will|who)\s+.*$/i,
+      "",
+    )
+    .replace(/[.;]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatRoleAndName(
+  value: string,
+): string {
+  const cleaned =
+    cleanPersonOrRole(value);
+
+  /*
+   * Handles:
+   * "the admissions manager, Jane Doe"
+   * "admissions manager Jane Doe"
+   */
+  const commaMatch = cleaned.match(
+    /^(.+?),\s*([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+)+)$/,
+  );
+
+  if (commaMatch) {
+    const role =
+      commaMatch[1]?.trim();
+
+    const name =
+      commaMatch[2]?.trim();
+
+    if (role && name) {
+      return `${name} (${role})`;
+    }
+  }
+
+  const roleNameMatch = cleaned.match(
+    /^(.+?\b(?:manager|lead|owner|reviewer|director|officer|specialist|coordinator|administrator))\s+([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+)+)$/,
+  );
+
+  if (roleNameMatch) {
+    const role =
+      roleNameMatch[1]?.trim();
+
+    const name =
+      roleNameMatch[2]?.trim();
+
+    if (role && name) {
+      return `${name} (${role})`;
+    }
+  }
+
+  return cleaned;
+}
+
+function extractHumanOwnerFromRequest(
+  request: string,
+): string {
+  const patterns = [
+    /\bassign(?:\s+it|\s+the\s+(?:task|package|result))?\s+to\s+(.+?)(?=\.|;\s*|\bno external\b|\bbefore\b|$)/i,
+
+    /\b(?:reviewed|approved|owned|handled)\s+by\s+(.+?)(?=\.|;|\bbefore\b|$)/i,
+
+    /\b(?:human owner|review owner|responsible reviewer|approver)\s*(?:is|:)\s*(.+?)(?=\.|;|$)/i,
+
+    /\b(?:manager|reviewer|approver)\s*,?\s+([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+)+)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match =
+      request.match(pattern);
+
+    const candidate =
+      match?.[1]?.trim();
+
+    if (candidate) {
+      return formatRoleAndName(
+        candidate,
+      );
+    }
+  }
+
+  const approvalNameMatch =
+    request.match(
+      /\bbefore\s+([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+)+)\s+(?:manually\s+)?(?:reviews?|approves?)/,
+    );
+
+  if (approvalNameMatch?.[1]) {
+    return approvalNameMatch[1].trim();
+  }
+
+  return "";
+}
+
+function splitRequestSentences(
+  request: string,
+): string[] {
+  return request
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) =>
+      sentence.trim(),
+    )
+    .filter(Boolean);
+}
+
+function extractExplicitApprovalBoundary(
+  request: string,
+): string {
+  const sentences =
+    splitRequestSentences(request);
+
+  const explicitExternalBoundary =
+    sentences.find((sentence) =>
+      /\b(?:external communication|external action|send|sent|publish|published|reply|message|email)\b/i.test(
+        sentence,
+      ) &&
+      /\b(?:no|not|never|cannot|can't|may not|must not|without|until|before)\b/i.test(
+        sentence,
+      ) &&
+      /\b(?:review(?:ed|s)?|approv(?:e|ed|es)|approval)\b/i.test(
+        sentence,
+      ),
+    );
+
+  const explicitSentence =
+    explicitExternalBoundary ||
+    sentences.find((sentence) =>
+      (
+        /\b(?:before|until|unless)\b/i.test(
+          sentence,
+        ) &&
+        /\b(?:review(?:ed|s)?|approv(?:e|ed|es)|approval)\b/i.test(
+          sentence,
+        )
+      ) ||
+      (
+        /\bmust\b/i.test(sentence) &&
+        /\b(?:review(?:ed|s)?|approv(?:e|ed|es)|approval)\b/i.test(
+          sentence,
+        )
+      ),
+    );
+
+  if (explicitSentence) {
+    return truncateText(
+      explicitSentence,
+      220,
+    );
+  }
+
+  const inlineMatch =
+    request.match(
+      /(?:no external communication|no external action|nothing may be sent|do not send|must not be sent).+?(?:review(?:ed|s)?|approv(?:e|ed|es)|approval).+?(?:[.!?]|$)/i,
+    );
+
+  return truncateText(
+    inlineMatch?.[0] ?? "",
+    220,
+  );
+}
+
+function extractExternalActionBoundary(
+  request: string,
+): string {
+  const sentences =
+    splitRequestSentences(request);
+
+  const explicitSentence =
+    sentences.find((sentence) =>
+      (
+        /\b(?:no|not|never|without|before|until)\b/i.test(
+          sentence,
+        ) &&
+        /\b(?:external communication|external action|send|sent|publish|published|reply|message|email)\b/i.test(
+          sentence,
+        )
+      ),
+    );
+
+  if (explicitSentence) {
+    return truncateText(
+      explicitSentence,
+      220,
+    );
+  }
+
+  return "";
+}
+
+function extractCanonicalRequestFacts(
+  compileJob: CompileJob,
+): CanonicalRequestFacts {
+  const canonicalIntent =
+    normalizeCompileRequest(
+      compileJob.input.raw,
+    ).intent;
+
+  const request =
+    originalRequest(compileJob);
+
+  return {
+    humanOwner:
+      canonicalIntent.human_owner ||
+      extractHumanOwnerFromRequest(
+        request,
+      ) ||
+      "",
+
+    approvalBoundary:
+      canonicalIntent.approval_boundary ||
+      extractExplicitApprovalBoundary(
+        request,
+      ),
+
+    externalActionBoundary:
+      canonicalIntent.external_action_boundary ||
+      extractExternalActionBoundary(
+        request,
+      ),
+  };
+}
+
+function detectTriggerDescription(
+  input: string,
+  compileJob: CompileJob,
+): string {
+  if (
+    hasAny(input, [
+      "every morning",
+      "each morning",
+    ])
+  ) {
     return "Every morning";
   }
 
@@ -113,155 +425,443 @@ function detectTriggerDescription(input: string, compileJob: CompileJob): string
     return "Every weekday";
   }
 
-  if (hasAny(input, ["daily", "every day", "each day"])) {
+  if (
+    hasAny(input, [
+      "daily",
+      "every day",
+      "each day",
+    ])
+  ) {
     return "Daily";
   }
 
-  if (hasAny(input, ["weekly", "every week"])) {
+  if (
+    hasAny(input, [
+      "weekly",
+      "every week",
+    ])
+  ) {
     return "Weekly";
   }
 
-  if (hasAny(input, ["monthly", "every month"])) {
+  if (
+    hasAny(input, [
+      "monthly",
+      "every month",
+    ])
+  ) {
     return "Monthly";
   }
 
-  const whenMatch = input.match(/\b(when(?:ever)?|after|once)\s+(.+?)(?:,|\.|$)/);
+  const whenMatch = input.match(
+    /\b(when(?:ever)?|after|once)\s+(.+?)(?:,|\.|$)/,
+  );
 
   if (whenMatch?.[0]) {
-    return titleCase(truncateText(whenMatch[0].replace(/[,.]$/, ""), 120));
+    return titleCase(
+      truncateText(
+        whenMatch[0].replace(
+          /[,.]$/,
+          "",
+        ),
+        140,
+      ),
+    );
   }
 
-  const trigger = compileJob.result.trigger;
-
-  if (trigger?.description) {
-    return truncateText(trigger.description.replace(/^rule-based .+ inferred from:\s*/i, ""), 180);
+  if (
+    compileJob.result.trigger
+      ?.description
+  ) {
+    return truncateText(
+      compileJob.result.trigger.description.replace(
+        /^rule-based .+ inferred from:\s*/i,
+        "",
+      ),
+      180,
+    );
   }
 
-  return "Manual internal review trigger";
+  return "Manual safe-preview trigger";
 }
 
-function detectSource(input: string, compileJob: CompileJob, domain: BriefDomain): string {
-  const inboxes = [
+function detectSource(
+  input: string,
+  domain: BriefDomain,
+  canonicalSources: readonly string[],
+  originalRequestText: string,
+): string {
+  const canonicalSource =
+    canonicalSources.find((source) =>
+      source.trim(),
+    );
+
+  if (canonicalSource) {
+    return truncateText(
+      canonicalSource,
+      160,
+    );
+  }
+
+  const sourcePhrases = [
+    "shared admissions gmail inbox",
+    "admissions gmail inbox",
+    "shared admissions inbox",
     "admissions inbox",
+    "shared support gmail inbox",
+    "support gmail inbox",
     "support inbox",
-    "sales inbox",
+    "shared finance gmail inbox",
+    "finance gmail inbox",
     "finance inbox",
     "shared inbox",
+    "gmail inbox",
     "email inbox",
-    "inbox",
   ];
-  const inbox = inboxes.find((candidate) => input.includes(candidate));
 
-  if (inbox) {
-    if (domain === "admissions" && hasAny(input, ["application", "candidate", "applicant"])) {
-      return `${inbox} / job application emails`;
+  const exactSourceMatch =
+    originalRequestText.match(
+      /\b(?:shared admissions gmail inbox|admissions gmail inbox|shared admissions inbox|admissions inbox|shared support gmail inbox|support gmail inbox|support inbox|shared finance gmail inbox|finance gmail inbox|finance inbox|shared inbox|gmail inbox|email inbox)\b/i,
+    );
+
+  if (exactSourceMatch?.[0]) {
+    return truncateText(
+      exactSourceMatch[0],
+      160,
+    );
+  }
+
+  const detected =
+    sourcePhrases.find((source) =>
+      input.includes(source),
+    );
+
+  if (detected) {
+    return detected;
+  }
+
+  const sourceMatch = input.match(
+    /\b(?:arrives?|received|comes?)\s+(?:in|from|through)\s+(?:the\s+)?(.+?)(?:,|\.|\band\s+(?:extract|classify|create|prepare|route)|$)/i,
+  );
+
+  if (sourceMatch?.[1]) {
+    return truncateText(
+      sourceMatch[1],
+      160,
+    );
+  }
+
+  if (
+    input.includes("email") ||
+    input.includes("emails")
+  ) {
+    if (domain === "admissions") {
+      return "admissions application inbox";
     }
 
     if (domain === "support") {
-      return `${inbox} / support emails`;
+      return "support inbox";
     }
 
     if (domain === "finance") {
-      return `${inbox} / billing or refund emails`;
+      return "finance inbox";
     }
 
-    return `${inbox} / incoming emails`;
-  }
-
-  const sourceMatch = input.match(/\bfrom\s+(?:the\s+)?([a-z0-9][a-z0-9 -]{1,60}?)(?:,|\.|\band\b|\bwithout\b|$)/);
-  const sourceText = sourceMatch?.[1]?.trim();
-
-  if (sourceText) {
-    return truncateText(sourceText, 120);
-  }
-
-  if (input.includes("email") || input.includes("emails")) {
-    if (domain === "admissions") return "job application emails";
-    if (domain === "support") return "support emails";
-    if (domain === "finance") return "billing or refund emails";
-
-    return "incoming emails";
-  }
-
-  if (compileJob.result.trigger?.source && compileJob.result.trigger.source !== "compiler_preview") {
-    return truncateText(compileJob.result.trigger.source, 120);
+    return "incoming email source";
   }
 
   return "user-provided internal input";
 }
 
-function cleanFieldName(value: string): string {
+function sourceType(
+  source: string,
+): string {
+  const normalized =
+    normalizeInput(source);
+
+  if (normalized.includes("gmail")) {
+    return "gmail";
+  }
+
+  if (
+    normalized.includes("email") ||
+    normalized.includes("inbox")
+  ) {
+    return "email_inbox";
+  }
+
+  if (
+    normalized.includes("sheet")
+  ) {
+    return "spreadsheet";
+  }
+
+  if (normalized.includes("form")) {
+    return "form";
+  }
+
+  if (
+    normalized.includes("database")
+  ) {
+    return "database";
+  }
+
+  return "internal_input";
+}
+
+function cleanFieldName(
+  value: string,
+): string {
   return value
-    .replace(/^(?:the|a|an)\s+/, "")
+    .replace(
+      /^(?:the|a|an)\s+/,
+      "",
+    )
     .replace(/\s+/g, " ")
     .replace(/[.]+$/g, "")
     .trim();
 }
 
-function detectExplicitExtractedFields(input: string): string[] {
+function detectExplicitExtractedFields(
+  input: string,
+): string[] {
   const fields: string[] = [];
-  const extractMatch = input.match(
-    /\bextract\s+(?:the\s+)?(.+?)(?:,\s*(?:classify|create|prepare|route|draft|write|send|notify|without|do not|don't)\b|\s+and\s+(?:classify|create|prepare|route|draft|write|send|notify)\b|\.|$)/,
-  );
-  const fieldText = extractMatch?.[1]?.split(/\bfrom\s+(?:the\s+)?/)[0] ?? "";
 
-  for (const rawField of fieldText.replace(/\s+and\s+/g, ", ").split(/[,;]/)) {
-    addUnique(fields, cleanFieldName(rawField), 80);
+  const extractMatch = input.match(
+    /\bextract\s+(?:the\s+)?(.+?)(?:,\s*(?:classify|create|prepare|route|draft|write|send|notify|assign|without|do not|don't)\b|\s+and\s+(?:classify|create|prepare|route|draft|write|send|notify|assign)\b|\.|$)/,
+  );
+
+  const fieldText =
+    extractMatch?.[1]?.split(
+      /\bfrom\s+(?:the\s+)?/,
+    )[0] ?? "";
+
+  for (
+    const rawField of fieldText
+      .replace(/\s+and\s+/g, ", ")
+      .split(/[,;]/)
+  ) {
+    addUnique(
+      fields,
+      cleanFieldName(rawField),
+      80,
+    );
   }
 
   return fields;
 }
 
-function detectExtractedFields(input: string, domain: BriefDomain): string[] {
-  const fields = detectExplicitExtractedFields(input);
+function detectExtractedFields(
+  input: string,
+  domain: BriefDomain,
+): string[] {
+  const fields =
+    detectExplicitExtractedFields(
+      input,
+    );
 
   if (domain === "admissions") {
-    if (fields.length === 0 || input.includes("candidate details") || input.includes("application fields")) {
-      addUnique(fields, "candidate name", 80);
-      addUnique(fields, "role", 80);
-      addUnique(fields, "portfolio link", 80);
-      addUnique(fields, "application source", 80);
+    for (let index = 0; index < fields.length; index += 1) {
+      const normalizedField =
+        normalizeInput(fields[index] ?? "");
+
+      if (
+        normalizedField === "candidate name" ||
+        normalizedField === "student name"
+      ) {
+        fields[index] = "applicant name";
+      } else if (
+        normalizedField === "application id" ||
+        normalizedField === "application identifier"
+      ) {
+        fields[index] = "application ID";
+      }
     }
 
-    if (input.includes("candidate name")) addUnique(fields, "candidate name", 80);
-    if (input.includes("portfolio")) addUnique(fields, "portfolio link", 80);
-    if (input.includes("application source")) addUnique(fields, "application source", 80);
+    if (
+      fields.length === 0 ||
+      input.includes(
+        "applicant details",
+      ) ||
+      input.includes(
+        "candidate details",
+      )
+    ) {
+      addUnique(
+        fields,
+        "applicant name",
+        80,
+      );
+
+      addUnique(
+        fields,
+        "application ID",
+        80,
+      );
+
+      addUnique(
+        fields,
+        "course",
+        80,
+      );
+
+      addUnique(
+        fields,
+        "application summary",
+        80,
+      );
+    }
   }
 
-  if (domain === "support" && fields.length === 0) {
-    addUnique(fields, "customer name", 80);
-    addUnique(fields, "issue summary", 80);
-    addUnique(fields, "urgency", 80);
-    addUnique(fields, "account identifier", 80);
+  if (
+    domain === "support" &&
+    fields.length === 0
+  ) {
+    addUnique(
+      fields,
+      "customer name",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "issue summary",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "urgency",
+      80,
+    );
   }
 
-  if (domain === "finance" && fields.length === 0) {
-    addUnique(fields, "customer name", 80);
-    addUnique(fields, "invoice number", 80);
-    addUnique(fields, "amount", 80);
-    addUnique(fields, "refund or billing reason", 80);
+  if (
+    domain === "finance" &&
+    fields.length === 0
+  ) {
+    addUnique(
+      fields,
+      "customer name",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "invoice number",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "amount",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "billing reason",
+      80,
+    );
   }
 
-  return uniqueStrings(fields, 8, 80);
+  if (
+    domain === "marketing" &&
+    fields.length === 0
+  ) {
+    addUnique(
+      fields,
+      "product name",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "target audience",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "key features",
+      80,
+    );
+
+    addUnique(
+      fields,
+      "campaign tone",
+      80,
+    );
+  }
+
+  return uniqueStrings(
+    fields,
+    8,
+    80,
+  );
 }
 
-function detectClassificationTarget(input: string, domain: BriefDomain): string {
+function detectClassificationTarget(
+  input: string,
+  domain: BriefDomain,
+): string {
   const classifyMatch = input.match(
-    /\bclassify\s+(?:the\s+)?([a-z0-9 -]{2,80}?)(?:,|\.|\band\s+(?:create|prepare|route|draft|send|notify|log)\b|\bwithout\b|$)/,
+    /\bclassify\s+(?:the\s+)?([a-z0-9 -]{2,80}?)(?:,|\.|\band\s+(?:create|prepare|route|draft|send|notify|log|assign)\b|\bwithout\b|$)/,
   );
-  const target = cleanFieldName(classifyMatch?.[1] ?? "");
+
+  const target = cleanFieldName(
+    classifyMatch?.[1] ?? "",
+  );
 
   if (target) {
-    if (target === "priority" && domain === "admissions") return "application priority";
-    if (target === "priority" && domain === "support") return "support priority";
+    if (
+      (
+        target === "priority" ||
+        target.startsWith(
+          "application priority",
+        )
+      ) &&
+      domain === "admissions"
+    ) {
+      return "application priority";
+    }
 
-    return truncateText(target, 80);
+    if (
+      target === "priority" &&
+      domain === "support"
+    ) {
+      return "support priority";
+    }
+
+    return truncateText(
+      target,
+      80,
+    );
   }
 
-  if (hasAny(input, ["classify", "categorize", "triage", "label"])) {
-    if (domain === "admissions") return "application priority";
-    if (domain === "support") return "support priority";
-    if (domain === "finance") return "refund or billing review category";
+  if (
+    hasAny(input, [
+      "classify",
+      "categorize",
+      "triage",
+      "label",
+    ])
+  ) {
+    if (domain === "admissions") {
+      return "application priority";
+    }
+
+    if (domain === "support") {
+      return "support priority";
+    }
+
+    if (domain === "finance") {
+      return "finance review category";
+    }
+
+    if (domain === "marketing") {
+      return "content type";
+    }
 
     return "internal review category";
   }
@@ -269,137 +869,284 @@ function detectClassificationTarget(input: string, domain: BriefDomain): string 
   return "";
 }
 
-function buildClassificationRules(target: string, domain: BriefDomain): string[] {
-  if (!target) return [];
+function buildClassificationRules(
+  target: string,
+  domain: BriefDomain,
+): string[] {
+  if (!target) {
+    return [];
+  }
 
   if (domain === "admissions") {
     return [
-      "Use only visible application email content and extracted fields.",
-      "Label missing candidate, role, portfolio, or source details as needs manual review.",
-      "Treat priority labels as internal triage, not final admissions or hiring decisions.",
+      "Use only visible application content and extracted fields.",
+      "Mark missing or ambiguous information as needs manual review.",
+      "Priority is internal triage only and must not decide admissions outcomes.",
     ];
   }
 
   if (domain === "support") {
     return [
-      "Use issue urgency, customer impact, and missing information to assign priority.",
-      "Escalate complaints, threats, refunds, or account access requests to manual review.",
-      "Keep any reply as a draft until a human approves it.",
+      "Use issue urgency, impact, and missing information.",
+      "Escalate complaints, refunds, account-access issues, and threats.",
+      "Keep external responses draft-only until human approval.",
     ];
   }
 
   if (domain === "finance") {
     return [
-      "Use invoice, amount, reason, and account details to label the review category.",
-      "Route refunds, payments, and billing changes to manual review.",
-      "Do not execute payment, refund, or record-update actions automatically.",
+      "Use invoice, amount, reason, and visible account details.",
+      "Route payments, refunds, and billing changes to human review.",
+      "Do not execute financial actions automatically.",
+    ];
+  }
+
+  if (domain === "marketing") {
+    return [
+      "Use only supplied campaign and product information.",
+      "Keep generated content as a draft.",
+      "Require human approval before publication.",
     ];
   }
 
   return [
-    "Use only the provided source data and extracted fields.",
-    "Flag missing required details as needs manual review.",
-    "Keep labels internal until a human approves downstream action.",
+    "Use only supplied source data.",
+    "Flag missing details for human review.",
+    "Keep downstream external action blocked until approval.",
   ];
 }
 
-function detectInternalOutputs(input: string, domain: BriefDomain, classificationTarget: string): string[] {
+function detectInternalOutputs(
+  input: string,
+  domain: BriefDomain,
+  classificationTarget: string,
+): string[] {
   const outputs: string[] = [];
 
   if (domain === "admissions") {
-    addUnique(outputs, "internal admissions review task", 100);
-    addUnique(outputs, "candidate summary", 100);
-    if (classificationTarget) addUnique(outputs, "priority label", 100);
+    addUnique(
+      outputs,
+      "internal admissions review package",
+      120,
+    );
+
+    addUnique(
+      outputs,
+      "applicant summary",
+      120,
+    );
+
+    if (classificationTarget) {
+      addUnique(
+        outputs,
+        "application priority label",
+        120,
+      );
+    }
   } else if (domain === "support") {
-    addUnique(outputs, "support triage task", 100);
-    addUnique(outputs, "issue summary", 100);
-    if (classificationTarget) addUnique(outputs, "priority or category label", 100);
+    addUnique(
+      outputs,
+      "support triage task",
+      120,
+    );
+
+    addUnique(
+      outputs,
+      "issue summary",
+      120,
+    );
   } else if (domain === "finance") {
-    addUnique(outputs, "finance review task", 100);
-    addUnique(outputs, "billing or refund summary", 100);
-    if (classificationTarget) addUnique(outputs, "review category label", 100);
+    addUnique(
+      outputs,
+      "finance review task",
+      120,
+    );
+  } else if (domain === "marketing") {
+    addUnique(
+      outputs,
+      "draft marketing content package",
+      120,
+    );
   }
 
-  if (hasAny(input, ["create task", "create an internal review task", "review task", "internal task"])) {
-    addUnique(outputs, domain === "generic" ? "internal review task" : outputs[0], 100);
+  if (
+    hasAny(input, [
+      "review task",
+      "internal task",
+      "review package",
+      "internal review package",
+    ])
+  ) {
+    addUnique(
+      outputs,
+      domain === "admissions"
+        ? "internal admissions review package"
+        : "internal review package",
+      120,
+    );
   }
 
-  if (hasAny(input, ["draft", "reply", "response"])) {
-    addUnique(outputs, "draft reply for human review", 100);
-  }
-
-  if (hasAny(input, ["report", "dashboard", "digest"])) {
-    addUnique(outputs, "internal report", 100);
+  if (
+    hasAny(input, [
+      "draft reply",
+      "draft response",
+    ])
+  ) {
+    addUnique(
+      outputs,
+      "draft reply for human review",
+      120,
+    );
   }
 
   if (outputs.length === 0) {
-    addUnique(outputs, "safe internal review summary", 100);
+    addUnique(
+      outputs,
+      "safe internal review package",
+      120,
+    );
   }
 
-  return uniqueStrings(outputs, 6, 100);
-}
-
-function explicitNoExternalSend(input: string): boolean {
-  return /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:send|sending|reply|message|messages|email|emails|external message|external messages)\b/.test(input);
-}
-
-function detectBlockedActions(compileJob: CompileJob, input: string): string[] {
-  const blueprint = compileJob.result;
-  const safety = compileJob.safety_critic;
-  const blocked: string[] = [];
-
-  if (explicitNoExternalSend(input)) {
-    addUnique(blocked, "Do not send external messages.", 160);
-  }
-
-  if (compileJob.signals.has_external_action && !explicitNoExternalSend(input)) {
-    addUnique(blocked, "External messages must remain draft-only until human review.", 160);
-  }
-
-  if (compileJob.risks.categories.includes("real_world_execution")) {
-    addUnique(blocked, "Do not execute production actions automatically.", 160);
-  }
-
-  for (const item of [
-    ...(blueprint.not_safe_to_automate ?? []),
-    ...(blueprint.not_recommended ?? []),
-    ...(safety?.blocked_or_not_recommended ?? []),
-    ...(safety?.must_remain_draft_only ?? []),
-  ]) {
-    addUnique(blocked, item, 160);
-  }
-
-  return blocked.slice(0, 8);
-}
-
-function detectHumanApprovalGates(compileJob: CompileJob, blockedActions: readonly string[]): string[] {
-  const gates = uniqueStrings((compileJob.result.human_approval_gates ?? []).map(humanGateText), 8, 160);
-
-  if (gates.length === 0 && (compileJob.risks.requires_human_review || blockedActions.length > 0)) {
-    gates.push("Manual review required before external communication or production execution.");
-  }
-
-  return gates;
-}
-
-function buildWarnings(compileJob: CompileJob, domain: BriefDomain): string[] {
-  const safety = compileJob.safety_critic;
-  const warnings = uniqueStrings(
-    [
-      ...(compileJob.risks.reasons ?? []),
-      ...(safety?.findings ?? []).map(findingText),
-      ...(compileJob.safety_critic_agent?.draft_only_warnings ?? []),
-      ...(compileJob.safety_critic_agent?.blocked_or_not_recommended ?? []),
-    ],
+  return uniqueStrings(
+    outputs,
     6,
+    120,
+  );
+}
+
+function humanGateText(
+  gate: unknown,
+): string {
+  if (
+    !gate ||
+    typeof gate !== "object"
+  ) {
+    return truncateText(
+      gate,
+      180,
+    );
+  }
+
+  const record =
+    gate as Record<string, unknown>;
+
+  const label = truncateText(
+    record.label ??
+      record.name ??
+      "Human review",
+    90,
+  );
+
+  const reason = truncateText(
+    record.reason ??
+      record.description ??
+      "",
+    110,
+  );
+
+  return reason
+    ? `${label}: ${reason}`
+    : label;
+}
+
+function detectBlockedActions(
+  compileJob: CompileJob,
+  request: string,
+  canonicalFacts: CanonicalRequestFacts,
+): string[] {
+  const result: string[] = [];
+
+  if (
+    canonicalFacts
+      .externalActionBoundary
+  ) {
+    addUnique(
+      result,
+      canonicalFacts.externalActionBoundary,
+      220,
+    );
+  }
+
+  if (
+    /\bno external communication\b/i.test(
+      request,
+    ) ||
+    /\bmust not be sent\b/i.test(
+      request,
+    )
+  ) {
+    addUnique(
+      result,
+      "Do not send external communication before the designated human owner approves it.",
+      180,
+    );
+  }
+
+  for (const action of [
+    ...(compileJob.result
+      .not_safe_to_automate ?? []),
+    ...(compileJob.result
+      .not_recommended ?? []),
+    ...(compileJob.safety_critic
+      ?.blocked_or_not_recommended ??
+      []),
+    ...(compileJob.safety_critic
+      ?.must_remain_draft_only ??
+      []),
+  ]) {
+    addUnique(
+      result,
+      action,
+      180,
+    );
+  }
+
+  return result.slice(0, 8);
+}
+
+function detectHumanApprovalGates(
+  compileJob: CompileJob,
+  canonicalFacts: CanonicalRequestFacts,
+  blockedActions: readonly string[],
+): string[] {
+  const gates = uniqueStrings(
+    (
+      compileJob.result
+        .human_approval_gates ?? []
+    ).map(humanGateText),
+    8,
     180,
   );
 
-  if (domain === "admissions" && compileJob.risks.categories.includes("employment")) {
-    addUnique(warnings, "Application priority labels are internal triage only and must not decide hiring outcomes.", 180);
+  if (
+    canonicalFacts.approvalBoundary
+  ) {
+    gates.unshift(
+      canonicalFacts.approvalBoundary,
+    );
   }
 
-  return warnings.slice(0, 6);
+  const uniqueGates =
+    uniqueStrings(
+      gates,
+      8,
+      220,
+    );
+
+  if (
+    uniqueGates.length === 0 &&
+    (
+      compileJob.risks
+        .requires_human_review ||
+      blockedActions.length > 0
+    )
+  ) {
+    uniqueGates.push(
+      "Manual review required before external communication or production execution.",
+    );
+  }
+
+  return uniqueGates;
 }
 
 function buildWorkflowGoal(
@@ -409,288 +1156,378 @@ function buildWorkflowGoal(
   classificationTarget: string,
   internalOutputs: readonly string[],
 ): string {
-  const parts: string[] = [];
-
-  if (domain === "admissions") {
-    parts.push(source.includes("email") ? "collect job application emails" : "collect job application items");
-  } else if (domain === "support") {
-    parts.push(source.includes("email") ? "collect support emails" : "triage support requests");
-  } else if (domain === "finance") {
-    parts.push("collect billing or refund requests");
-  } else {
-    parts.push("collect the source item for internal review");
-  }
+  const parts: string[] = [
+    `collect safe-preview input representing ${source}`,
+  ];
 
   if (extractedFields.length > 0) {
-    if (domain === "admissions") {
-      parts.push("extract candidate details");
-    } else if (domain === "support") {
-      parts.push("extract support request details");
-    } else if (domain === "finance") {
-      parts.push("extract billing details");
-    } else {
-      parts.push(`extract ${joinList(extractedFields.slice(0, 4))}`);
-    }
+    parts.push(
+      domain === "admissions"
+        ? "extract applicant details"
+        : `extract ${extractedFields
+            .slice(0, 4)
+            .join(", ")}`,
+    );
   }
 
   if (classificationTarget) {
-    parts.push(`classify ${classificationTarget}`);
+    parts.push(
+      `classify ${classificationTarget}`,
+    );
   }
 
-  const reviewTask = internalOutputs.find((output) => output.includes("review task") || output.includes("triage task"));
-
-  if (reviewTask) {
-    parts.push(`prepare ${reviewTask}`);
-  } else if (internalOutputs.length > 0) {
-    parts.push(`prepare ${internalOutputs[0]}`);
+  if (internalOutputs.length > 0) {
+    parts.push(
+      `prepare ${internalOutputs[0]}`,
+    );
   }
 
-  if (parts.length === 0) {
-    return "Prepare a safe internal review workflow without executing production actions.";
-  }
-
-  if (parts.length === 1) {
-    return truncateText(parts[0], 240);
-  }
-
-  return truncateText(`${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`, 240);
+  return truncateText(
+    parts.join(", "),
+    260,
+  );
 }
 
-function scheduleLabel(triggerDescription: string): string {
-  const normalized = normalizeInput(triggerDescription);
-
-  if (normalized.includes("morning") || normalized.includes("daily") || normalized.includes("every day")) {
-    return "Daily";
-  }
-
-  if (normalized.includes("weekday")) return "Weekday";
-  if (normalized.includes("weekly")) return "Weekly";
-  if (normalized.includes("monthly")) return "Monthly";
-
-  return "Scheduled";
-}
-
-function workflowLabelForDomain(domain: BriefDomain): string {
-  if (domain === "admissions") return "Admissions Intake";
-  if (domain === "support") return "Support Triage";
-  if (domain === "finance") return "Finance Review";
-
-  return "Internal Review";
-}
-
-function reviewWorkflowLabelForDomain(domain: BriefDomain): string {
-  if (domain === "admissions") return "Admissions Intake Review";
-  if (domain === "support") return "Support Triage Review";
-  if (domain === "finance") return "Finance Review";
-
-  return "Internal Review";
-}
-
-function isGenericWorkflowName(value: string): boolean {
-  const normalized = normalizeInput(value);
-
-  return [
-    "classification workflow",
-    "extraction workflow",
-    "safe automation preview",
-    "internal record workflow",
-    "drafting workflow",
-    "routing workflow",
-    "monitoring workflow",
-    "summarization workflow",
-    "reporting workflow",
-    "job application intake workflow",
-  ].includes(normalized);
-}
-
-function buildDomainWorkflowName(
-  input: string,
+function workflowName(
   domain: BriefDomain,
-  classificationTarget: string,
-  internalOutputs: readonly string[],
 ): string {
   if (domain === "admissions") {
-    if (
-      hasAny(input, ["application", "job application", "candidate", "applicant"])
-      && internalOutputs.some((output) => output.includes("review task"))
-    ) {
-      return "Admissions Application Review Intake";
-    }
-
-    return "Admissions Intake Review";
+    return "Admissions Application Review Workflow";
   }
 
   if (domain === "support") {
-    if (classificationTarget.includes("priority") || classificationTarget.includes("category")) {
-      return "Support Triage Review Intake";
-    }
-
-    return "Support Review Intake";
+    return "Support Triage Review Workflow";
   }
 
   if (domain === "finance") {
-    if (hasAny(input, ["refund", "payment", "invoice", "billing"])) {
-      return "Finance Request Review Intake";
-    }
-
-    return "Finance Review Intake";
+    return "Finance Request Review Workflow";
   }
 
-  return "Internal Review Intake";
+  if (domain === "marketing") {
+    return "Marketing Content Review Workflow";
+  }
+
+  return "Internal Review Workflow";
 }
 
-function buildImplementationWorkflowName(
-  compileJob: CompileJob,
-  input: string,
+function recommendedNodes(
   domain: BriefDomain,
   classificationTarget: string,
-  internalOutputs: readonly string[],
-): string {
-  const blueprintName = truncateText(compileJob.result.workflow_name, 120);
-  const domainName = buildDomainWorkflowName(input, domain, classificationTarget, internalOutputs);
-
-  if (!blueprintName || isGenericWorkflowName(blueprintName)) {
-    return domainName;
-  }
-
-  if (domain !== "generic" && isGenericWorkflowName(domainName)) {
-    return domainName;
-  }
-
-  return blueprintName;
-}
-
-function buildRecommendedNodes(
-  domain: BriefDomain,
-  triggerDescription: string,
-  extractedFields: readonly string[],
-  classificationTarget: string,
-  internalOutputs: readonly string[],
-  humanApprovalGates: readonly string[],
-  blockedActions: readonly string[],
+  hasApproval: boolean,
 ): string[] {
   const nodes: string[] = [];
-  const workflowLabel = humanApprovalGates.length > 0 || blockedActions.length > 0
-    ? reviewWorkflowLabelForDomain(domain)
-    : workflowLabelForDomain(domain);
-  const trigger = normalizeInput(triggerDescription);
-
-  if (hasAny(trigger, ["daily", "morning", "weekly", "weekday", "monthly", "scheduled", "every"])) {
-    addUnique(nodes, `Schedule: ${scheduleLabel(triggerDescription)} ${workflowLabel}`, 100);
-  } else {
-    addUnique(nodes, `Manual Trigger: ${workflowLabel}`, 100);
-  }
 
   if (domain === "admissions") {
-    addUnique(nodes, "Sample Application Email", 100);
+    nodes.push(
+      "Admissions Application Review Trigger",
+      "Sample Admissions Application",
+      "Extract Applicant Fields",
+    );
   } else if (domain === "support") {
-    addUnique(nodes, "Sample Support Message", 100);
+    nodes.push(
+      "Support Review Trigger",
+      "Sample Support Request",
+      "Extract Support Fields",
+    );
   } else if (domain === "finance") {
-    addUnique(nodes, "Sample Billing Request", 100);
+    nodes.push(
+      "Finance Review Trigger",
+      "Sample Finance Request",
+      "Extract Finance Fields",
+    );
+  } else if (domain === "marketing") {
+    nodes.push(
+      "Marketing Review Trigger",
+      "Sample Campaign Brief",
+      "Extract Campaign Fields",
+    );
   } else {
-    addUnique(nodes, "Sample Internal Request", 100);
-  }
-
-  if (extractedFields.length > 0) {
-    if (domain === "admissions") addUnique(nodes, "Extract Candidate Fields", 100);
-    else if (domain === "support") addUnique(nodes, "Extract Support Fields", 100);
-    else if (domain === "finance") addUnique(nodes, "Extract Billing Fields", 100);
-    else addUnique(nodes, "Extract Request Fields", 100);
+    nodes.push(
+      "Internal Review Trigger",
+      "Sample Internal Input",
+      "Extract Input Fields",
+    );
   }
 
   if (classificationTarget) {
-    addUnique(nodes, `Classify ${titleCase(classificationTarget)}`, 100);
+    nodes.push(
+      `Classify ${titleCase(
+        classificationTarget,
+      )}`,
+    );
   }
 
-  if (internalOutputs.some((output) => output.includes("draft reply") || output.includes("response"))) {
-    addUnique(nodes, "Draft Reply For Review", 100);
-  }
+  nodes.push(
+    domain === "admissions"
+      ? "Prepare Admissions Review Package"
+      : "Prepare Internal Review Package",
+  );
 
-  if (internalOutputs.some((output) => output.includes("review task") || output.includes("triage task"))) {
-    if (domain === "admissions") addUnique(nodes, "Prepare Admissions Review Task", 100);
-    else if (domain === "support") addUnique(nodes, "Prepare Support Review Task", 100);
-    else if (domain === "finance") addUnique(nodes, "Prepare Finance Review Task", 100);
-    else addUnique(nodes, "Prepare Internal Review Task", 100);
-  } else {
-    addUnique(nodes, "Prepare Internal Review Summary", 100);
-  }
-
-  if (humanApprovalGates.length > 0 || blockedActions.length > 0) {
-    addUnique(nodes, "Manual Review Required", 100);
-  } else {
-    addUnique(nodes, "Ready For Internal Review", 100);
+  if (hasApproval) {
+    nodes.push(
+      "Mark Pending Human Review",
+    );
   }
 
   return nodes.slice(0, 7);
 }
 
-export function buildN8nImplementationBrief(compileJob: CompileJob): N8nImplementationBrief {
-  const originalRequest = compileJob.input.trimmed || compileJob.input.raw;
-  const input = normalizeInput(originalRequest);
-  const domain = detectDomain(input);
-  const triggerDescription = detectTriggerDescription(input, compileJob);
-  const source = detectSource(input, compileJob, domain);
-  const extractedFields = detectExtractedFields(input, domain);
-  const classificationTarget = detectClassificationTarget(input, domain);
-  const classificationRules = buildClassificationRules(classificationTarget, domain);
-  const internalOutputs = detectInternalOutputs(input, domain, classificationTarget);
-  const blockedActions = detectBlockedActions(compileJob, input);
-  const humanApprovalGates = detectHumanApprovalGates(compileJob, blockedActions);
-  const warnings = buildWarnings(compileJob, domain);
-  const workflowGoal = buildWorkflowGoal(
-    domain,
-    source,
-    extractedFields,
-    classificationTarget,
-    internalOutputs,
-  );
-  const recommendedNodes = buildRecommendedNodes(
-    domain,
-    triggerDescription,
-    extractedFields,
-    classificationTarget,
-    internalOutputs,
-    humanApprovalGates,
-    blockedActions,
+function buildWarnings(
+  compileJob: CompileJob,
+  domain: BriefDomain,
+): string[] {
+  const warnings = uniqueStrings(
+    [
+      ...(compileJob.risks
+        .reasons ?? []),
+      ...(compileJob
+        .safety_critic_agent
+        ?.draft_only_warnings ??
+        []),
+      ...(compileJob
+        .safety_critic_agent
+        ?.blocked_or_not_recommended ??
+        []),
+    ],
+    6,
+    180,
   );
 
+  if (
+    domain === "admissions"
+  ) {
+    addUnique(
+      warnings,
+      "Application priority is internal triage only and must not decide admissions outcomes.",
+      180,
+    );
+  }
+
+  return warnings.slice(0, 6);
+}
+
+export function buildN8nImplementationBrief(
+  compileJob: CompileJob,
+): N8nImplementationBrief {
+  const canonicalIntent =
+    normalizeCompileRequest(
+      compileJob.input.raw,
+    ).intent;
+
+  const request =
+    originalRequest(compileJob);
+
+  const normalizedRequest =
+    normalizeInput(
+      [
+        request,
+        canonicalIntent.goal,
+        canonicalIntent.task_type,
+        canonicalIntent.trigger,
+        ...canonicalIntent.input_sources,
+        ...canonicalIntent.input_data,
+        ...canonicalIntent.desired_outputs,
+        ...canonicalIntent.decision_rules,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+
+  const canonicalFacts =
+    extractCanonicalRequestFacts(
+      compileJob,
+    );
+
+  const domain =
+    detectDomain(
+      normalizedRequest,
+    );
+
+  const triggerDescription =
+    detectTriggerDescription(
+      normalizedRequest,
+      compileJob,
+    );
+
+  const source =
+    detectSource(
+      normalizedRequest,
+      domain,
+      canonicalIntent.input_sources,
+      request,
+    );
+
+  const extractedFields =
+    detectExtractedFields(
+      normalizedRequest,
+      domain,
+    );
+
+  const classificationTarget =
+    detectClassificationTarget(
+      normalizedRequest,
+      domain,
+    );
+
+  const classificationRules =
+    buildClassificationRules(
+      classificationTarget,
+      domain,
+    );
+
+  const internalOutputs =
+    detectInternalOutputs(
+      normalizedRequest,
+      domain,
+      classificationTarget,
+    );
+
+  const blockedActions =
+    detectBlockedActions(
+      compileJob,
+      request,
+      canonicalFacts,
+    );
+
+  const humanApprovalGates =
+    detectHumanApprovalGates(
+      compileJob,
+      canonicalFacts,
+      blockedActions,
+    );
+
+  const humanOwner =
+    canonicalFacts.humanOwner ||
+    "responsible human reviewer";
+
+  const approvalBoundary =
+    canonicalFacts.approvalBoundary ||
+    humanApprovalGates[0] ||
+    "Human approval is required before external action.";
+
+  const externalActionBoundary =
+    canonicalFacts
+      .externalActionBoundary ||
+    blockedActions[0] ||
+    "No external action is allowed before human review.";
+
   return {
-    workflow_goal: workflowGoal,
-    trigger_description: triggerDescription,
+    workflow_goal:
+      buildWorkflowGoal(
+        domain,
+        source,
+        extractedFields,
+        classificationTarget,
+        internalOutputs,
+      ),
+
+    trigger_description:
+      triggerDescription,
+
     source,
-    extracted_fields: extractedFields,
-    classification_target: classificationTarget,
-    classification_rules: classificationRules,
-    internal_outputs: internalOutputs,
-    human_approval_gates: humanApprovalGates,
-    blocked_or_not_safe_actions: blockedActions,
-    warnings,
-    recommended_nodes: recommendedNodes,
+    source_type:
+      sourceType(source),
+    source_is_placeholder: true,
+
+    domain,
+
+    extracted_fields:
+      extractedFields,
+
+    classification_target:
+      classificationTarget,
+
+    classification_rules:
+      classificationRules,
+
+    internal_outputs:
+      internalOutputs,
+
+    human_owner:
+      humanOwner,
+
+    human_approval_gates:
+      humanApprovalGates,
+
+    approval_boundary:
+      approvalBoundary,
+
+    external_action_boundary:
+      externalActionBoundary,
+
+    blocked_or_not_safe_actions:
+      blockedActions,
+
+    warnings:
+      buildWarnings(
+        compileJob,
+        domain,
+      ),
+
+    recommended_nodes:
+      recommendedNodes(
+        domain,
+        classificationTarget,
+        humanApprovalGates.length > 0 ||
+          blockedActions.length > 0,
+      ),
   };
 }
 
-export function buildCompactN8nGenerationInput(compileJob: CompileJob): CompactN8nGenerationInput {
-  const blueprint = compileJob.result;
-  const safety = compileJob.safety_critic;
-  const implementationBrief = buildN8nImplementationBrief(compileJob);
-  const input = normalizeInput(compileJob.input.trimmed || compileJob.input.raw);
-  const workflowName = buildImplementationWorkflowName(
-    compileJob,
-    input,
-    detectDomain(input),
-    implementationBrief.classification_target,
-    implementationBrief.internal_outputs,
-  );
+export function buildCompactN8nGenerationInput(
+  compileJob: CompileJob,
+): CompactN8nGenerationInput {
+  const implementationBrief =
+    buildN8nImplementationBrief(
+      compileJob,
+    );
+
+  const safety =
+    compileJob.safety_critic;
 
   return {
-    original_request: truncateText(compileJob.input.trimmed || compileJob.input.raw, 1000),
-    workflow_name: truncateText(workflowName, 120),
-    blueprint_summary: truncateText(blueprint.summary, 500),
-    safety_status: safety?.overall_status ?? compileJob.status,
-    safety_summary: truncateText(safety?.summary || "", 500),
-    next_safe_action: truncateText(safety?.next_safe_action || "", 300),
-    risk_level: compileJob.risks?.risk_level,
-    readiness_score: compileJob.readiness?.score,
+    original_request:
+      truncateText(
+        originalRequest(compileJob),
+        1000,
+      ),
+
+    workflow_name:
+      workflowName(
+        implementationBrief.domain,
+      ),
+
+    blueprint_summary:
+      truncateText(
+        compileJob.result.summary,
+        500,
+      ),
+
+    safety_status:
+      safety?.overall_status ??
+      compileJob.status,
+
+    safety_summary:
+      truncateText(
+        safety?.summary ?? "",
+        500,
+      ),
+
+    next_safe_action:
+      truncateText(
+        safety?.next_safe_action ??
+          "",
+        300,
+      ),
+
+    risk_level:
+      compileJob.risks
+        ?.risk_level,
+
+    readiness_score:
+      compileJob.readiness
+        ?.score,
+
     ...implementationBrief,
   };
 }

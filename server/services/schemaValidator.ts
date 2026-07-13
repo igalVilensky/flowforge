@@ -89,16 +89,28 @@ export function safeValidateCompileJob(input: unknown): SafeSchemaValidationResu
 }
 
 export async function validateFixtures(): Promise<FixtureValidationSummary> {
-  const [{ validBlueprint }, { invalidBlueprint }, { validCompileJob }, { buildPipelineRegressionChecks }] = await Promise.all([
+  const [
+    { validBlueprint },
+    { invalidBlueprint },
+    { validCompileJob },
+    { buildPipelineRegressionChecks },
+    { buildN8nGeneratorRegressionChecks },
+    { buildExecutionJourneyRegressionChecks },
+  ] = await Promise.all([
     import("../fixtures/validBlueprint"),
     import("../fixtures/invalidBlueprint"),
     import("../fixtures/validCompileJob"),
     import("../fixtures/pipelineRegression"),
+    import("../fixtures/n8nGeneratorRegression"),
+    import("../fixtures/executionJourneyRegression"),
   ]);
 
   const validBlueprintResult = safeValidateBlueprint(validBlueprint);
   const invalidBlueprintResult = safeValidateBlueprint(invalidBlueprint);
   const validCompileJobResult = safeValidateCompileJob(validCompileJob);
+  const pipelineRegressionChecks = await buildPipelineRegressionChecks();
+  const n8nGeneratorRegressionChecks = await buildN8nGeneratorRegressionChecks();
+  const executionJourneyRegressionChecks = await buildExecutionJourneyRegressionChecks();
 
   const invalidFixtureIssues =
     invalidBlueprintResult.success
@@ -127,7 +139,9 @@ export async function validateFixtures(): Promise<FixtureValidationSummary> {
       success: validCompileJobResult.success,
       issues: validCompileJobResult.success ? [] : validCompileJobResult.issues,
     },
-    ...buildPipelineRegressionChecks(),
+    ...pipelineRegressionChecks,
+    ...n8nGeneratorRegressionChecks,
+    ...executionJourneyRegressionChecks,
   ];
 
   return {

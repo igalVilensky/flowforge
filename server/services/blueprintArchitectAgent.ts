@@ -16,6 +16,7 @@ import type {
     RiskSummary,
     SignalSummary,
 } from "../../shared/types/workflow";
+import type { StructuredWorkflowIntent } from "../../shared/types/structuredWorkflowIntent";
 import {
     blueprintArchitectSystemPrompt,
     buildBlueprintArchitectUserPrompt,
@@ -23,10 +24,16 @@ import {
 import { blueprintArchitectOutputSchema } from "../schemas/agentOutputs.schema";
 import { callGeminiAgent } from "./geminiProvider";
 import { callGroqAgent } from "./groqProvider";
+import {
+    callOpenAIAgent,
+    resolveOpenAIModelSelection,
+} from "./openaiProvider";
 import { buildBlueprint, detectBlueprintDomain } from "./blueprintBuilder";
+import { buildWorkflowIntentSection } from "./structuredCompileInput";
 
 export type RunBlueprintArchitectAgentInput = {
-    processInput: string;
+    intent: StructuredWorkflowIntent;
+    safetyConstraints: string[];
     mode: CompileMode;
     signals: SignalSummary;
     risks: RiskSummary;
@@ -34,6 +41,16 @@ export type RunBlueprintArchitectAgentInput = {
     routerDecision: RouterDecision;
     clarificationPlan: ClarificationPlan;
 };
+
+type BlueprintAiProvider = "openai" | "groq" | "gemini";
+type BlueprintProviderCall = (userPrompt: string, systemPrompt: string) => Promise<string>;
+
+export type BlueprintProviderDependencies = {
+    calls?: Partial<Record<BlueprintAiProvider, BlueprintProviderCall>>;
+    availability?: Partial<Record<BlueprintAiProvider, boolean>>;
+};
+
+const BLUEPRINT_PROVIDER_ORDER: readonly BlueprintAiProvider[] = ["openai", "groq", "gemini"];
 
 export type BlueprintArchitectAgentResult = {
     output: BlueprintArchitectOutput;
@@ -109,7 +126,7 @@ function summarizeError(error: unknown): string {
     }
 
     if (error instanceof Error) {
-        return error.message;
+        return error.message.replace(/\s*\|?\s*Response body:[\s\S]*/i, "").slice(0, 300);
     }
 
     return "Unknown error.";
@@ -134,6 +151,8 @@ export function buildDeterministicBlueprintArchitectFallback(
     provider: AgentOutputProvider,
     reason: string,
 ): BlueprintArchitectOutput {
+    const processInput = buildWorkflowIntentSection(input.intent);
+    const humanOwner = input.intent.human_owner ?? "channel owner";
     const needsHumanApproval = input.risks.requires_human_review || input.signals.has_external_action;
     const hasBlocker =
         input.routerDecision.route === "reject"
@@ -147,10 +166,11 @@ export function buildDeterministicBlueprintArchitectFallback(
             ].includes(category),
         );
 
-    if (detectBlueprintDomain(input.processInput) === "content") {
+    if (detectBlueprintDomain(processInput) === "content") {
         const blueprint = buildBlueprint({
             jobId: "blueprint_architect_fallback",
-            processInput: input.processInput,
+            processInput,
+            intent: input.intent,
             signals: input.signals,
             risks: input.risks,
             readiness: input.readiness,
@@ -165,7 +185,7 @@ export function buildDeterministicBlueprintArchitectFallback(
             status: "fallback_used",
             reason,
             workflow_name: blueprint.workflow_name,
-            summary: "Deterministic content-generation fallback prepared draft assets, a review package, channel-owner approval, and a hard block on automatic publishing.",
+            summary: `Deterministic content-generation fallback prepared draft assets, a review package, ${humanOwner} approval, and a hard block on automatic publishing.`,
             proposed_steps: blueprint.steps.map((step) => ({
                 id: step.id,
                 label: step.label,
@@ -197,14 +217,14 @@ export function buildDeterministicBlueprintArchitectFallback(
                 "Generated images, voice, video, captions, scripts, and post copy remain drafts.",
                 "No social platform or media-generation provider is connected by this preview.",
             ],
-            requires_human_approval: ["The channel owner must approve the post package before any external publishing."],
+            requires_human_approval: [`The ${humanOwner} must approve the post package before any external publishing.`],
             blocked_or_not_recommended: [
                 "Automatic social publishing is blocked.",
                 "Production credentials and provider integrations must not be invented or connected.",
             ],
             assumptions: blueprint.assumptions,
             open_questions: input.clarificationPlan.questions.map((question) => question.question),
-            safer_alternative: "Prepare draft content and an internal post package, then let the channel owner review and publish manually.",
+            safer_alternative: `Prepare draft content and an internal post package, then let the ${humanOwner} review and publish manually.`,
         };
     }
 
@@ -345,9 +365,70 @@ function buildDebugInfo(input: {
     };
 }
 
-export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAgentInput): Promise<BlueprintArchitectAgentResult> {
+function providerIsAvailable(
+    provider: BlueprintAiProvider,
+    dependencies: BlueprintProviderDependencies,
+): boolean {
+    const override = dependencies.availability?.[provider];
+    if (override !== undefined) return override;
+    const keyName = provider === "openai" ? "OPENAI_API_KEY" : provider === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY";
+    return Boolean(process.env[keyName]);
+}
+
+export function resolveBlueprintOpenAIModelSelection() {
+    return resolveOpenAIModelSelection({
+        modelEnv: "OPENAI_BLUEPRINT_MODEL",
+        fallbackModelEnv: "OPENAI_AGENT_MODEL",
+        defaultModel: "gpt-5-nano",
+    });
+}
+
+function providerCall(
+    provider: BlueprintAiProvider,
+    dependencies: BlueprintProviderDependencies,
+): BlueprintProviderCall {
+    const override = dependencies.calls?.[provider];
+    if (override) return override;
+
+    if (provider === "openai") {
+        return (userPrompt, systemPrompt) => callOpenAIAgent(userPrompt, systemPrompt, {
+            modelEnv: "OPENAI_BLUEPRINT_MODEL",
+            fallbackModelEnv: "OPENAI_AGENT_MODEL",
+            defaultMaxOutputTokens: 2400,
+            maxOutputTokensCap: 4000,
+        });
+    }
+
+    if (provider === "groq") {
+        return (userPrompt, systemPrompt) => callGroqAgent(userPrompt, systemPrompt, {
+            modelEnv: "GROQ_BLUEPRINT_MODEL",
+            fallbackModelEnv: "GROQ_AGENT_MODEL",
+            maxTokensEnv: "GROQ_BLUEPRINT_MAX_TOKENS",
+            fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
+            defaultMaxTokens: 2400,
+            maxTokensCap: 4000,
+            truncationSuggestion: "Raise GROQ_BLUEPRINT_MAX_TOKENS to around 2400-4000.",
+        });
+    }
+
+    return (userPrompt, systemPrompt) => callGeminiAgent(userPrompt, systemPrompt, {
+        modelEnv: "GEMINI_BLUEPRINT_MODEL",
+        fallbackModelEnv: "GEMINI_AGENT_MODEL",
+        maxOutputTokensEnv: "GEMINI_BLUEPRINT_MAX_OUTPUT_TOKENS",
+        fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
+        defaultMaxOutputTokens: 2400,
+        maxOutputTokensCap: 4000,
+        truncationSuggestion: "Raise GEMINI_BLUEPRINT_MAX_OUTPUT_TOKENS to around 2400-4000.",
+    });
+}
+
+export async function runBlueprintArchitectAgent(
+    input: RunBlueprintArchitectAgentInput,
+    dependencies: BlueprintProviderDependencies = {},
+): Promise<BlueprintArchitectAgentResult> {
     const prompt = buildBlueprintArchitectUserPrompt({
-        processInput: input.processInput,
+        intent: input.intent,
+        safetyConstraints: input.safetyConstraints,
         signals: input.signals,
         risks: input.risks,
         readiness: input.readiness,
@@ -357,14 +438,12 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
 
     if (!shouldUseAi(input.mode)) {
         const output = buildDeterministicBlueprintArchitectFallback(input, "deterministic", `Blueprint Architect Agent skipped in ${input.mode} mode.`);
-        const providerAttempts: AgentProviderDebugAttempt[] = [
-            {
-                provider: "deterministic",
-                attempted: true,
-                success: true,
-                parsed_response: output,
-            },
-        ];
+        const providerAttempts: AgentProviderDebugAttempt[] = [{
+            provider: "deterministic",
+            attempted: true,
+            success: true,
+            parsed_response: output,
+        }];
 
         return {
             output,
@@ -382,26 +461,28 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
     let llmCallsMade = 0;
     const providerAttempts: AgentProviderDebugAttempt[] = [];
 
-    if (process.env.GROQ_API_KEY) {
+    for (const provider of BLUEPRINT_PROVIDER_ORDER) {
+        if (!providerIsAvailable(provider, dependencies)) {
+            providerAttempts.push({
+                provider,
+                attempted: false,
+                success: false,
+                error_summary: `${provider === "openai" ? "OPENAI_API_KEY" : provider === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"} is not configured.`,
+            });
+            continue;
+        }
+
         let rawResponse: string | undefined;
         let parsedResponse: unknown;
 
         try {
             llmCallsMade += 1;
-            rawResponse = await callGroqAgent(prompt, blueprintArchitectSystemPrompt, {
-                modelEnv: "GROQ_BLUEPRINT_MODEL",
-                fallbackModelEnv: "GROQ_AGENT_MODEL",
-                maxTokensEnv: "GROQ_BLUEPRINT_MAX_TOKENS",
-                fallbackMaxTokensEnv: "GROQ_AGENT_MAX_TOKENS",
-                defaultMaxTokens: 2400,
-                maxTokensCap: 4000,
-                truncationSuggestion: "Raise GROQ_BLUEPRINT_MAX_TOKENS to around 2400-4000.",
-            });
+            rawResponse = await providerCall(provider, dependencies)(prompt, blueprintArchitectSystemPrompt);
             parsedResponse = safeParseJSON(rawResponse);
-            const normalized = normalizeAgentOutput(parsedResponse, "groq");
+            const normalized = normalizeAgentOutput(parsedResponse, provider);
 
             providerAttempts.push({
-                provider: "groq",
+                provider,
                 attempted: true,
                 success: true,
                 raw_response: rawResponse,
@@ -422,7 +503,7 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
             };
         } catch (error) {
             providerAttempts.push({
-                provider: "groq",
+                provider,
                 attempted: true,
                 success: false,
                 error_summary: summarizeError(error),
@@ -430,81 +511,14 @@ export async function runBlueprintArchitectAgent(input: RunBlueprintArchitectAge
                 parsed_response: parsedResponse,
             });
         }
-    } else {
-        providerAttempts.push({
-            provider: "groq",
-            attempted: false,
-            success: false,
-            error_summary: "GROQ_API_KEY is not configured.",
-        });
-    }
-
-    if (process.env.GEMINI_API_KEY) {
-        let rawResponse: string | undefined;
-        let parsedResponse: unknown;
-
-        try {
-            llmCallsMade += 1;
-            rawResponse = await callGeminiAgent(prompt, blueprintArchitectSystemPrompt, {
-                modelEnv: "GEMINI_BLUEPRINT_MODEL",
-                fallbackModelEnv: "GEMINI_AGENT_MODEL",
-                maxOutputTokensEnv: "GEMINI_BLUEPRINT_MAX_OUTPUT_TOKENS",
-                fallbackMaxOutputTokensEnv: "GEMINI_AGENT_MAX_OUTPUT_TOKENS",
-                defaultMaxOutputTokens: 2400,
-                maxOutputTokensCap: 4000,
-                truncationSuggestion: "Raise GEMINI_BLUEPRINT_MAX_OUTPUT_TOKENS to around 2400-4000.",
-            });
-            parsedResponse = safeParseJSON(rawResponse);
-            const normalized = normalizeAgentOutput(parsedResponse, "gemini");
-
-            providerAttempts.push({
-                provider: "gemini",
-                attempted: true,
-                success: true,
-                raw_response: rawResponse,
-                parsed_response: normalized.parsedResponse,
-                ...(normalized.warningSummary ? { warning_summary: normalized.warningSummary } : {}),
-            });
-
-            return {
-                output: normalized.output,
-                llm_calls_made: llmCallsMade,
-                debug: buildDebugInfo({
-                    mode: input.mode,
-                    userPrompt: prompt,
-                    providerAttempts,
-                    output: normalized.output,
-                    llmCallsMade,
-                }),
-            };
-        } catch (error) {
-            providerAttempts.push({
-                provider: "gemini",
-                attempted: true,
-                success: false,
-                error_summary: summarizeError(error),
-                raw_response: rawResponse,
-                parsed_response: parsedResponse,
-            });
-        }
-    } else {
-        providerAttempts.push({
-            provider: "gemini",
-            attempted: false,
-            success: false,
-            error_summary: "GEMINI_API_KEY is not configured.",
-        });
     }
 
     const providerErrors = providerAttempts
         .filter((attempt) => attempt.error_summary)
         .map((attempt) => `${attempt.provider}: ${attempt.error_summary}`);
-
-    const reason =
-        llmCallsMade > 0
-            ? `Blueprint Architect Agent provider output failed validation or parsing. ${providerErrors.join(" | ")}`
-            : "No Blueprint Architect Agent provider key was configured. Deterministic fallback was used.";
-
+    const reason = llmCallsMade > 0
+        ? `Blueprint Architect Agent provider output failed validation or parsing. ${providerErrors.join(" | ")}`
+        : "No Blueprint Architect Agent provider key was configured. Deterministic fallback was used.";
     const output = buildDeterministicBlueprintArchitectFallback(input, "deterministic", reason);
 
     providerAttempts.push({

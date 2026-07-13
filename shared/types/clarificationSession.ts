@@ -1,3 +1,5 @@
+import type { StructuredWorkflowIntent } from "./structuredWorkflowIntent";
+
 export type ClarificationQuestionKind =
     | "workflow_goal"
     | "task_type"
@@ -5,6 +7,8 @@ export type ClarificationQuestionKind =
     | "data_source"
     | "input_data"
     | "desired_output"
+    | "output_destination"
+    | "notification_target"
     | "decision_rules"
     | "human_owner"
     | "approval_boundary"
@@ -23,21 +27,6 @@ export type ClarificationSessionAnswer = {
     answer: string;
 };
 
-export type ClarificationKnownFacts = {
-    workflow_goal?: string;
-    task_type?: string;
-    trigger?: string;
-    data_source?: string;
-    input_data?: string[];
-    desired_output?: string;
-    decision_rules?: string[];
-    human_owner?: string;
-    approval_boundary?: string;
-    external_action_boundary?: string;
-    success_criteria?: string;
-    safety_notes?: string[];
-};
-
 export type ClarificationNextQuestion = {
     id: string;
     kind: ClarificationQuestionKind;
@@ -50,7 +39,7 @@ export type ClarificationSession = {
     session_id: string;
     original_input: string;
     current_summary: string;
-    known_facts: ClarificationKnownFacts;
+    intent: StructuredWorkflowIntent;
     answers: ClarificationSessionAnswer[];
     next_question: ClarificationNextQuestion | null;
     status: ClarificationSessionStatus;
@@ -64,10 +53,18 @@ export type ClarificationSessionRequest = {
     answers?: ClarificationSessionAnswer[];
 };
 
+export type ClarificationProviderAttempt = {
+    provider: "openai" | "groq" | "gemini" | "deterministic";
+    attempted: boolean;
+    success: boolean;
+    error_summary?: string;
+};
+
 export type ClarificationSessionResponse = {
     session: ClarificationSession;
     used_ai: boolean;
-    provider: "groq" | "gemini" | "deterministic";
+    provider: "openai" | "groq" | "gemini" | "deterministic";
     fallback_used: boolean;
+    provider_attempts: ClarificationProviderAttempt[];
     raw_response?: string;
 };

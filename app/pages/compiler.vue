@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { ChevronRight, X } from "lucide-vue-next";
+import { buildExecutionJourney } from "~~/shared/executionJourney";
+import ExecutionJourneyModal from "../../components/execution-journey/ExecutionJourneyModal.vue";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
-import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
-import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
+import type { AgentDebugInfo, AgentProviderDebugAttempt } from "../../shared/types/agentOutputs";
+import type {
+  N8nGenerationTrace,
+  N8nGenerateResponse,
+  N8nGeneratorProviderAttempt,
+  N8nWorkflow,
+} from "../../shared/types/n8nWorkflow";
 import type {
   ClarificationSession,
   ClarificationSessionAnswer,
   ClarificationSessionResponse,
 } from "../../shared/types/clarificationSession";
 
-type PanelView = "context" | "agents" | "details" | "trace";
+type PanelView = "context" | "agents" | "details";
 type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
 type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
 
@@ -169,6 +176,8 @@ const n8nStaticSafetyWarning =
 const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
+const n8nProviderAttempts = ref<N8nGeneratorProviderAttempt[]>([]);
+const n8nGenerationTrace = ref<N8nGenerationTrace | null>(null);
 const n8nJsonCopied = ref(false);
 const compileProgressEvents = ref<CompileProgressEvent[]>([]);
 const compileAgentStateMap = ref<Record<string, AgentUiCard>>({});
@@ -440,7 +449,7 @@ const n8nGeneratorAgentCard = computed<AgentCard | null>(() => {
     providerToneValue = n8nFallbackUsed.value ? "fallback" : n8nUsedAi.value ? "ai" : "deterministic";
     statusLabel = n8nFallbackUsed.value ? "Fallback used" : n8nUsedAi.value ? "AI draft ready" : "Draft ready";
     statusReason = n8nFallbackUsed.value
-      ? "AI unavailable, rules completed the draft generation step."
+      ? "OpenAI failed; Groq generated and validated the draft."
       : "Validated n8n JSON draft is ready for review.";
   }
 
@@ -626,6 +635,14 @@ const activeAgentDebug = computed<AgentDebugInfo | null>(() => {
   return job.value?.agent_debug?.[id as keyof NonNullable<CompileJob["agent_debug"]>] ?? null;
 });
 
+const activeProviderAttempts = computed<AgentProviderDebugAttempt[]>(() => {
+  if (activeAgentDetailsId.value === "n8n_generator") {
+    return n8nProviderAttempts.value;
+  }
+
+  return activeAgentDebug.value?.provider_attempts ?? [];
+});
+
 const activeAgentOutcome = computed(() => {
   const id = activeAgentDetailsId.value;
 
@@ -657,6 +674,7 @@ const activeAgentOutcome = computed(() => {
       provider: n8nProvider.value,
       used_ai: n8nUsedAi.value,
       fallback_used: n8nFallbackUsed.value,
+      provider_attempts: n8nProviderAttempts.value,
       error: n8nGenerateError.value,
       warnings: n8nWarnings.value,
       workflow: n8nWorkflowDraft.value,
@@ -697,6 +715,7 @@ function compactText(value: unknown, maxLength = 220) {
 
 function providerDisplayName(provider?: string) {
   if (!provider) return "Provider";
+  if (provider === "openai") return "OpenAI";
   if (provider === "groq") return "Groq";
   if (provider === "gemini") return "Gemini";
   if (provider === "deterministic") return "Deterministic";
@@ -919,14 +938,24 @@ function cardStatusText(status: AgentCard["status"]) {
 
 function allProviderAttempts() {
   const debug = job.value?.agent_debug;
-  if (!debug) return [];
+  const compileAttempts = debug
+    ? Object.entries(debug).flatMap(([agentId, agentDebug]) =>
+        (agentDebug?.provider_attempts ?? []).map((attempt) => ({
+          agentId,
+          ...attempt,
+        })),
+      )
+    : [];
 
-  return Object.entries(debug).flatMap(([agentId, agentDebug]) =>
-    (agentDebug?.provider_attempts ?? []).map((attempt) => ({
-      agentId,
-      ...attempt,
-    })),
-  );
+  const generatorAttempts = n8nProviderAttempts.value.map((attempt) => ({
+    agentId: "n8n_generator",
+    ...attempt,
+  }));
+
+  return [
+    ...compileAttempts,
+    ...generatorAttempts,
+  ];
 }
 
 const agentExecutionSummary = computed(() => {
@@ -1027,13 +1056,13 @@ const observabilityCards = computed<ObservabilityCard[]>(() => {
 
 const knownFactItems = computed<DetailItem[]>(() => {
   const items: DetailItem[] = [];
-  const facts = clarificationSession.value?.known_facts;
+  const facts = clarificationSession.value?.intent;
 
-  if (facts?.workflow_goal) addFact(items, "Goal", facts.workflow_goal);
+  if (facts?.goal) addFact(items, "Goal", facts.goal);
   if (facts?.task_type) addFact(items, "Task", facts.task_type);
   if (facts?.trigger) addFact(items, "Trigger", facts.trigger);
-  if (facts?.data_source) addFact(items, "Source", facts.data_source);
-  if (facts?.desired_output) addFact(items, "Output", facts.desired_output);
+  if (facts?.input_sources.length) addFact(items, "Source", facts.input_sources.join("; "));
+  if (facts?.desired_outputs.length) addFact(items, "Output", facts.desired_outputs.join("; "));
   if (facts?.human_owner) addFact(items, "Owner", facts.human_owner);
   if (facts?.approval_boundary) addFact(items, "Gate", facts.approval_boundary);
   if (facts?.external_action_boundary) addFact(items, "Boundary", facts.external_action_boundary);
@@ -1505,6 +1534,49 @@ const n8nGeneratorMeta = computed(() => {
   ].join(" · ");
 });
 
+const executionJourney = computed(() => buildExecutionJourney({
+  job: job.value,
+  ...(clarificationLastResponse.value && clarificationOriginalInput.value
+    ? {
+        guided_clarification: {
+          original_input: clarificationOriginalInput.value,
+          answers: clarificationAnswers.value,
+          provider: clarificationLastResponse.value.provider,
+          used_ai: clarificationLastResponse.value.used_ai,
+          fallback_used: clarificationLastResponse.value.fallback_used,
+          ready_to_compile: clarificationLastResponse.value.session.ready_to_compile,
+          reason: clarificationLastResponse.value.session.reason,
+          rewritten_compile_prompt: clarificationLastResponse.value.session.rewritten_compile_prompt,
+          raw: clarificationLastResponse.value,
+        },
+      }
+    : {}),
+  n8n: {
+    state: n8nGeneratorState.value,
+    workflow: n8nWorkflowDraft.value,
+    provider: n8nProvider.value,
+    used_ai: n8nUsedAi.value,
+    fallback_used: n8nFallbackUsed.value,
+    provider_attempts: n8nProviderAttempts.value,
+    generation_trace: n8nGenerationTrace.value,
+    warnings: n8nWarnings.value,
+    error: n8nGenerateError.value,
+  },
+}));
+
+function journeyStatusLabel(status: string) {
+  if (status === "fallback") return "Fallback used";
+  return status.replaceAll("_", " ");
+}
+
+function journeyMethodLabel(method: string) {
+  if (method === "openai") return "OpenAI";
+  if (method === "groq") return "Groq";
+  if (method === "gemini") return "Gemini";
+  if (method === "safety") return "Safety rules";
+  return method.replaceAll("_", " ");
+}
+
 const n8nJsonFileName = computed(() => {
   const source = job.value?.result?.workflow_name || "flowforge-n8n-draft";
   const safeName = source
@@ -1524,6 +1596,7 @@ function resetN8nGeneratorState() {
   n8nProvider.value = "";
   n8nUsedAi.value = false;
   n8nFallbackUsed.value = false;
+  n8nGenerationTrace.value = null;
   n8nJsonCopied.value = false;
 }
 
@@ -1564,6 +1637,90 @@ function detailFromErrorData(data: unknown) {
   if (typeof nestedData?.detail === "string" && nestedData.detail.trim()) return nestedData.detail;
 
   return "";
+}
+
+function providerAttemptsFromValue(value: unknown): N8nGeneratorProviderAttempt[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    const attempt = asRecord(item);
+    const provider = attempt?.provider;
+
+    if (provider !== "openai" && provider !== "groq") return [];
+
+    const validationIssues = Array.isArray(attempt?.validation_issues)
+      ? attempt.validation_issues.flatMap((item) => {
+          const issue = asRecord(item);
+
+          return typeof issue?.path === "string"
+            && typeof issue?.message === "string"
+            && typeof issue?.code === "string"
+            ? [{
+                path: issue.path,
+                message: issue.message,
+                code: issue.code,
+              }]
+            : [];
+        })
+      : [];
+
+    return [{
+      provider,
+      attempted: attempt?.attempted === true,
+      success: attempt?.success === true,
+      ...(typeof attempt?.error_summary === "string"
+        ? { error_summary: attempt.error_summary }
+        : {}),
+      ...(validationIssues.length > 0
+        ? { validation_issues: validationIssues }
+        : {}),
+      ...(typeof attempt?.raw_response_preview === "string"
+        ? { raw_response_preview: attempt.raw_response_preview }
+        : {}),
+      ...(asRecord(attempt?.processing_trace)
+        ? { processing_trace: attempt?.processing_trace as N8nGeneratorProviderAttempt["processing_trace"] }
+        : {}),
+    }];
+  });
+}
+
+function n8nFailureDetails(error: unknown) {
+  const record = asRecord(error);
+  const errorData = asRecord(record?.data);
+  const responseData = asRecord(asRecord(record?.response)?._data);
+  const candidates = [
+    asRecord(responseData?.data),
+    responseData,
+    asRecord(errorData?.data),
+    errorData,
+  ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
+  const payload = candidates.find((candidate) =>
+    Array.isArray(candidate.provider_attempts),
+  );
+  const attempts = providerAttemptsFromValue(payload?.provider_attempts);
+  const warnings = Array.isArray(payload?.warnings)
+    ? payload.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
+
+  return {
+    attempts,
+    provider: typeof payload?.provider === "string" ? payload.provider : "",
+    usedAi: payload?.used_ai === true,
+    fallbackUsed: payload?.fallback_used === true,
+    warnings,
+  };
+}
+
+function n8nProviderAttemptsErrorMessage(attempts: N8nGeneratorProviderAttempt[]) {
+  const details = attempts
+    .filter((attempt) => !attempt.success)
+    .map((attempt) =>
+      `${providerDisplayName(attempt.provider)}: ${attempt.error_summary || (attempt.attempted ? "failed" : "not configured")}`,
+    );
+
+  return details.length > 0
+    ? `n8n generation failed. ${details.join(" | ")}`
+    : "";
 }
 
 function apiErrorMessage(error: unknown, fallback: string) {
@@ -1642,9 +1799,14 @@ function apiErrorMessage(error: unknown, fallback: string) {
 async function generateN8nWorkflowDraft() {
   if (!job.value || !canGenerateN8nJson.value) return;
 
-  activePanel.value = "agents";
   n8nGeneratorState.value = "generating";
   n8nGenerateError.value = "";
+  n8nWarnings.value = [];
+  n8nProvider.value = "";
+  n8nUsedAi.value = false;
+  n8nFallbackUsed.value = false;
+  n8nProviderAttempts.value = [];
+  n8nGenerationTrace.value = null;
   n8nJsonCopied.value = false;
 
   try {
@@ -1661,11 +1823,21 @@ async function generateN8nWorkflowDraft() {
     n8nProvider.value = response.provider;
     n8nUsedAi.value = response.used_ai;
     n8nFallbackUsed.value = response.fallback_used;
+    n8nProviderAttempts.value = response.provider_attempts ?? [];
+    n8nGenerationTrace.value = response.generation_trace ?? null;
     n8nGeneratorState.value = "ready";
   } catch (error) {
+    const failure = n8nFailureDetails(error);
+
     n8nWorkflowDraft.value = null;
-    n8nWarnings.value = [];
-    n8nGenerateError.value = apiErrorMessage(error, "Could not generate n8n JSON draft.");
+    n8nWarnings.value = failure.warnings;
+    n8nProvider.value = failure.provider === "none" ? "" : failure.provider;
+    n8nUsedAi.value = failure.usedAi;
+    n8nFallbackUsed.value = failure.fallbackUsed;
+    n8nProviderAttempts.value = failure.attempts;
+    n8nGenerationTrace.value = null;
+    n8nGenerateError.value = n8nProviderAttemptsErrorMessage(failure.attempts)
+      || apiErrorMessage(error, "Could not generate n8n JSON draft.");
     n8nGeneratorState.value = "failed";
   }
 }
@@ -2039,7 +2211,6 @@ async function compileWithFallback(input: string) {
 
 async function compilePrompt(input: string) {
   runState.value = "compiling";
-  activePanel.value = "agents";
   errorMessage.value = "";
   resetCompileProgressState();
 
@@ -2413,6 +2584,11 @@ function isPrimaryDisabled() {
       </section>
 
       <aside class="side-panel">
+        <ExecutionJourneyModal
+          :steps="executionJourney"
+          :job="job"
+        />
+
         <nav class="panel-tabs">
           <button
             type="button"
@@ -2434,13 +2610,6 @@ function isPrimaryDisabled() {
             @click="activePanel = 'details'"
           >
             Details
-          </button>
-          <button
-            type="button"
-            :class="{ active: activePanel === 'trace' }"
-            @click="activePanel = 'trace'"
-          >
-            Trace
           </button>
         </nav>
 
@@ -2569,31 +2738,6 @@ function isPrimaryDisabled() {
               </div>
             </template>
           </section>
-
-          <section v-else class="side-section">
-            <div class="side-title">
-              <h2>Trace</h2>
-              <span>{{ job?.agent_trace?.length || 0 }}</span>
-            </div>
-
-            <div v-if="job?.agent_trace?.length" class="trace-list">
-              <article v-for="(event, index) in job.agent_trace" :key="index" class="trace-item">
-                <div class="trace-head">
-                  <strong>{{ event.action || event.tool_name || `Trace ${index + 1}` }}</strong>
-                  <span :class="`trace-status trace-${event.status || 'completed'}`">{{ event.status || "completed" }}</span>
-                </div>
-                <p>{{ compactText(event.output_summary || event.input_summary || event.reason || "Completed", 260) }}</p>
-                <details v-if="event.reason || event.metadata" class="trace-details">
-                  <summary>Why / metadata</summary>
-                  <pre>{{ formatDebugValue({ reason: event.reason, metadata: event.metadata }) }}</pre>
-                </details>
-              </article>
-            </div>
-
-            <p v-else class="muted">
-              Agent and compiler trace appears here after compile.
-            </p>
-          </section>
         </div>
       </aside>
     </section>
@@ -2716,10 +2860,10 @@ The current endpoint returns the agent outcome and raw provider response when av
 
           <article class="modal-section full">
             <h3>Provider attempts</h3>
-            <template v-if="activeAgentDebug?.provider_attempts?.length">
+            <template v-if="activeProviderAttempts.length">
               <div class="provider-attempts">
                 <article
-                  v-for="attempt in activeAgentDebug.provider_attempts"
+                  v-for="attempt in activeProviderAttempts"
                   :key="attempt.provider"
                   class="provider-attempt"
                   :class="{ success: attempt.success }"
@@ -5104,13 +5248,344 @@ The current endpoint returns the agent outcome and raw provider response when av
   padding: 10px;
 }
 
+.journey-intro {
+  margin: -3px 0 14px;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.journey-list {
+  display: grid;
+  gap: 16px;
+}
+
+.journey-card {
+  position: relative;
+  padding: 13px;
+  border: 1px solid rgba(145, 166, 255, 0.15);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.032);
+  overflow-wrap: anywhere;
+}
+
+.journey-card:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 25px;
+  top: calc(100% + 1px);
+  width: 1px;
+  height: 16px;
+  background: linear-gradient(rgba(102, 227, 255, 0.52), rgba(125, 140, 255, 0.18));
+}
+
+.journey-card.journey-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+}
+
+.journey-card.journey-skipped {
+  border-color: rgba(255, 209, 102, 0.23);
+}
+
+.journey-card.journey-repaired,
+.journey-card.journey-fallback {
+  border-color: rgba(255, 176, 86, 0.3);
+}
+
+.journey-card.journey-validated {
+  border-color: rgba(67, 224, 166, 0.25);
+}
+
+.journey-head {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.journey-number {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(102, 227, 255, 0.36);
+  border-radius: 50%;
+  color: #9decff;
+  background: rgba(102, 227, 255, 0.08);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.journey-identity h3 {
+  margin: 1px 0 7px;
+  color: #eef3ff;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.journey-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.journey-badge {
+  padding: 3px 7px;
+  border: 1px solid rgba(145, 166, 255, 0.18);
+  border-radius: 999px;
+  color: #b8c5f1;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.journey-badge.status-completed,
+.journey-badge.status-validated {
+  border-color: rgba(67, 224, 166, 0.26);
+  color: #78ecc1;
+}
+
+.journey-badge.status-skipped {
+  border-color: rgba(255, 209, 102, 0.27);
+  color: #ffd166;
+}
+
+.journey-badge.status-failed {
+  border-color: rgba(255, 107, 107, 0.3);
+  color: #ff9a9a;
+}
+
+.journey-badge.status-fallback,
+.journey-badge.status-repaired {
+  border-color: rgba(255, 176, 86, 0.32);
+  color: #ffc277;
+}
+
+.journey-badge.method {
+  color: #9decff;
+}
+
+.journey-purpose {
+  margin: 12px 0 0;
+  color: #cbd6ff;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.journey-functions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.journey-functions > span {
+  flex-basis: 100%;
+  color: #7d8cff;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.journey-functions code,
+.journey-field code {
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #aeeeff;
+  background: rgba(102, 227, 255, 0.07);
+  font-size: 10px;
+  white-space: normal;
+}
+
+.journey-block {
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(145, 166, 255, 0.1);
+}
+
+.journey-block h4,
+.journey-limitations h4 {
+  margin: 0 0 8px;
+  color: #8998ce;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.journey-block ul,
+.journey-limitations ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 17px;
+  color: #b8c5e9;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.journey-values {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.journey-values > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.journey-values dt {
+  color: #7d8cff;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.journey-values dd {
+  margin: 0;
+  color: #dce5ff;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.journey-field {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(125, 140, 255, 0.045);
+}
+
+.journey-field + .journey-field {
+  margin-top: 6px;
+}
+
+.journey-field p,
+.journey-field span,
+.journey-next p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.journey-field p {
+  color: #c4cfef;
+}
+
+.journey-field span {
+  color: #7d8cff;
+}
+
+.journey-next {
+  display: grid;
+  gap: 4px;
+  margin-top: 13px;
+  padding: 10px;
+  border: 1px solid rgba(102, 227, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(102, 227, 255, 0.045);
+}
+
+.journey-next span {
+  color: #66e3ff;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.journey-next strong {
+  color: #e7faff;
+  font-size: 12px;
+}
+
+.journey-next p {
+  color: #9ba9d8;
+}
+
+.journey-limitations {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.journey-limitations ul {
+  color: #8996bf;
+  font-size: 10px;
+}
+
+.journey-raw,
+.journey-technical-trace {
+  margin-top: 11px;
+  border-top: 1px solid rgba(145, 166, 255, 0.1);
+}
+
+.journey-raw summary,
+.journey-technical-trace > summary {
+  padding-top: 10px;
+  color: #9decff;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.journey-raw > div {
+  margin-top: 10px;
+}
+
+.journey-raw strong {
+  color: #7d8cff;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.journey-raw pre {
+  max-height: 260px;
+  margin: 6px 0 0;
+  padding: 9px;
+  overflow: auto;
+  border-radius: 10px;
+  color: #dbe4ff;
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.journey-technical-trace {
+  margin-top: 16px;
+}
+
+.journey-technical-trace .trace-list {
+  margin-top: 10px;
+}
+
 @media (max-width: 1100px) {
   .console-grid {
     grid-template-columns: 120px minmax(0, 1fr);
   }
 
   .side-panel {
-    display: none;
+    grid-column: 1 / -1;
+    position: static;
+    display: block;
+    height: auto;
+    min-height: 0;
+  }
+
+  .panel-scroll {
+    height: auto;
+    max-height: none;
   }
 }
 
@@ -5228,5 +5703,70 @@ The current endpoint returns the agent outcome and raw provider response when av
     width: 100%;
   }
 
+}
+.side-panel {
+  position: sticky;
+  top: 58px;
+  align-self: start;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: calc(100vh - 116px);
+  max-height: calc(100vh - 116px);
+  overflow: hidden;
+  border-radius: 22px;
+}
+
+.panel-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(145, 166, 255, 0.12);
+}
+
+.panel-tabs button {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.panel-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-bottom: 112px;
+}
+
+.panel-scroll .side-section {
+  min-width: 0;
+  padding-bottom: 24px;
+}
+
+.panel-scroll > .side-section > :last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 1180px) {
+  .side-panel {
+    position: static;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .panel-scroll {
+    max-height: none;
+    overflow: visible;
+    padding-bottom: 28px;
+  }
 }
 </style>
