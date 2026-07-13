@@ -23,6 +23,7 @@ FlowForge is intentionally conservative. The useful output is not "automation ha
 
 FlowForge currently includes:
 
+- automation idea discovery from real-world workflow pain points using Tavily and one creative AI generation step
 - guided clarification for vague requests
 - one canonical `StructuredWorkflowIntent` shared by clarification, readiness, scanning, and blueprint design
 - concrete-fact clarification readiness that rejects placeholder/default values
@@ -93,6 +94,21 @@ FlowForge does **not**:
 - provide auth or user accounts
 
 Everything is a safe, non-executing preview.
+
+## Automation Discovery
+
+The compiler now offers two starting paths: users can describe a workflow directly or choose a business category and ask FlowForge to suggest one. Discovery searches Tavily for up to five concrete operational pain signals, gives the useful results to one OpenAI model call, and validates the single returned suggestion without constructing a fallback blueprint.
+
+`Use this idea` sends the suggestion's natural-language `workflowIntent` into the existing `compilePrompt` client path. It therefore uses the same `/api/compile-stream` endpoint and `/api/compile` fallback as manual input; discovery does not contain a second compiler or blueprint generator.
+
+Server-side environment variables:
+
+- `TAVILY_API_KEY` — required for pain-point search
+- `OPENAI_API_KEY` — required for idea generation
+- `OPENAI_DISCOVERY_MODEL` — optional; falls back to `OPENAI_AGENT_MODEL`, then the provider default
+- `OPENAI_DISCOVERY_MAX_OUTPUT_TOKENS` — optional discovery response budget
+
+For local development, configure these in `.env`. On Netlify, configure them in Site settings → Environment variables. Never prefix them with `NUXT_PUBLIC_`; neither credential is sent to browser code.
 
 ## Main User Flow
 

@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { ChevronRight, X } from "lucide-vue-next";
+import {
+  createAutomationDiscoveryRequester,
+  sendSuggestionToCompiler,
+} from "~~/shared/automationDiscoveryClient";
 import { buildExecutionJourney } from "~~/shared/executionJourney";
 import ExecutionJourneyModal from "../../components/execution-journey/ExecutionJourneyModal.vue";
+import {
+  discoveryCategoryLabel,
+  discoveryCategoryOptions,
+  type AutomationSuggestion,
+  type DiscoveryCategory,
+} from "~~/shared/types/discovery";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
 import type { AgentDebugInfo, AgentProviderDebugAttempt } from "../../shared/types/agentOutputs";
 import type {
@@ -19,6 +29,8 @@ import type {
 type PanelView = "context" | "agents" | "details";
 type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
 type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
+type EntryPath = "describe" | "discover";
+type DiscoveryPhase = "searching" | "creating";
 
 type FlowStepLike = {
   id?: string;
@@ -150,6 +162,12 @@ const compileStepDefinitions: CompileStepDefinition[] = [
 ];
 
 const processInput = ref("");
+const entryPath = ref<EntryPath>("describe");
+const discoveryCategory = ref<DiscoveryCategory>("surprise");
+const discoverySuggestion = ref<AutomationSuggestion | null>(null);
+const discoveryLoading = ref(false);
+const discoveryPhase = ref<DiscoveryPhase>("searching");
+const discoveryError = ref("");
 const mode = ref<CompileMode>("full");
 const job = ref<CompileJob | null>(null);
 const clarificationSession = ref<ClarificationSession | null>(null);
@@ -181,6 +199,21 @@ const n8nGenerationTrace = ref<N8nGenerationTrace | null>(null);
 const n8nJsonCopied = ref(false);
 const compileProgressEvents = ref<CompileProgressEvent[]>([]);
 const compileAgentStateMap = ref<Record<string, AgentUiCard>>({});
+
+const discoveryRequester = createAutomationDiscoveryRequester(
+  (category) => $fetch<AutomationSuggestion>("/api/suggest-automation", {
+    method: "POST",
+    body: { category },
+  }),
+);
+
+let discoveryPhaseTimer: ReturnType<typeof setTimeout> | undefined;
+
+const discoveryFitLabels: Record<AutomationSuggestion["fitType"], string> = {
+  automation_only: "Automation",
+  agent_only: "AI assistant",
+  agentic_workflow: "Agentic workflow",
+};
 
 const examples = [
   {
@@ -1896,6 +1929,70 @@ const canContinueClarification = computed(() => {
   return Boolean(currentQuestion.value && clarificationAnswerDraft.value.trim().length > 0 && !isBusy.value);
 });
 
+const discoveryLoadingText = computed(() =>
+  discoveryPhase.value === "searching"
+    ? "Finding real workflow pain points…"
+    : "Creating an automation opportunity…",
+);
+
+function selectEntryPath(path: EntryPath) {
+  if (discoveryLoading.value) return;
+  entryPath.value = path;
+  discoveryError.value = "";
+}
+
+function discoveryErrorMessage(error: unknown): string {
+  const candidate = error as {
+    data?: { statusMessage?: unknown; message?: unknown };
+    statusMessage?: unknown;
+  };
+  const message = candidate?.data?.statusMessage
+    ?? candidate?.data?.message
+    ?? candidate?.statusMessage;
+
+  return typeof message === "string" && message.trim()
+    ? message
+    : "Could not suggest an automation. Please try again.";
+}
+
+async function requestAutomationSuggestion() {
+  if (discoveryLoading.value || discoveryRequester.isBusy) return;
+
+  discoveryLoading.value = true;
+  discoveryPhase.value = "searching";
+  discoveryError.value = "";
+  discoverySuggestion.value = null;
+  discoveryPhaseTimer = setTimeout(() => {
+    discoveryPhase.value = "creating";
+  }, 1400);
+
+  try {
+    const suggestion = await discoveryRequester.request(discoveryCategory.value);
+    if (suggestion) discoverySuggestion.value = suggestion;
+  } catch (error) {
+    discoveryError.value = discoveryErrorMessage(error);
+  } finally {
+    if (discoveryPhaseTimer) clearTimeout(discoveryPhaseTimer);
+    discoveryPhaseTimer = undefined;
+    discoveryLoading.value = false;
+  }
+}
+
+async function useDiscoveredIdea() {
+  if (!discoverySuggestion.value || discoveryLoading.value || isBusy.value) return;
+
+  const suggestion = discoverySuggestion.value;
+  processInput.value = suggestion.workflowIntent;
+  selectedExampleLabel.value = null;
+  entryPath.value = "describe";
+  resetRun();
+  await sendSuggestionToCompiler(suggestion, compilePrompt);
+}
+
+onUnmounted(() => {
+  if (discoveryPhaseTimer) clearTimeout(discoveryPhaseTimer);
+});
+
 function chooseExample(example: { label: string; value: string }) {
   processInput.value = example.value;
   selectedExampleLabel.value = example.label;
@@ -2381,34 +2478,161 @@ function isPrimaryDisabled() {
 
         <div v-else-if="!job && !hasClarification" class="input-stage">
           <div class="input-header">
-            <p class="eyebrow">Automation request</p>
-            <h1>What do you want FlowForge to plan?</h1>
+            <p class="eyebrow">Start a workflow</p>
+            <h1>How would you like to begin?</h1>
           </div>
 
-          <textarea
-            v-model="processInput"
-            class="process-input"
-            placeholder="Example: Automate support email triage, draft replies, tag urgency, and create internal tasks for review."
-            rows="7"
-            @input="errorMessage = ''"
-          />
-
-          <div class="example-row">
+          <div class="entry-paths" aria-label="Choose how to begin">
             <button
-              v-for="example in examples"
-              :key="example.label"
               type="button"
-              class="example-chip"
-              :class="{ selected: selectedExampleLabel === example.label }"
-              @click="chooseExample(example)"
+              class="entry-path"
+              :class="{ selected: entryPath === 'describe' }"
+              :disabled="discoveryLoading"
+              @click="selectEntryPath('describe')"
             >
-              {{ example.label }}
+              <strong>Describe my workflow</strong>
+              <span>Enter an idea you already have.</span>
+            </button>
+            <button
+              type="button"
+              class="entry-path"
+              :class="{ selected: entryPath === 'discover' }"
+              :disabled="discoveryLoading"
+              @click="selectEntryPath('discover')"
+            >
+              <strong>Suggest an automation</strong>
+              <span>Discover an idea from real workflow pain points.</span>
             </button>
           </div>
 
-          <p class="input-note">
-            FlowForge will clarify vague requests first. Clear requests compile into a safe, non-executing workflow preview.
-          </p>
+          <template v-if="entryPath === 'describe'">
+            <textarea
+              v-model="processInput"
+              class="process-input"
+              placeholder="Example: Automate support email triage, draft replies, tag urgency, and create internal tasks for review."
+              rows="7"
+              @input="errorMessage = ''"
+            />
+
+            <div class="example-row">
+              <button
+                v-for="example in examples"
+                :key="example.label"
+                type="button"
+                class="example-chip"
+                :class="{ selected: selectedExampleLabel === example.label }"
+                @click="chooseExample(example)"
+              >
+                {{ example.label }}
+              </button>
+            </div>
+
+            <p class="input-note">
+              FlowForge will clarify vague requests first. Clear requests compile into a safe, non-executing workflow preview.
+            </p>
+          </template>
+
+          <section v-else class="discovery-panel" aria-label="Automation discovery">
+            <div class="discovery-controls">
+              <label for="discovery-category">
+                Business category
+                <select
+                  id="discovery-category"
+                  v-model="discoveryCategory"
+                  :disabled="discoveryLoading"
+                >
+                  <option
+                    v-for="option in discoveryCategoryOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </label>
+
+              <button
+                type="button"
+                class="discovery-request"
+                :disabled="discoveryLoading"
+                @click="requestAutomationSuggestion"
+              >
+                {{ discoverySuggestion ? "Try another" : "Find an idea" }}
+              </button>
+            </div>
+
+            <div v-if="discoveryLoading" class="discovery-loading" aria-live="polite">
+              <span class="mini-loader" />
+              <div>
+                <strong>{{ discoveryLoadingText }}</strong>
+                <p>FlowForge is looking for a useful signal, then shaping one practical idea.</p>
+              </div>
+            </div>
+
+            <p v-else-if="discoveryError" class="discovery-error" role="alert">
+              {{ discoveryError }}
+            </p>
+
+            <article v-else-if="discoverySuggestion" class="suggestion-card">
+              <div class="suggestion-heading">
+                <div>
+                  <p class="eyebrow">Suggested opportunity</p>
+                  <h2>{{ discoverySuggestion.title }}</h2>
+                </div>
+                <span class="suggestion-fit">{{ discoveryFitLabels[discoverySuggestion.fitType] }}</span>
+              </div>
+
+              <div class="suggestion-meta">
+                <span>{{ discoveryCategoryLabel(discoverySuggestion.category) }}</span>
+                <span>Value: {{ discoverySuggestion.valueLevel }}</span>
+                <span>Difficulty: {{ discoverySuggestion.difficulty }}</span>
+                <span>{{ Math.round(discoverySuggestion.confidence * 100) }}% confidence</span>
+              </div>
+
+              <div class="suggestion-details">
+                <div><span>Pain point</span><p>{{ discoverySuggestion.painPoint }}</p></div>
+                <div><span>For</span><p>{{ discoverySuggestion.targetUser }}</p></div>
+                <div><span>Why it matters</span><p>{{ discoverySuggestion.whyItMatters }}</p></div>
+              </div>
+
+              <div class="suggestion-intent">
+                <span>Workflow use case</span>
+                <p>{{ discoverySuggestion.workflowIntent }}</p>
+              </div>
+
+              <ol class="suggestion-steps">
+                <li v-for="step in discoverySuggestion.suggestedSteps" :key="step">{{ step }}</li>
+              </ol>
+
+              <div class="suggestion-actions">
+                <button type="button" class="suggestion-use" @click="useDiscoveredIdea">
+                  Use this idea
+                </button>
+                <button
+                  type="button"
+                  class="suggestion-secondary"
+                  :disabled="discoveryLoading"
+                  @click="requestAutomationSuggestion"
+                >
+                  Try another
+                </button>
+                <a
+                  v-if="discoverySuggestion.source"
+                  class="suggestion-secondary"
+                  :href="discoverySuggestion.source.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  View source
+                </a>
+              </div>
+            </article>
+
+            <div v-else class="discovery-empty">
+              <strong>Find one practical idea</strong>
+              <p>Search signals guide the model, but it can combine and reinterpret them into a stronger workflow opportunity.</p>
+            </div>
+          </section>
         </div>
 
         <div v-else-if="hasClarification && currentQuestion" class="clarify-stage">
@@ -2893,7 +3117,7 @@ The current endpoint returns the agent outcome and raw provider response when av
         <button v-if="job || hasClarification" type="button" class="ghost-button" @click="backToInput">
           Edit input
         </button>
-        <button v-if="!job && !hasClarification" type="button" class="ghost-button" :disabled="!hasInput || isBusy" @click="startGuidedCompile">
+        <button v-if="!job && !hasClarification && entryPath === 'describe'" type="button" class="ghost-button" :disabled="!hasInput || isBusy" @click="startGuidedCompile">
           Clarify first
         </button>
       </div>
@@ -2904,10 +3128,12 @@ The current endpoint returns the agent outcome and raw provider response when av
         <span v-else-if="errorMessage">{{ errorMessage }}</span>
         <span v-else-if="hasClarification">Answer the current question. Previous answers stay in Context.</span>
         <span v-else-if="job">Blueprint is ready. Details are optional.</span>
+        <span v-else-if="entryPath === 'discover'">Choose a category, discover an idea, then send it to the same compiler.</span>
         <span v-else>Start guided compile or use a preset.</span>
       </div>
 
       <button
+        v-if="job || hasClarification || entryPath === 'describe'"
         type="button"
         class="primary-action"
         :disabled="isPrimaryDisabled()"
@@ -3479,6 +3705,224 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .recent-event.state-failed .recent-event-dot {
   background: #ff6b6b;
+}
+
+.entry-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.entry-path {
+  display: grid;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px solid rgba(145, 166, 255, 0.18);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #eef3ff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.entry-path strong {
+  font-size: 14px;
+}
+
+.entry-path span {
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.entry-path:hover:not(:disabled),
+.entry-path.selected {
+  border-color: rgba(102, 227, 255, 0.5);
+  background: rgba(102, 227, 255, 0.08);
+}
+
+.entry-path:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.discovery-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.discovery-controls {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.discovery-controls label {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 7px;
+  color: #aebbe6;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.discovery-controls select {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(145, 166, 255, 0.22);
+  border-radius: 13px;
+  background: #0b1120;
+  color: #eef3ff;
+  font: inherit;
+  text-transform: none;
+}
+
+.discovery-request,
+.suggestion-use,
+.suggestion-secondary {
+  min-height: 44px;
+  padding: 0 15px;
+  border: 1px solid rgba(102, 227, 255, 0.35);
+  border-radius: 13px;
+  background: rgba(102, 227, 255, 0.1);
+  color: #bcefff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.discovery-request:disabled,
+.suggestion-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.discovery-loading,
+.discovery-empty,
+.discovery-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgba(145, 166, 255, 0.15);
+  border-radius: 18px;
+  background: rgba(5, 9, 18, 0.55);
+}
+
+.discovery-loading p,
+.discovery-empty p {
+  margin: 5px 0 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.discovery-error {
+  border-color: rgba(255, 107, 107, 0.28);
+  color: #ffb3b3;
+}
+
+.suggestion-card {
+  display: grid;
+  gap: 15px;
+  padding: 18px;
+  border: 1px solid rgba(102, 227, 255, 0.24);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(102, 227, 255, 0.1), transparent 22rem),
+    rgba(5, 9, 18, 0.66);
+}
+
+.suggestion-heading,
+.suggestion-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.suggestion-heading h2 {
+  margin: 4px 0 0;
+  font-size: clamp(20px, 3vw, 28px);
+}
+
+.suggestion-fit,
+.suggestion-meta span {
+  padding: 6px 9px;
+  border: 1px solid rgba(102, 227, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(102, 227, 255, 0.06);
+  color: #aeeeff;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.suggestion-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.suggestion-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.suggestion-details > div,
+.suggestion-intent {
+  padding: 12px;
+  border: 1px solid rgba(145, 166, 255, 0.13);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.suggestion-details span,
+.suggestion-intent span {
+  color: #7d8cff;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.suggestion-details p,
+.suggestion-intent p {
+  margin: 7px 0 0;
+  color: #cbd6ff;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.suggestion-steps {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 22px;
+  color: #cbd6ff;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.suggestion-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.suggestion-use {
+  border-color: rgba(67, 224, 166, 0.48);
+  background: rgba(67, 224, 166, 0.14);
+  color: #9af5d3;
+}
+
+a.suggestion-secondary {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  text-decoration: none;
 }
 
 .process-input,
@@ -5611,6 +6055,21 @@ The current endpoint returns the agent outcome and raw provider response when av
 
   .workspace-panel {
     padding: 14px;
+  }
+
+  .entry-paths,
+  .suggestion-details {
+    grid-template-columns: 1fr;
+  }
+
+  .discovery-controls,
+  .suggestion-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .discovery-request {
+    width: 100%;
   }
 
   .orchestration-head {

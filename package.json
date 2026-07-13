@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nuxt build",
+    "test": "node --import jiti/register tests/discovery.test.ts",
     "typecheck": "nuxt typecheck",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
