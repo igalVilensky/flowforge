@@ -2115,12 +2115,26 @@ function isPrimaryDisabled() {
       </div>
 
       <div class="topbar-status">
-        <span class="status-pill" :class="`tone-${mainStatusTone}`">
-          <span class="pulse-dot" />
-          {{ mainStatus }}
-        </span>
+  <NuxtLink
+    to="/automation-studio"
+    class="idea-generator-link"
+  >
+    <span class="idea-generator-icon">✦</span>
 
-        <div class="mode-menu-wrap">
+    <span class="idea-generator-copy">
+      <strong>Need an idea?</strong>
+      <small>Open Automation Studio</small>
+    </span>
+
+    <ChevronRight :size="16" />
+  </NuxtLink>
+
+  <span class="status-pill" :class="`tone-${mainStatusTone}`">
+    <span class="pulse-dot" />
+    {{ mainStatus }}
+  </span>
+
+  <div class="mode-menu-wrap">
           <button
             type="button"
             class="mode-menu-trigger"
@@ -2884,6 +2898,82 @@ The current endpoint returns the agent outcome and raw provider response when av
 .brand-path {
   font-size: 13px;
   color: #c7d2ff;
+}
+
+.idea-generator-link {
+  display: inline-flex;
+  height: 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 11px;
+  border: 1px solid rgba(125, 140, 255, 0.38);
+  border-radius: 14px;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(125, 140, 255, 0.18),
+      transparent 7rem
+    ),
+    rgba(255, 255, 255, 0.045);
+  color: #eef3ff;
+  text-decoration: none;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.idea-generator-link:hover {
+  border-color: rgba(145, 166, 255, 0.72);
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(125, 140, 255, 0.28),
+      transparent 7rem
+    ),
+    rgba(125, 140, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.idea-generator-icon {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(145, 166, 255, 0.34);
+  border-radius: 9px;
+  background: rgba(125, 140, 255, 0.14);
+  color: #b9c4ff;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.idea-generator-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.idea-generator-copy strong {
+  color: #f3f6ff;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.idea-generator-copy small {
+  color: #9eabd5;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.idea-generator-link > svg {
+  flex: 0 0 auto;
+  color: #8f9cff;
 }
 
 .status-pill {
@@ -5109,6 +5199,19 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 @media (max-width: 1100px) {
+.idea-generator-copy {
+  display: none;
+}
+
+.idea-generator-link {
+  width: 40px;
+  padding: 6px;
+  justify-content: center;
+}
+
+.idea-generator-link > svg {
+  display: none;
+}
   .console-grid {
     grid-template-columns: 120px minmax(0, 1fr);
   }
@@ -5119,6 +5222,19 @@ The current endpoint returns the agent outcome and raw provider response when av
 }
 
 @media (max-width: 760px) {
+.idea-generator-copy {
+  display: none;
+}
+
+.idea-generator-link {
+  width: 40px;
+  padding: 6px;
+  justify-content: center;
+}
+
+.idea-generator-link > svg {
+  display: none;
+}
   .console-shell {
     padding: 56px 10px 112px;
   }
