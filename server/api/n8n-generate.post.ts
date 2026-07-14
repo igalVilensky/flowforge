@@ -4,6 +4,7 @@ import { compileJobSchema } from "../schemas/compileJob.schema";
 import {
   N8nWorkflowGeneratorConfigError,
   N8nWorkflowGeneratorProviderLimitError,
+  N8nWorkflowGeneratorProvidersFailedError,
   N8nWorkflowGeneratorValidationError,
   runN8nWorkflowGeneratorAgent,
 } from "../services/n8nWorkflowGeneratorAgent";
@@ -53,6 +54,15 @@ export default defineEventHandler(async (event): Promise<N8nGenerateResponse> =>
       throw createError({
         statusCode: 503,
         statusMessage: error.message,
+        data: { provider_attempts: error.provider_attempts },
+      });
+    }
+
+    if (error instanceof N8nWorkflowGeneratorProvidersFailedError) {
+      throw createError({
+        statusCode: 502,
+        statusMessage: error.message,
+        data: { provider_attempts: error.provider_attempts },
       });
     }
 

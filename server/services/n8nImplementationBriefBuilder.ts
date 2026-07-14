@@ -352,14 +352,9 @@ function detectBlockedActions(compileJob: CompileJob, input: string): string[] {
     addUnique(blocked, "Do not send external messages.", 160);
   }
 
-  if (compileJob.signals.has_external_action && !explicitNoExternalSend(input)) {
-    addUnique(blocked, "External messages must remain draft-only until human review.", 160);
-  }
-
-  if (compileJob.risks.categories.includes("real_world_execution")) {
-    addUnique(blocked, "Do not execute production actions automatically.", 160);
-  }
-
+  // External execution and real-world risk are advisory by themselves. Only an
+  // explicit user boundary or a compiler/safety-critic blocked classification is
+  // allowed to change the requested action in the implementation brief.
   for (const item of [
     ...(blueprint.not_safe_to_automate ?? []),
     ...(blueprint.not_recommended ?? []),

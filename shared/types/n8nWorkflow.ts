@@ -66,7 +66,22 @@ export type CompactN8nGenerationInput = N8nImplementationBrief & {
 export type N8nGenerateResponse = {
   workflow_json: N8nWorkflow;
   warnings: string[];
-  provider: "groq";
+  provider: "openai" | "groq";
   used_ai: boolean;
   fallback_used: boolean;
+  provider_attempts?: N8nGeneratorProviderAttempt[];
+};
+
+export type N8nGeneratorProviderAttempt = {
+  provider: "openai" | "groq";
+  attempted: boolean;
+  success: boolean;
+  error_summary?: string;
+  validation_issues?: N8nWorkflowValidationIssue[];
+};
+
+export type N8nWorkflowValidationIssue = {
+  path: string;
+  message: string;
+  code: string;
 };

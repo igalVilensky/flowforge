@@ -4,7 +4,9 @@ import type { CompileJob } from "../../shared/types/compileJob";
 import type {
   CompactN8nGenerationInput,
   N8nGenerateResponse,
+  N8nGeneratorProviderAttempt,
   N8nWorkflow,
+  N8nWorkflowValidationIssue,
 } from "../../shared/types/n8nWorkflow";
 import {
   buildN8nWorkflowGeneratorUserPrompt,
@@ -12,24 +14,29 @@ import {
 } from "../prompts/n8nWorkflowGeneratorPrompt";
 import { n8nWorkflowSchema } from "../schemas/n8nWorkflow.schema";
 import { callGroq } from "./groqProvider";
+import { callOpenAIAgent, type OpenAIFetch } from "./openaiProvider";
 import { buildCompactN8nGenerationInput } from "./n8nImplementationBriefBuilder";
 
 export const n8nGeneratorNotConfiguredMessage =
-  "n8n JSON generator is not configured. Add GROQ_N8N_API_KEY to enable this feature.";
+  "n8n JSON generator is not configured. Add OPENAI_API_KEY or GROQ_N8N_API_KEY to enable this feature.";
 
 export const n8nGeneratorProviderLimitMessage =
   "n8n JSON generation request was too large for the configured Groq tier. FlowForge now sends a compact implementation brief, but this request still exceeded the provider limit. Try a shorter workflow or reduce workflow details.";
 
-export type N8nWorkflowValidationIssue = {
-  path: string;
-  message: string;
-  code: string;
+type N8nAiProvider = "openai" | "groq";
+
+export type N8nWorkflowGeneratorDependencies = {
+  calls?: Partial<Record<N8nAiProvider, (prompt: string) => Promise<string>>>;
+  openaiFetch?: OpenAIFetch;
 };
 
 export class N8nWorkflowGeneratorConfigError extends Error {
-  constructor() {
+  provider_attempts: N8nGeneratorProviderAttempt[];
+
+  constructor(providerAttempts: N8nGeneratorProviderAttempt[] = []) {
     super(n8nGeneratorNotConfiguredMessage);
     this.name = "N8nWorkflowGeneratorConfigError";
+    this.provider_attempts = providerAttempts;
   }
 }
 
@@ -47,6 +54,23 @@ export class N8nWorkflowGeneratorProviderLimitError extends Error {
   constructor() {
     super(n8nGeneratorProviderLimitMessage);
     this.name = "N8nWorkflowGeneratorProviderLimitError";
+  }
+}
+
+export class N8nWorkflowGeneratorProvidersFailedError extends Error {
+  provider_attempts: N8nGeneratorProviderAttempt[];
+
+  constructor(providerAttempts: N8nGeneratorProviderAttempt[]) {
+    const details = providerAttempts
+      .filter((attempt) => attempt.attempted)
+      .map((attempt) => `${attempt.provider}: ${attempt.error_summary || "failed"}`)
+      .join(" | ");
+
+    super(details
+      ? `n8n generation failed after provider fallback. ${details}`
+      : "n8n generation failed because no configured provider could be attempted.");
+    this.name = "N8nWorkflowGeneratorProvidersFailedError";
+    this.provider_attempts = providerAttempts;
   }
 }
 
@@ -256,7 +280,7 @@ export function normalizeGeneratedWorkflowName(input: unknown, workflowName: str
 }
 
 export function normalizeGeneratedWorkflowActiveFlag(input: unknown): unknown {
-  if (!isRecord(input) || input.active !== undefined) {
+  if (!isRecord(input)) {
     return input;
   }
 
@@ -458,45 +482,6 @@ export function normalizeGeneratedWorkflowConnections(input: unknown): unknown {
   };
 }
 
-const externalActionTargetMarkers = [
-  "email",
-  "gmail",
-  "http",
-  "reply",
-  "sendgrid",
-  "slack",
-  "webhook",
-  "zendesk",
-];
-
-const externalActionVerbMarkers = [
-  "archive",
-  "charge",
-  "delete",
-  "pay",
-  "payment",
-  "post",
-  "publish",
-  "refund",
-  "reply",
-  "send",
-  "update",
-  "write",
-];
-
-const safePlaceholderNameMarkers = [
-  "approval",
-  "blocked",
-  "draft",
-  "manual",
-  "no-op",
-  "noop",
-  "pending",
-  "placeholder",
-  "review",
-  "sample",
-];
-
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value) ?? String(value ?? "");
@@ -572,85 +557,6 @@ function safeDraftReviewFields(values: Record<string, unknown> = {}): Record<str
     send_status: values.send_status || "not_sent",
     draft_only: values.draft_only ?? true,
     requires_human_approval: values.requires_human_approval ?? true,
-  };
-}
-
-function isLikelyExternalActionPlaceholder(node: Record<string, unknown>): boolean {
-  const nodeName = normalizedNodeName(node);
-  const text = normalizedNodeText(node);
-
-  if (includesAny(nodeName, safePlaceholderNameMarkers)) {
-    return false;
-  }
-
-  if (nodeName.includes("extract") || isClassifyNodeName(nodeName)) {
-    return false;
-  }
-
-  if (nodeName.includes("prepare") && includesAny(nodeName, ["review", "task", "summary"])) {
-    return false;
-  }
-
-  return includesAny(text, externalActionTargetMarkers)
-    && includesAny(text, externalActionVerbMarkers);
-}
-
-function normalizeExternalActionPlaceholderNode(
-  node: Record<string, unknown>,
-): Record<string, unknown> | null {
-  if (
-    node.type !== "n8n-nodes-base.code"
-    && node.type !== "n8n-nodes-base.set"
-  ) {
-    return null;
-  }
-
-  if (!isLikelyExternalActionPlaceholder(node)) {
-    return null;
-  }
-
-  const safetyNote = "Disabled no-op placeholder. Do not send external messages until manual review and approval are complete.";
-
-  if (node.type === "n8n-nodes-base.code") {
-    return {
-      ...node,
-      disabled: true,
-      notes: typeof node.notes === "string" && node.notes.trim()
-        ? `${node.notes} ${safetyNote}`
-        : safetyNote,
-      parameters: {
-        jsCode: [
-          "return items.map((item) => ({",
-          "  json: {",
-          "    ...item.json,",
-          "    review_status: \"pending\",",
-          "    send_status: \"not_sent\",",
-          "    draft_only: true,",
-          "    requires_human_approval: true,",
-          "    safety_note: \"No-op placeholder. Manual approval required before any external message is sent.\"",
-          "  }",
-          "}));",
-        ].join("\n"),
-      },
-    };
-  }
-
-  const parameters = isRecord(node.parameters) ? { ...node.parameters } : {};
-  const values = isRecord(parameters.values) ? { ...parameters.values } : {};
-
-  return {
-    ...node,
-    disabled: true,
-    notes: typeof node.notes === "string" && node.notes.trim()
-      ? `${node.notes} ${safetyNote}`
-      : safetyNote,
-    parameters: {
-      ...parameters,
-      values: safeDraftReviewFields({
-        ...values,
-        safety_note: values.safety_note || "No-op placeholder. Manual approval required before any external message is sent.",
-      }),
-    },
   };
 }
 
@@ -908,6 +814,49 @@ function normalizeSetNodeParameters(node: Record<string, unknown>): Record<strin
   };
 }
 
+function placeholderCredentialToken(credentialType: string): string {
+  const token = credentialType
+    .replace(/([a-z])([A-Z])/g, "$1_$2")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+
+  return `PLACEHOLDER_${token || "N8N"}_CREDENTIAL`;
+}
+
+function normalizeCredentialReferences(node: Record<string, unknown>): Record<string, unknown> {
+  if (node.credentials === null) {
+    const { credentials: _credentials, ...withoutCredentials } = node;
+    return withoutCredentials;
+  }
+
+  if (!isRecord(node.credentials)) {
+    return node;
+  }
+
+  const credentials = Object.fromEntries(
+    Object.entries(node.credentials).map(([credentialType, reference]) => {
+      if (!isRecord(reference)) {
+        return [credentialType, reference];
+      }
+
+      const placeholder = placeholderCredentialToken(credentialType);
+      const id = typeof reference.id === "string" ? reference.id : undefined;
+      const name = typeof reference.name === "string" ? reference.name : undefined;
+      const looksConfigured = [id, name].some((value) => value && !value.includes("PLACEHOLDER_"));
+
+      return [
+        credentialType,
+        looksConfigured
+          ? { ...reference, id: placeholder, name: placeholder }
+          : reference,
+      ];
+    }),
+  );
+
+  return { ...node, credentials };
+}
+
 export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknown {
   if (!isRecord(input) || !Array.isArray(input.nodes)) {
     return input;
@@ -920,25 +869,26 @@ export function normalizeGeneratedWorkflowNodeParameters(input: unknown): unknow
         return node;
       }
 
-      const externalActionPlaceholder = normalizeExternalActionPlaceholderNode(node);
+      const normalizedNode = normalizeCredentialReferences(node);
 
-      if (externalActionPlaceholder) {
-        return externalActionPlaceholder;
+      if (normalizedNode.type === "n8n-nodes-base.code") {
+        const parameters = isRecord(normalizedNode.parameters)
+          ? { ...normalizedNode.parameters }
+          : {};
+
+        if (typeof parameters.jsCode !== "string" && typeof parameters.code === "string") {
+          parameters.jsCode = parameters.code;
+          delete parameters.code;
+        }
+
+        return { ...normalizedNode, parameters };
       }
 
-      if (node.type === "n8n-nodes-base.code") {
-        return normalizeCodeNodeParameters(node);
+      if (normalizedNode.type === "n8n-nodes-base.stickyNote") {
+        return normalizeStickyNoteParameters(normalizedNode);
       }
 
-      if (node.type === "n8n-nodes-base.stickyNote") {
-        return normalizeStickyNoteParameters(node);
-      }
-
-      if (node.type === "n8n-nodes-base.set") {
-        return normalizeSetNodeParameters(node);
-      }
-
-      return node;
+      return normalizedNode;
     }),
   };
 }
@@ -1242,14 +1192,48 @@ export function normalizeDuplicateReviewSetNodes(input: unknown): unknown {
   };
 }
 
-function workflowWarnings(workflow: N8nWorkflow): string[] {
-  const disabledNodes = workflow.nodes.filter((node) => node.disabled === true);
+const advisoryExternalConnectorMarkers = [
+  "airtable", "asana", "email", "gmail", "googlesheets", "hubspot", "http",
+  "jira", "linear", "mailchimp", "mysql", "notion", "paypal", "postgres",
+  "quickbooks", "salesforce", "sendgrid", "shopify", "slack", "stripe",
+  "supabase", "trello", "twilio", "webhook", "zendesk",
+];
+
+const advisoryExternalActionMarkers = [
+  "add", "append", "archive", "charge", "create", "delete", "insert", "invite",
+  "message", "pay", "payment", "post", "publish", "refund", "remove", "reply",
+  "send", "transfer", "update", "upsert", "write",
+];
+
+function workflowHasExternalAction(workflow: N8nWorkflow): boolean {
+  return workflow.nodes.some((node) => {
+    const typeText = node.type.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const text = normalizedNodeText(node);
+
+    return includesAny(typeText, advisoryExternalConnectorMarkers)
+      && includesAny(text, advisoryExternalActionMarkers);
+  });
+}
+
+export function collectN8nWorkflowWarnings(
+  workflow: N8nWorkflow,
+  compactInput: CompactN8nGenerationInput,
+): string[] {
   const warnings = [
-    "Draft only. Review before importing. Credentials are placeholders. Production side effects remain disabled.",
+    "The workflow is generated inactive and must be reviewed before activation.",
+    "Test the workflow with sample data before activation.",
   ];
 
-  if (disabledNodes.length > 0) {
-    warnings.push(`${disabledNodes.length} external or side-effect placeholder node(s) are disabled in the draft.`);
+  if (workflow.nodes.some((node) => node.credentials && Object.keys(node.credentials).length > 0)) {
+    warnings.push("Credentials must be configured manually in n8n after import.");
+  }
+
+  if (workflowHasExternalAction(workflow)) {
+    warnings.push("External actions may send, modify, delete, publish, pay, or update real data after activation.");
+  }
+
+  if (compactInput.human_approval_gates.length > 0) {
+    warnings.push("Human approval is recommended at the approval boundary described in the clarified intent.");
   }
 
   return warnings;
@@ -1261,36 +1245,65 @@ function isProviderLimitError(error: unknown): boolean {
   return /413|payload too large|rate_limit_exceeded|tpm limit|requested tokens|tokens per minute/i.test(message);
 }
 
-export async function runN8nWorkflowGeneratorAgent(input: {
-  compileJob: CompileJob;
-}): Promise<N8nGenerateResponse> {
-  if (!process.env.GROQ_N8N_API_KEY) {
-    throw new N8nWorkflowGeneratorConfigError();
-  }
+function providerConfigured(
+  provider: N8nAiProvider,
+  dependencies?: N8nWorkflowGeneratorDependencies,
+): boolean {
+  if (dependencies?.calls?.[provider]) return true;
+  return provider === "openai"
+    ? Boolean(process.env.OPENAI_API_KEY)
+    : Boolean(process.env.GROQ_N8N_API_KEY);
+}
 
-  const compactInput = buildCompactN8nGenerationInput(input.compileJob);
-  const prompt = buildN8nWorkflowGeneratorUserPrompt(compactInput);
-  let rawResponse: string;
+async function callN8nProvider(
+  provider: N8nAiProvider,
+  prompt: string,
+  dependencies?: N8nWorkflowGeneratorDependencies,
+): Promise<string> {
+  const injectedCall = dependencies?.calls?.[provider];
+  if (injectedCall) return injectedCall(prompt);
 
-  try {
-    rawResponse = await callGroq(prompt, n8nWorkflowGeneratorSystemPrompt, {
-      apiKeyEnv: "GROQ_N8N_API_KEY",
-      modelEnv: "GROQ_N8N_MODEL",
-      maxTokensEnv: "GROQ_N8N_MAX_TOKENS",
-      defaultMaxTokens: 4096,
-      maxTokensCap: 6000,
-      timeoutMs: 45000,
-      truncationSuggestion: "Raise GROQ_N8N_MAX_TOKENS to 4096 or 5000.",
-      jsonMode: false,
+  if (provider === "openai") {
+    return callOpenAIAgent(prompt, n8nWorkflowGeneratorSystemPrompt, {
+      modelEnv: "OPENAI_N8N_MODEL",
+      fallbackModelEnv: "OPENAI_AGENT_MODEL",
+      maxOutputTokensEnv: "OPENAI_N8N_MAX_OUTPUT_TOKENS",
+      fallbackMaxOutputTokensEnv: "OPENAI_AGENT_MAX_OUTPUT_TOKENS",
+      defaultMaxOutputTokens: 4500,
+      maxOutputTokensCap: 6000,
+      timeoutEnv: "OPENAI_N8N_TIMEOUT_MS",
+      reasoningEffort: "minimal",
+      verbosity: "low",
+      structuredOutputMode: "none",
+      fetchImpl: dependencies?.openaiFetch,
     });
-  } catch (error) {
-    if (isProviderLimitError(error)) {
-      throw new N8nWorkflowGeneratorProviderLimitError();
-    }
-
-    throw error;
   }
 
+  return callGroq(prompt, n8nWorkflowGeneratorSystemPrompt, {
+    apiKeyEnv: "GROQ_N8N_API_KEY",
+    modelEnv: "GROQ_N8N_MODEL",
+    maxTokensEnv: "GROQ_N8N_MAX_TOKENS",
+    defaultMaxTokens: 4096,
+    maxTokensCap: 6000,
+    timeoutMs: 45000,
+    truncationSuggestion: "Raise GROQ_N8N_MAX_TOKENS to 4096 or 5000.",
+    jsonMode: false,
+  });
+}
+
+function summarizeProviderError(error: unknown): string {
+  if (error instanceof N8nWorkflowGeneratorValidationError) {
+    return error.message;
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? "Unknown provider error.");
+  return message.replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+export function normalizeAndValidateGeneratedWorkflow(
+  rawResponse: string,
+  compactInput: CompactN8nGenerationInput,
+): N8nWorkflow {
   const parsed = parseStrictJson(rawResponse);
   const named = normalizeGeneratedWorkflowName(parsed, compactInput.workflow_name);
   const inactive = normalizeGeneratedWorkflowActiveFlag(named);
@@ -1298,22 +1311,78 @@ export async function runN8nWorkflowGeneratorAgent(input: {
   const normalizedConnections = normalizeGeneratedWorkflowConnections(normalizedIds);
   const normalizedParameters = normalizeGeneratedWorkflowNodeParameters(normalizedConnections);
   const normalizedStickyNotes = normalizeStickyNoteConnections(normalizedParameters);
-  const normalizedDuplicates = normalizeDuplicateReviewSetNodes(normalizedStickyNotes);
-  const normalized = normalizeGeneratedWorkflowNodePositions(normalizedDuplicates);
+  const normalized = normalizeGeneratedWorkflowNodePositions(normalizedStickyNotes);
   const validation = n8nWorkflowSchema.safeParse(normalized);
 
   if (!validation.success) {
     throw new N8nWorkflowGeneratorValidationError(
-      "Generated n8n workflow JSON did not pass FlowForge safety validation.",
+      "Generated n8n workflow JSON did not pass FlowForge technical validation.",
       formatIssues(validation.error.issues),
     );
   }
 
-  return {
-    workflow_json: validation.data,
-    warnings: workflowWarnings(validation.data),
-    provider: "groq",
-    used_ai: true,
-    fallback_used: false,
-  };
+  return validation.data;
+}
+
+export async function runN8nWorkflowGeneratorAgent(input: {
+  compileJob: CompileJob;
+}, dependencies?: N8nWorkflowGeneratorDependencies): Promise<N8nGenerateResponse> {
+  const compactInput = buildCompactN8nGenerationInput(input.compileJob);
+  const prompt = buildN8nWorkflowGeneratorUserPrompt(compactInput);
+  const providerAttempts: N8nGeneratorProviderAttempt[] = [];
+
+  for (const provider of ["openai", "groq"] as const) {
+    if (!providerConfigured(provider, dependencies)) {
+      providerAttempts.push({
+        provider,
+        attempted: false,
+        success: false,
+        error_summary: provider === "openai"
+          ? "OPENAI_API_KEY is not configured."
+          : "GROQ_N8N_API_KEY is not configured.",
+      });
+      continue;
+    }
+
+    try {
+      const rawResponse = await callN8nProvider(provider, prompt, dependencies);
+      const workflow = normalizeAndValidateGeneratedWorkflow(rawResponse, compactInput);
+      const fallbackUsed = providerAttempts.some((attempt) => attempt.attempted && !attempt.success);
+
+      providerAttempts.push({ provider, attempted: true, success: true });
+      return {
+        workflow_json: workflow,
+        warnings: collectN8nWorkflowWarnings(workflow, compactInput),
+        provider,
+        used_ai: true,
+        fallback_used: fallbackUsed,
+        provider_attempts: providerAttempts,
+      };
+    } catch (error) {
+      providerAttempts.push({
+        provider,
+        attempted: true,
+        success: false,
+        error_summary: summarizeProviderError(error),
+        ...(error instanceof N8nWorkflowGeneratorValidationError
+          ? { validation_issues: error.issues }
+          : {}),
+      });
+    }
+  }
+
+  if (!providerAttempts.some((attempt) => attempt.attempted)) {
+    throw new N8nWorkflowGeneratorConfigError(providerAttempts);
+  }
+
+  if (providerAttempts.every((attempt) => !attempt.success)
+    && providerAttempts.some((attempt) => attempt.attempted && isProviderLimitError(attempt.error_summary))) {
+    // Preserve the historical class for API compatibility; detailed attempts remain
+    // available through the general providers-failed error in mixed-failure cases.
+    if (providerAttempts.filter((attempt) => attempt.attempted).length === 1) {
+      throw new N8nWorkflowGeneratorProviderLimitError();
+    }
+  }
+
+  throw new N8nWorkflowGeneratorProvidersFailedError(providerAttempts);
 }

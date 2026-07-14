@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "build": "nuxt build",
+    "test": "node --import jiti/register tests/n8n-generator.test.ts",
+    "test:n8n": "node --import jiti/register tests/n8n-generator.test.ts",
     "typecheck": "nuxt typecheck",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
