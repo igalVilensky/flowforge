@@ -70,6 +70,7 @@ const dangerousActionMarkers = [
   "remove",
   "reply",
   "send",
+  "submit",
   "transfer",
   "update",
   "upsert",
@@ -219,7 +220,7 @@ function isAllowedInertDraftNode(node: N8nWorkflowNode): boolean {
     && !hasExecutableExternalActionCode(node);
 }
 
-function isObviousDangerousExternalAction(node: N8nWorkflowNode): boolean {
+export function isObviousDangerousExternalAction(node: N8nWorkflowNode): boolean {
   const text = nodeSearchText(node);
   const typeText = nodeTypeSearchText(node);
   const usesExternalConnectorType = containsMarker(typeText, externalConnectorMarkers);

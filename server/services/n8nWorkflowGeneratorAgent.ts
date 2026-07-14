@@ -1018,10 +1018,7 @@ function classificationCodeForInput(
       '    priority = "needs_manual_review";',
       '    priority_reason = "Missing required fields";',
       '  } else {',
-      '    const hasUsefulSignal = Boolean(',
-      '      item.json.portfolio_link ||',
-      '      (item.json.application_source && String(item.json.application_source).toLowerCase().includes("referral"))',
-      '    );',
+      '    const hasUsefulSignal = requiredFields.every((field) => String(item.json[field] || "").trim().length > 0);',
       '    if (hasUsefulSignal) {',
       '      priority = "high";',
       '      priority_reason = "Strong candidate signal detected";',
@@ -1202,17 +1199,31 @@ function normalizeStickyNoteParameters(
 }
 
 function isUnsafeExternalNode(node: Record<string, unknown>): boolean {
-  const type = normalizeText(node.type).toLowerCase();
+  const type = normalizeText(node.type).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const clearlyExternalConnector = [
+    "airtable", "asana", "email", "gmail", "googlesheets", "hubspot", "http",
+    "jira", "linear", "mailchimp", "mysql", "notion", "paypal", "postgres",
+    "quickbooks", "salesforce", "sendgrid", "shopify", "slack", "stripe",
+    "supabase", "trello", "twilio", "webhook", "zendesk",
+  ].some((marker) => type.includes(marker));
 
-  return (
-    type.includes("gmail") ||
-    type.includes("slack") ||
-    type.includes("http") ||
-    type.includes("webhook") ||
-    type.includes("sendgrid") ||
-    type.includes("zendesk") ||
-    type.includes("emailSend".toLowerCase())
-  );
+  return clearlyExternalConnector;
+}
+
+function placeholderCredentials(
+  credentials: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(credentials)) return undefined;
+  const entries = Object.keys(credentials).map((credentialType) => {
+    const token = credentialType
+      .replace(/([a-z])([A-Z])/g, "$1_$2")
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .toUpperCase() || "EXTERNAL";
+    const placeholder = `PLACEHOLDER_${token}_CREDENTIAL`;
+    return [credentialType, { id: placeholder, name: placeholder }] as const;
+  });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function normalizeUnsafeExternalNode(
@@ -1220,14 +1231,17 @@ function normalizeUnsafeExternalNode(
   compactInput: CompactN8nGenerationInput,
 ): Record<string, unknown> {
   const safeNode = { ...node };
-
-  delete safeNode.credentials;
+  const credentials = placeholderCredentials(node.credentials);
 
   return {
     ...safeNode,
+    name: normalizeText(node.name).startsWith("DISABLED -")
+      ? normalizeText(node.name)
+      : `DISABLED - ${normalizeText(node.name) || "External action"}`,
     type: "n8n-nodes-base.set",
     disabled: true,
     notes: "Disabled safe-preview placeholder. No external action is executed.",
+    ...(credentials ? { credentials } : {}),
     parameters: {
       values: safeReviewValues(compactInput, {
         blocked_external_action: normalizeText(node.name) || "external action",
@@ -1235,6 +1249,51 @@ function normalizeUnsafeExternalNode(
       }),
       keepOnlySet: false,
     },
+  };
+}
+
+export function normalizeExternalActionSafety(
+  input: unknown,
+  compactInput: CompactN8nGenerationInput,
+): unknown {
+  if (!isRecord(input) || !Array.isArray(input.nodes)) return input;
+
+  const renamedNodes = new Map<string, string>();
+  const nodes = input.nodes.map((node) => {
+    if (!isRecord(node)) return node;
+    if (!isUnsafeExternalNode(node)) {
+      const credentials = placeholderCredentials(node.credentials);
+      return credentials ? { ...node, credentials } : node;
+    }
+
+    const normalized = normalizeUnsafeExternalNode(node, compactInput);
+    const oldName = normalizeText(node.name);
+    const newName = normalizeText(normalized.name);
+    if (oldName && newName && oldName !== newName) renamedNodes.set(oldName, newName);
+    return normalized;
+  });
+
+  const renameTargets = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(renameTargets);
+    if (!isRecord(value)) return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key,
+      key === "node" && typeof child === "string"
+        ? renamedNodes.get(child) ?? child
+        : renameTargets(child),
+    ]));
+  };
+  const connections = isRecord(input.connections)
+    ? Object.fromEntries(Object.entries(input.connections).map(([name, value]) => [
+        renamedNodes.get(name) ?? name,
+        renameTargets(value),
+      ]))
+    : input.connections;
+
+  return {
+    ...input,
+    nodes,
+    connections,
   };
 }
 
@@ -1353,10 +1412,6 @@ export function normalizeGeneratedWorkflowNodeParameters(
           ...node,
           parameters: newParameters,
         };
-      }
-
-      if (isUnsafeExternalNode(node)) {
-        return normalizeUnsafeExternalNode(node, compactInput);
       }
 
       if (isMeaninglessClassificationIfNode(node, input.connections)) {
@@ -1871,10 +1926,47 @@ export function repairGeneratedWorkflowGraph(
     return input;
   }
 
-  const orderedNodes = orderedExecutableNodes(input.nodes, compactInput);
+  const inputNodes: unknown[] = input.nodes;
 
-  if (!graphNeedsRepair(input.connections, orderedNodes, compactInput)) {
-    return input;
+  const recommendedSampleName = compactInput.recommended_nodes.find((name) =>
+    name.toLowerCase().startsWith("sample "),
+  );
+  const hasExecutableSample = recommendedSampleName
+    ? inputNodes.some((node) =>
+        isExecutableNode(node) &&
+        nodeAlias(node.name) === nodeAlias(recommendedSampleName),
+      )
+    : true;
+  const hasExecutableTrigger = inputNodes.some(
+    (node) => isExecutableNode(node) && isTriggerNode(node),
+  );
+  const preparedInput: Record<string, unknown> & { nodes: unknown[] } = !hasExecutableSample && recommendedSampleName && hasExecutableTrigger
+    ? {
+        ...input,
+        nodes: [
+          ...inputNodes,
+          {
+            id: uniqueNodeId(
+              "sample_input",
+              new Set(inputNodes.filter(isRecord).map((node) => normalizeText(node.id)).filter(Boolean)),
+            ),
+            name: recommendedSampleName,
+            type: "n8n-nodes-base.set",
+            typeVersion: 1,
+            position: [260, 0],
+            parameters: {
+              values: samplePayloadForInput(compactInput),
+              keepOnlySet: false,
+            },
+          },
+        ],
+      }
+    : { ...input, nodes: inputNodes };
+
+  const orderedNodes = orderedExecutableNodes(preparedInput.nodes, compactInput);
+
+  if (!graphNeedsRepair(preparedInput.connections, orderedNodes, compactInput)) {
+    return preparedInput;
   }
 
   const connections: Record<string, unknown> = {};
@@ -1903,8 +1995,8 @@ export function repairGeneratedWorkflowGraph(
   });
 
   return {
-    ...input,
-    nodes: input.nodes.map((node) => {
+    ...preparedInput,
+    nodes: preparedInput.nodes.map((node) => {
       if (!isRecord(node)) {
         return node;
       }
@@ -2572,13 +2664,25 @@ function normalizeAndValidateGeneratedWorkflow(
     after: normalizedNodeShape,
   });
 
+  const externalSafetyNormalized = normalizeExternalActionSafety(
+    normalizedNodeShape,
+    compactInput,
+  );
+  recordTransformation(normalizationActions, {
+    id: "external_action_safety",
+    description: "Disabled clearly identifiable external actions, marked them as draft-only placeholders, and replaced credential references with placeholder credentials.",
+    functionNames: ["normalizeExternalActionSafety()"],
+    before: normalizedNodeShape,
+    after: externalSafetyNormalized,
+  });
+
   const normalizedConnections =
-    normalizeGeneratedWorkflowConnections(normalizedNodeShape);
+    normalizeGeneratedWorkflowConnections(externalSafetyNormalized);
   recordTransformation(normalizationActions, {
     id: "connection_shape",
     description: "Normalized provider connection aliases into n8n's connection structure.",
     functionNames: ["normalizeGeneratedWorkflowConnections()"],
-    before: normalizedNodeShape,
+    before: externalSafetyNormalized,
     after: normalizedConnections,
   });
 

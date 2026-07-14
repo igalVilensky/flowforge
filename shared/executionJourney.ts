@@ -428,7 +428,7 @@ function compileSteps(
       status: statusForAgent(architect),
       method: methodForAgent(architect),
       function_names: ["runBlueprintArchitectAgent()"],
-      purpose: "Produces an AI-assisted structured design proposal for critique without replacing the authoritative deterministic blueprint.",
+      purpose: "Produces an AI-assisted structured design proposal that may become final after grounding, schema validation, deterministic gate merging, and safety review.",
       input_summary: [
         { label: "Workflow", value: result.workflow_name },
         { label: "Safety boundary", value: result.automation_boundary },
@@ -450,7 +450,7 @@ function compileSteps(
         { field: "proposed_steps", reason: "The Safety Critic uses this proposal to identify AI-design concerns alongside the deterministic blueprint.", used_by: "Safety Critic" },
       ] : [],
       next_step: { title: "Safety Critic", reason: critic?.status === "skipped" ? critic.reason : "The design proposal is critiqued against deterministic risks and the authoritative blueprint." },
-      limitations: ["The proposal does not replace the deterministic final blueprint.", "It cannot enable external actions or credentials."],
+      limitations: ["Invalid, ungrounded, or unsafe proposals fall back to the deterministic baseline.", "It cannot enable external actions or credentials."],
       raw_input: { blueprint: result, clarification, risks: job.risks },
       raw_output: architect,
     },
@@ -497,7 +497,7 @@ function compileSteps(
       status: job.status === "failed" ? "failed" : "validated",
       method: "validation",
       function_names: ["safeValidateCompileJob()"],
-      purpose: "Validates the complete compile response and exposes the deterministic blueprint as the final compile result.",
+      purpose: "Validates the complete compile response and exposes either the safety-merged AI design or deterministic fallback as the final compile result.",
       input_summary: [
         { label: "Compile status", value: job.status },
         { label: "Safety status", value: job.safety_critic?.overall_status ?? "not recorded" },
@@ -514,7 +514,7 @@ function compileSteps(
         { label: "Next safe action", value: job.safety_critic?.next_safe_action ?? "Review the blueprint" },
       ],
       field_explanations: [
-        { field: "result", reason: "This authoritative deterministic blueprint is used to build the implementation brief.", used_by: "n8n implementation brief" },
+        { field: "result", reason: "This deterministically safety-validated final blueprint is used to build the implementation brief.", used_by: "n8n implementation brief" },
         { field: "safety_critic.overall_status", reason: "Unsafe or clarification-blocked results cannot enter direct n8n generation.", used_by: "n8n generation gate" },
       ],
       limitations: ["Schema validity does not make the workflow production-ready.", "A downloadable n8n workflow exists only after the separate generation and validation stages."],

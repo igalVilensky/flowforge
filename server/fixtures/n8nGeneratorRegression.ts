@@ -786,9 +786,11 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
             "n8n-nodes-base.set" &&
           normalizedExternalNode?.disabled ===
             true &&
-          normalizedExternalNode
-            ?.credentials === undefined,
-        "Unsupported external connector nodes must become disabled safe-preview set nodes with real credential references removed.",
+          normalizedExternalNode?.name.startsWith("DISABLED -") === true &&
+          JSON.stringify(normalizedExternalNode?.credentials).includes(
+            "PLACEHOLDER_GMAIL_OAUTH2_CREDENTIAL",
+          ),
+        "Unsupported external connector nodes must become clearly marked disabled safe-preview nodes with placeholder credentials.",
       ),
     );
 
@@ -1590,6 +1592,8 @@ export async function buildN8nGeneratorRegressionChecks(): Promise<
     //  5. Admissions classifier emits high / needs_manual_review triage
     //  6. Set nodes have typeVersion 1
     //  7. A sticky note named Sample… is ignored; graph repair inserts a set node
+    process.env.OPENAI_API_KEY =
+      "test-openai-key";
     const validationFixesResult =
       await runN8nWorkflowGeneratorAgent(
         { compileJob },

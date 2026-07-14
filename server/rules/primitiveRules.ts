@@ -304,7 +304,7 @@ export const riskRules: readonly RiskRule[] = [
   },
   {
     categories: ["refund_or_payment", "financial"],
-    phrases: ["refund", "payment", "charge", "invoice", "billing"],
+    phrases: ["refund", "payment", "charge", "invoice", "billing", "mortgage", "credit score", "annual income", "debt", "lender"],
   },
   {
     categories: ["legal", "high_stakes_decision"],
@@ -320,7 +320,23 @@ export const riskRules: readonly RiskRule[] = [
   },
   {
     categories: ["employment", "high_stakes_decision"],
-    phrases: ["hire", "fire", "employee", "promotion", "employment"],
+    phrases: [
+      "hire",
+      "hiring",
+      "fire employee",
+      "employee selection",
+      "promotion decision",
+      "termination decision",
+      "performance decision",
+      "recruitment decision",
+      "employment decision",
+      "employment recommendation",
+    ],
+    patterns: [
+      /\b(?:candidate|applicant)\b.{0,50}\b(?:hire|hiring|reject|selection|recommend|shortlist)\b/,
+      /\b(?:hire|hiring|reject|select|recommend|shortlist)\b.{0,50}\b(?:candidate|applicant|employee)\b/,
+      /\bemployee\b.{0,40}\b(?:promotion|termination|performance|selection)\b/,
+    ],
   },
   {
     categories: ["delete_or_destructive_action"],

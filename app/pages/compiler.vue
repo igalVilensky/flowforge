@@ -3827,12 +3827,14 @@ The current endpoint returns the agent outcome and raw provider response when av
 .suggestion-card {
   display: grid;
   gap: 15px;
+  min-width: 0;
   padding: 18px;
   border: 1px solid rgba(102, 227, 255, 0.24);
   border-radius: 22px;
   background:
     radial-gradient(circle at top right, rgba(102, 227, 255, 0.1), transparent 22rem),
     rgba(5, 9, 18, 0.66);
+  overflow-wrap: anywhere;
 }
 
 .suggestion-heading,
@@ -3874,6 +3876,7 @@ The current endpoint returns the agent outcome and raw provider response when av
 
 .suggestion-details > div,
 .suggestion-intent {
+  min-width: 0;
   padding: 12px;
   border: 1px solid rgba(145, 166, 255, 0.13);
   border-radius: 14px;
@@ -3892,19 +3895,27 @@ The current endpoint returns the agent outcome and raw provider response when av
 .suggestion-details p,
 .suggestion-intent p {
   margin: 7px 0 0;
-  color: #cbd6ff;
-  font-size: 12px;
-  line-height: 1.5;
+  color: #dce4ff;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.suggestion-intent p {
+  font-size: 1.05rem;
 }
 
 .suggestion-steps {
   display: grid;
-  gap: 7px;
+  gap: 0.65rem;
   margin: 0;
-  padding-left: 22px;
-  color: #cbd6ff;
-  font-size: 12px;
-  line-height: 1.4;
+  padding-left: 1.5rem;
+  color: #dce4ff;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.suggestion-steps li {
+  padding-left: 0.2rem;
 }
 
 .suggestion-actions {
@@ -6066,6 +6077,15 @@ a.suggestion-secondary {
   .suggestion-heading {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .suggestion-card {
+    padding: 15px;
+  }
+
+  .suggestion-actions > * {
+    justify-content: center;
+    max-width: 100%;
   }
 
   .discovery-request {

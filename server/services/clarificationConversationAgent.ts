@@ -17,6 +17,7 @@ import {
 } from "../prompts/clarificationConversationPrompt";
 import {
   getClarificationAnswerKind,
+  factConfidence,
   inferStructuredWorkflowIntent,
   isConcreteKnownFact,
 } from "./clarificationFacts";
@@ -65,6 +66,26 @@ export type ClarificationProviderDependencies = {
 
 const SOFT_MAX_CLARIFICATION_QUESTIONS = 6;
 const HARD_MAX_CLARIFICATION_QUESTIONS = 9;
+
+function hasPlaceholderValue(value: string | string[] | undefined): boolean {
+  return Array.isArray(value)
+    ? value.some((item) => factConfidence(item) === "placeholder")
+    : typeof value === "string" && factConfidence(value) === "placeholder";
+}
+
+function placeholdersSupportDraft(
+  intent: StructuredWorkflowIntent,
+  missingFields: StructuredIntentReadinessField[],
+): boolean {
+  return missingFields.length > 0 && missingFields.every((field) => {
+    if (field === "goal_or_task_type") return hasPlaceholderValue(intent.goal) || hasPlaceholderValue(intent.task_type);
+    if (field === "trigger") return hasPlaceholderValue(intent.trigger);
+    if (field === "input_source_or_data") return hasPlaceholderValue(intent.input_sources) || hasPlaceholderValue(intent.input_data);
+    if (field === "desired_output") return hasPlaceholderValue(intent.desired_outputs);
+    if (field === "human_owner") return hasPlaceholderValue(intent.human_owner);
+    return hasPlaceholderValue(intent.approval_boundary) || hasPlaceholderValue(intent.external_action_boundary);
+  });
+}
 
 const PROVIDER_ORDER: readonly AgentProvider[] = [
   "openai",
@@ -352,6 +373,18 @@ function aliasForQuestionId(
       questionId: "desired_output",
       kind: "desired_output",
     };
+  }
+
+  if (/(?:^|_)(?:human_owner|human_reviewer|reviewer|approver)$/.test(normalizedId)) {
+    return { questionId: "human_owner", kind: "human_owner" };
+  }
+
+  if (/(?:^|_)(?:data_source|input_source|workflow_source)$/.test(normalizedId)) {
+    return { questionId: "data_source", kind: "data_source" };
+  }
+
+  if (/(?:^|_)(?:desired_output|workflow_output|expected_output)$/.test(normalizedId)) {
+    return { questionId: "desired_output", kind: "desired_output" };
   }
 
   if (
@@ -750,16 +783,16 @@ function mergeStructuredWorkflowIntent(
       deterministicIntent.original_input,
 
     goal:
-      providerIntent.goal ??
-      deterministicIntent.goal,
+      deterministicIntent.goal ??
+      providerIntent.goal,
 
     task_type:
-      providerIntent.task_type ??
-      deterministicIntent.task_type,
+      deterministicIntent.task_type ??
+      providerIntent.task_type,
 
     trigger:
-      providerIntent.trigger ??
-      deterministicIntent.trigger,
+      deterministicIntent.trigger ??
+      providerIntent.trigger,
 
     input_sources: addUniqueStrings(
       deterministicIntent.input_sources,
@@ -794,16 +827,16 @@ function mergeStructuredWorkflowIntent(
     ),
 
     human_owner:
-      providerIntent.human_owner ??
-      deterministicIntent.human_owner,
+      deterministicIntent.human_owner ??
+      providerIntent.human_owner,
 
     approval_boundary:
-      providerIntent.approval_boundary ??
-      deterministicIntent.approval_boundary,
+      deterministicIntent.approval_boundary ??
+      providerIntent.approval_boundary,
 
     external_action_boundary:
-      providerIntent.external_action_boundary ??
-      deterministicIntent.external_action_boundary,
+      deterministicIntent.external_action_boundary ??
+      providerIntent.external_action_boundary,
 
     external_actions: addUniqueStrings(
       deterministicIntent.external_actions,
@@ -811,14 +844,36 @@ function mergeStructuredWorkflowIntent(
     ),
 
     success_criteria:
-      providerIntent.success_criteria ??
-      deterministicIntent.success_criteria,
+      deterministicIntent.success_criteria ??
+      providerIntent.success_criteria,
   };
+}
+
+function intentHasConcreteFactForKind(
+  intent: StructuredWorkflowIntent,
+  kind: ClarificationQuestionKind,
+): boolean {
+  if (kind === "workflow_goal") return isConcreteKnownFact(intent.goal, "goal");
+  if (kind === "task_type") return isConcreteKnownFact(intent.task_type, "task_type");
+  if (kind === "trigger") return isConcreteKnownFact(intent.trigger, "trigger");
+  if (kind === "data_source") return isConcreteKnownFact(intent.input_sources, "input_sources");
+  if (kind === "input_data") return isConcreteKnownFact(intent.input_data, "input_data");
+  if (kind === "desired_output") return isConcreteKnownFact(intent.desired_outputs, "desired_outputs");
+  if (kind === "output_destination") return isConcreteKnownFact(intent.output_destinations, "output_destinations");
+  if (kind === "notification_target") return isConcreteKnownFact(intent.notification_targets, "notification_targets");
+  if (kind === "decision_rules") return isConcreteKnownFact(intent.decision_rules, "decision_rules");
+  if (kind === "human_owner") return isConcreteKnownFact(intent.human_owner, "human_owner");
+  if (kind === "approval_boundary") return isConcreteKnownFact(intent.approval_boundary, "approval_boundary");
+  if (kind === "external_action_boundary") return isConcreteKnownFact(intent.external_action_boundary, "external_action_boundary");
+  if (kind === "success_criteria") return isConcreteKnownFact(intent.success_criteria, "success_criteria");
+  return false;
 }
 
 function questionWasAlreadyAnswered(
   input: RunClarificationConversationAgentInput,
   question: ClarificationNextQuestion,
+  intent: StructuredWorkflowIntent,
+  allowKnownFieldRefinement = false,
 ): boolean {
   const alias =
     aliasForQuestionId(question.id);
@@ -829,6 +884,13 @@ function questionWasAlreadyAnswered(
 
   const questionKind =
     alias?.kind ?? question.kind;
+
+  if (
+    !allowKnownFieldRefinement &&
+    intentHasConcreteFactForKind(intent, questionKind)
+  ) {
+    return true;
+  }
 
   return input.answers.some((answer) => {
     const normalizedAnswer =
@@ -963,7 +1025,130 @@ function questionMatchesMissingField(
   );
 }
 
-function createFallbackQuestion(
+const CONTEXT_WORDS_TO_IGNORE = new Set([
+  "about",
+  "after",
+  "before",
+  "both",
+  "does",
+  "first",
+  "from",
+  "have",
+  "into",
+  "primary",
+  "process",
+  "should",
+  "that",
+  "their",
+  "this",
+  "through",
+  "want",
+  "what",
+  "when",
+  "where",
+  "which",
+  "workflow",
+  "would",
+]);
+
+function meaningfulContextWords(
+  value: string,
+): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .match(/[a-z0-9]+/g)
+      ?.filter(
+        (word) =>
+          word.length >= 4 &&
+          !CONTEXT_WORDS_TO_IGNORE.has(word),
+      ) ?? [],
+  );
+}
+
+function isUsefulContextualScopeQuestion(
+  question: ClarificationNextQuestion,
+  confirmedIntent: StructuredWorkflowIntent,
+  missingFields: StructuredIntentReadinessField[],
+): boolean {
+  if (missingFields.length === 0) {
+    return false;
+  }
+
+  const alias = aliasForQuestionId(question.id);
+  const effectiveKind = alias?.kind ?? question.kind;
+
+  if (
+    effectiveKind !== "task_type" &&
+    effectiveKind !== "workflow_goal" &&
+    effectiveKind !== "other"
+  ) {
+    return false;
+  }
+
+  const context = [
+    confirmedIntent.original_input,
+    confirmedIntent.goal,
+    confirmedIntent.task_type,
+    confirmedIntent.trigger,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+
+  if (!/\b(?:or|and\/or|either|both)\b/i.test(context)) {
+    return false;
+  }
+
+  const questionText = normalizeText(question.question);
+
+  if (
+    !/\b(?:which|what|primary|first|either|both|scope|category|type)\b/i.test(
+      questionText,
+    )
+  ) {
+    return false;
+  }
+
+  const contextWords = meaningfulContextWords(context);
+  const overlappingWords = [
+    ...meaningfulContextWords(questionText),
+  ].filter((word) => contextWords.has(word));
+
+  return overlappingWords.length >= 2;
+}
+
+function incomingItemFromIntent(
+  intent: StructuredWorkflowIntent,
+): string | undefined {
+  const candidates = [
+    intent.original_input,
+    intent.trigger,
+    intent.goal,
+    intent.task_type,
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    const match = candidate.match(
+      /\b(?:when|whenever|after|once)\s+(?:an?\s+|the\s+)?(?:new\s+)?(.{2,80}?)(?=\s+(?:is|are)\s+(?:submitted|received|created|added|uploaded|reported|requested)|\s+(?:arrives?|enters?|comes?\s+in)\b|[,.;])/i,
+    );
+    const item = match?.[1]
+      ?.trim()
+      .replace(/^(?:an?\s+|the\s+|new\s+)+/i, "")
+      .replace(/[,:;.!?]+$/g, "");
+
+    if (
+      item &&
+      item.split(/\s+/).length <= 9 &&
+      !/^(?:it|this|that|something|workflow|process|task)$/i.test(item)
+    ) {
+      return item;
+    }
+  }
+
+  return undefined;
+}
+
+export function createContextualFallbackQuestion(
   intent: StructuredWorkflowIntent,
 ): ClarificationNextQuestion {
   const readiness =
@@ -987,7 +1172,7 @@ function createFallbackQuestion(
       why_it_matters:
         "FlowForge needs a concrete task before it can create a useful workflow.",
       example_answer:
-        "Review new admissions applications.",
+        "Route incoming requests for internal review.",
     };
   }
 
@@ -1000,7 +1185,7 @@ function createFallbackQuestion(
       why_it_matters:
         "A safe workflow blueprint needs a clear starting event.",
       example_answer:
-        "When a new application email arrives.",
+        "When a new request is submitted.",
     };
   }
 
@@ -1009,47 +1194,19 @@ function createFallbackQuestion(
       "input_source_or_data",
     )
   ) {
-    const combinedContext = [
-      intent.goal,
-      intent.task_type,
-      ...intent.desired_outputs,
-    ]
-      .filter(Boolean)
-      .join(" ");
+    const incomingItem =
+      incomingItemFromIntent(intent);
 
-    const isContentWorkflow =
-      /social media|content generation|marketing content|social post/i.test(
-        combinedContext,
-      );
-
-    const isEmailWorkflow =
-      /\bemail|inbox|application\b/i.test(
-        combinedContext,
-      );
-
-    if (isContentWorkflow) {
-      return {
-        id: "content_source_material",
-        kind: "data_source",
-        question:
-          "What source material should the workflow use to generate the content?",
-        why_it_matters:
-          "The workflow needs concrete source material before it can generate accurate drafts.",
-        example_answer:
-          "A product description, campaign brief, brand assets, and key marketing points.",
-      };
-    }
-
-    if (isEmailWorkflow) {
+    if (incomingItem) {
       return {
         id: "workflow_source",
         kind: "data_source",
         question:
-          "Which inbox or email system should the workflow read the application emails from?",
+          `Where does the ${incomingItem} currently enter the process?`,
         why_it_matters:
-          "The workflow needs a concrete source for the incoming applications.",
+          "The workflow needs a concrete source for its incoming information.",
         example_answer:
-          "The shared admissions Gmail inbox.",
+          "Through a form or the business system where the process starts.",
       };
     }
 
@@ -1057,11 +1214,11 @@ function createFallbackQuestion(
       id: "workflow_source",
       kind: "data_source",
       question:
-        "Where should the workflow read its input from?",
+        "Where does the information for this workflow currently come from?",
       why_it_matters:
         "The workflow needs a concrete source or input system.",
       example_answer:
-        "A shared inbox, form, Google Sheet, or internal database.",
+        "A form, shared inbox, spreadsheet, or business system.",
     };
   }
 
@@ -1072,40 +1229,26 @@ function createFallbackQuestion(
       id: "desired_output",
       kind: "desired_output",
       question:
-        "What should the workflow produce?",
+        "What should the workflow produce or update when it finishes?",
       why_it_matters:
         "The output determines the workflow structure.",
       example_answer:
-        "An internal review task with extracted details and a priority classification.",
+        "Create a task, update a system record, or prepare an internal summary.",
     };
   }
 
   if (
     missing.includes("human_owner")
   ) {
-    const isAdmissionsWorkflow =
-      /\badmissions?|application|candidate\b/i.test(
-        [
-          intent.goal,
-          intent.task_type,
-          ...intent.desired_outputs,
-        ]
-          .filter(Boolean)
-          .join(" "),
-      );
-
     return {
       id: "human_reviewer",
       kind: "human_owner",
-      question: isAdmissionsWorkflow
-        ? "Who performs the manual admissions review before any external communication is allowed?"
-        : "Who reviews the result before anything is sent, published, or changed?",
+      question:
+        "Who should review or own cases that require human attention?",
       why_it_matters:
         "External actions need accountable human ownership.",
       example_answer:
-        isAdmissionsWorkflow
-          ? "The admissions team reviews every application."
-          : "The responsible team manager reviews every result.",
+        "The responsible team lead or process owner.",
     };
   }
 
@@ -1118,11 +1261,11 @@ function createFallbackQuestion(
       id: "approval_boundary",
       kind: "approval_boundary",
       question:
-        "What must stay human-approved or draft-only?",
+        "Which actions require human approval before the workflow performs them?",
       why_it_matters:
         "This prevents FlowForge from planning unapproved external actions.",
       example_answer:
-        "No external communication is sent automatically. The responsible reviewer must approve it first.",
+        "Final approval, external messages, payments, or changes to production systems.",
     };
   }
 
@@ -1134,7 +1277,7 @@ function createFallbackQuestion(
     why_it_matters:
       "Success criteria help FlowForge generate useful dry-run checks.",
     example_answer:
-      "The internal task contains the correct details, priority, and approval status.",
+      "The result contains the expected information and reaches the correct owner.",
   };
 }
 
@@ -1148,11 +1291,13 @@ function buildDeterministicSessionFromIntent(
       intent,
     );
 
-  if (readiness.ready) {
+  if (readiness.ready || placeholdersSupportDraft(intent, readiness.missing_fields)) {
     return buildReadySession(
       input,
       intent,
-      "Enough confirmed clarification has been collected to compile a safe preview.",
+      readiness.ready
+        ? "Enough confirmed clarification has been collected to compile a safe preview."
+        : "Placeholder values are explicitly marked and are sufficient only for a non-executing draft preview.",
     );
   }
 
@@ -1168,12 +1313,13 @@ function buildDeterministicSessionFromIntent(
   }
 
   const nextQuestion =
-    createFallbackQuestion(intent);
+    createContextualFallbackQuestion(intent);
 
   if (
     questionWasAlreadyAnswered(
       input,
       nextQuestion,
+      intent,
     )
   ) {
     return buildCannotContinueSession(
@@ -1277,11 +1423,13 @@ export function normalizeAgentSession(
       intent,
     );
 
-  if (readiness.ready) {
+  if (readiness.ready || placeholdersSupportDraft(intent, readiness.missing_fields)) {
     return buildReadySession(
       input,
       intent,
-      "Enough confirmed clarification has been collected to compile a safe preview.",
+      readiness.ready
+        ? "Enough confirmed clarification has been collected to compile a safe preview."
+        : "Placeholder values are explicitly marked and are sufficient only for a non-executing draft preview.",
     );
   }
 
@@ -1318,15 +1466,27 @@ export function normalizeAgentSession(
         readiness.missing_fields,
       );
 
+    const questionResolvesScope =
+      isUsefulContextualScopeQuestion(
+        providerQuestion,
+        deterministicIntent,
+        readiness.missing_fields,
+      );
+
     const questionWasAnswered =
       questionWasAlreadyAnswered(
         input,
         providerQuestion,
+        intent,
+        questionResolvesScope,
       );
 
     if (
       questionIsUsable &&
-      questionMatchesReadiness &&
+      (
+        questionMatchesReadiness ||
+        questionResolvesScope
+      ) &&
       !questionWasAnswered
     ) {
       return {
@@ -1346,9 +1506,12 @@ export function normalizeAgentSession(
       );
     }
 
-    if (!questionMatchesReadiness) {
+    if (
+      !questionMatchesReadiness &&
+      !questionResolvesScope
+    ) {
       rejectionReasons.push(
-        `the provider question did not match the missing fields: ${readiness.missing_fields.join(", ")}`,
+        `the provider question neither matched the missing fields nor resolved a grounded workflow ambiguity: ${readiness.missing_fields.join(", ")}`,
       );
     }
 
@@ -1502,13 +1665,18 @@ export async function runClarificationConversationAgent(
       preflightIntent,
     );
 
-  if (preflightReadiness.ready) {
+  if (
+    preflightReadiness.ready ||
+    placeholdersSupportDraft(preflightIntent, preflightReadiness.missing_fields)
+  ) {
     return clarificationSessionResponseSchema.parse(
       {
         session: buildReadySession(
           input,
           preflightIntent,
-          "Enough confirmed clarification has been collected to compile a safe preview.",
+          preflightReadiness.ready
+            ? "Enough confirmed clarification has been collected to compile a safe preview."
+            : "Placeholder values are explicitly marked and are sufficient only for a non-executing draft preview.",
         ),
         used_ai: false,
         provider: "deterministic",

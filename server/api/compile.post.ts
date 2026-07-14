@@ -19,6 +19,7 @@ import { runSafetyCriticAgent } from "../services/safetyCriticAgent";
 import { buildSafetyCriticReview } from "../services/safetyCritic";
 import { normalizeCompileRequest } from "../services/structuredCompileInput";
 import { assessStructuredWorkflowIntentReadiness } from "../services/structuredIntentReadiness";
+import { selectFinalBlueprint } from "../services/blueprintSelection";
 
 const compileModes = [
   "demo",
@@ -236,7 +237,7 @@ export async function runCompilePipeline(input: {
     kind: "deterministic",
     message: "Building the safe local blueprint preview.",
   });
-  const result = buildBlueprint({
+  let result = buildBlueprint({
     jobId,
     processInput: semanticInput,
     intent: structuredIntent,
@@ -268,7 +269,7 @@ export async function runCompilePipeline(input: {
     kind: "deterministic",
     message: "Checking safety boundaries with deterministic guardrails.",
   });
-  const safetyCriticReview = buildSafetyCriticReview({
+  let safetyCriticReview = buildSafetyCriticReview({
     signals,
     risks,
     readiness,
@@ -447,6 +448,30 @@ export async function runCompilePipeline(input: {
       : blueprintArchitectAgentResult.output.fallback_used
         ? `Blueprint Architect used deterministic fallback: ${blueprintArchitectAgentResult.output.reason}`
         : blueprintArchitectAgentResult.output.reason;
+
+  const blueprintSelection = selectFinalBlueprint({
+    baseline: result,
+    proposal: blueprintArchitectAgentResult.output,
+    intent: structuredIntent,
+  });
+  result = blueprintSelection.blueprint;
+
+  safetyCriticReview = buildSafetyCriticReview({
+    signals,
+    risks,
+    readiness,
+    routerDecision: routerResult.decision,
+    clarificationPlan,
+    blueprint: result,
+  });
+
+  await emitProgress(emit, {
+    type: "step_completed",
+    step_id: "blueprint_safety_merge",
+    label: "Blueprint Safety Merge",
+    status: "deterministic_success",
+    message: `Final blueprint source: ${blueprintSelection.source}.`,
+  });
 
   const skippedSafetyCriticAgentOutput = {
     provider: "deterministic" as const,
@@ -675,10 +700,10 @@ export async function runCompilePipeline(input: {
       id: "dynamic_blueprint_preview",
       label: "Dynamic Blueprint Preview",
       description:
-        "Build a deterministic safe automation blueprint from scanner output.",
+        "Select a grounded AI design when valid, merge deterministic safety gates, or retain the deterministic fallback.",
       status: "done",
       tool_name: "blueprintBuilder",
-      output_summary: `${result.workflow_name} is ready for UI preview.`,
+      output_summary: `${result.workflow_name} is ready for UI preview (${blueprintSelection.source}).`,
     },
     {
       id: "safety_critic_review",
@@ -857,7 +882,7 @@ export async function runCompilePipeline(input: {
         id: "trace_build_blueprint",
         timestamp: now,
         actor: "tool",
-        action: "Built dynamic safe automation blueprint",
+        action: "Selected final safe automation blueprint",
         status: "completed",
         tool_name: "blueprintBuilder",
         output_summary: result.workflow_name,
@@ -866,6 +891,8 @@ export async function runCompilePipeline(input: {
           risk_count: risks.categories.length,
           separated_safety_constraint_count:
             analysisInput.safety_constraints.length,
+          final_blueprint_source: blueprintSelection.source,
+          final_blueprint_selection_reason: blueprintSelection.reason,
         },
       },
       {
