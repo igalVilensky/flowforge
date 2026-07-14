@@ -1228,6 +1228,14 @@ export function collectN8nWorkflowWarnings(
     warnings.push("Credentials must be configured manually in n8n after import.");
   }
 
+  const emailContext = `${compactInput.trigger_description} ${compactInput.source}`.toLowerCase();
+  const providerIsUnspecified = /\b(?:email|inbox)\b/.test(emailContext)
+    && !/\b(?:gmail|outlook|microsoft 365|imap)\b/.test(emailContext);
+
+  if (providerIsUnspecified) {
+    warnings.push("Email provider is unspecified; select and configure the correct email trigger and credentials in n8n.");
+  }
+
   if (workflowHasExternalAction(workflow)) {
     warnings.push("External actions may send, modify, delete, publish, pay, or update real data after activation.");
   }

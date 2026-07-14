@@ -471,6 +471,12 @@ function detectSource(input: string, domain: BlueprintDomain): string {
     return knownSource.startsWith("the ") ? knownSource : `the ${knownSource}`;
   }
 
+  const addressedInbox = input.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\s+inbox)\b/)?.[1];
+
+  if (addressedInbox) {
+    return `the ${addressedInbox}`;
+  }
+
   const fromMatch = input.match(/\bfrom\s+(?:the\s+)?([a-z0-9][a-z0-9 -]{1,60}?)(?:,|\.|\band\b|\bwithout\b|\bdo not\b|$)/);
   const sourceText = cleanDomainPhrase(fromMatch?.[1] ?? "");
 
@@ -538,24 +544,7 @@ function detectExplicitExtractedFields(input: string): string[] {
 function detectExtractedFields(input: string, domain: BlueprintDomain, signals: SignalSummary): string[] {
   const fields = detectExplicitExtractedFields(input);
 
-  if (domain === "admissions") {
-    if (fields.length === 0 || hasAny(input, ["candidate details", "application fields"])) {
-      addUniqueText(fields, "candidate name", 80);
-      addUniqueText(fields, "role", 80);
-      addUniqueText(fields, "portfolio link", 80);
-      addUniqueText(fields, "application source", 80);
-    }
-  } else if (domain === "support" && fields.length === 0) {
-    addUniqueText(fields, "sender", 80);
-    addUniqueText(fields, "order ID", 80);
-    addUniqueText(fields, "complaint reason", 80);
-    addUniqueText(fields, "urgency", 80);
-  } else if (domain === "finance" && fields.length === 0) {
-    addUniqueText(fields, "customer name", 80);
-    addUniqueText(fields, "order ID", 80);
-    addUniqueText(fields, "amount", 80);
-    addUniqueText(fields, "reason", 80);
-  } else if (fields.length === 0 && hasPrimitive(signals, "extraction")) {
+  if (fields.length === 0 && hasPrimitive(signals, "extraction")) {
     addUniqueText(fields, "requested fields", 80);
   }
 
@@ -588,17 +577,13 @@ function detectClassificationTarget(input: string, domain: BlueprintDomain): str
   return "";
 }
 
-function detectInternalOutput(input: string, domain: BlueprintDomain): string {
-  if (domain === "admissions") return "admissions review task";
-  if (domain === "support") return "support review task";
-  if (domain === "finance") return "finance review task";
-  if (domain === "content") return "social media post package";
-
+function detectInternalOutput(input: string, _domain: BlueprintDomain): string {
   if (hasAny(input, ["task", "ticket", "review task"])) return "internal review task";
   if (hasAny(input, ["report", "dashboard", "digest"])) return "internal report";
-  if (hasAny(input, ["summary", "summarize"])) return "internal review summary";
+  if (hasAny(input, ["summary", "summarize"])) return "summary";
+  if (hasAny(input, ["tag", "label"])) return "tags";
 
-  return "internal review output";
+  return "requested output";
 }
 
 function detectApprovalOwner(input: string, domain: BlueprintDomain): string {
@@ -647,7 +632,14 @@ function buildDomainStepContext(
     classificationTarget: detectClassificationTarget(normalizedInput, domain),
     internalOutput: detectInternalOutput(normalizedInput, domain),
     approvalOwner: detectApprovalOwner(normalizedInput, domain),
-    hasDraftReply: hasAny(normalizedInput, ["draft", "reply", "response", "write", "compose"]),
+    hasDraftReply: hasAny(normalizedInput, [
+      "draft",
+      "draft reply",
+      "draft email",
+      "write a reply",
+      "compose a reply",
+      "prepare a response",
+    ]),
     hasExplicitExternalMessageBlock:
       /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:send|sending|reply|replies|message|messages|email|emails|external message|external messages)\b/.test(normalizedInput),
     hasExplicitFinancialActionBlock:
@@ -1173,39 +1165,17 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
 
   if (hasPrimitive(signals, "classification") || context.classificationTarget) {
     const target = context.classificationTarget || "internal review category";
-    const classificationDescriptionByDomain: Record<BlueprintDomain, string> = {
-      admissions: "Assign an internal triage priority for admissions review only.",
-      support: "Assign an internal issue priority using urgency, customer impact, and complaint signals.",
-      finance: "Assign an internal refund or billing risk label for finance review only.",
-      content: "Define an internal content category and audience for review only.",
-      generic: "Classify or summarize the item for internal review only.",
-    };
-
     steps.push(
       buildStep({
         id: `${context.domain}_classify_item`,
         label: `Classify ${target}`,
-        description: classificationDescriptionByDomain[context.domain],
+        description: `Classify the source item as ${target} using only the criteria stated in the request.`,
         primitive: "classification",
         actor: "rules",
         input: "Structured review fields",
         output: titleCase(target),
         automation_policy: classificationRiskCategories.length > 0 ? "assist_only" : "automate",
         risk_categories: classificationRiskCategories,
-        real_world_execution: "none",
-      }),
-    );
-  } else if (context.domain === "generic") {
-    steps.push(
-      buildStep({
-        id: "generic_classify_or_summarize",
-        label: "Classify or summarize item",
-        description: "Classify or summarize the source item only when the request asks for it.",
-        primitive: hasPrimitive(signals, "summarization") ? "summarization" : "classification",
-        actor: "rules",
-        input: titleCase(context.sourceItem),
-        output: "Internal review note",
-        automation_policy: "assist_only",
         real_world_execution: "none",
       }),
     );
@@ -1255,24 +1225,14 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
     hasPrimitive(signals, "record_creation")
     || hasPrimitive(signals, "routing")
     || hasPrimitive(signals, "escalation")
-    || signals.has_clear_output
   ) {
-    const reviewTaskLabelByDomain: Record<BlueprintDomain, string> = {
-      admissions: "Prepare admissions review task",
-      support: "Prepare support review task",
-      finance: "Prepare finance review task",
-      content: "Prepare social media post package",
-      generic: "Prepare internal review output",
-    };
-
     steps.push(
       buildStep({
         id: `${context.domain}_prepare_internal_output`,
-        label: reviewTaskLabelByDomain[context.domain],
-        description:
-          context.domain === "generic"
-            ? "Prepare an internal review output without writing to production systems."
-            : `Prepare an internal ${context.internalOutput} payload without writing to production systems.`,
+        label: context.internalOutput === "internal review task"
+          ? "Create requested internal task"
+          : "Store requested output",
+        description: `Create the requested ${context.internalOutput} without adding unrequested fields or actions.`,
         primitive: "record_creation",
         actor: "system",
         input: "Structured review fields, classification, and draft notes",
@@ -1306,7 +1266,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
       buildStep({
         id: `${context.domain}_summarize_context`,
         label: "Summarize source item",
-        description: "Prepare a concise internal summary for reviewers without sending or applying it.",
+        description: "Generate a concise summary of the requested source content.",
         primitive: "summarization",
         actor: "rules",
         input: titleCase(context.sourceItem),
@@ -1430,13 +1390,18 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
         real_world_execution: "requires_human_trigger",
       }),
     );
-  } else if (hasRisk(categories, "external_communication") || hasPrimitive(signals, "notification")) {
+  } else if (hasPrimitive(signals, "notification")) {
+    const normalizedInput = normalizeForDetection(processInput);
     const actionLabelByDomain: Record<BlueprintDomain, string> = {
       admissions: "Send acknowledgement email",
-      support: "Send requested support message",
+      support: normalizedInput.includes("slack") ? "Send requested Slack message" : "Send requested support message",
       finance: "Send requested finance message",
       content: "Publish requested content",
-      generic: "Run requested external action",
+      generic: normalizedInput.includes("slack")
+        ? "Send requested Slack message"
+        : normalizedInput.includes("email")
+          ? "Send requested email"
+          : "Run requested external action",
     };
 
     steps.push(
@@ -1506,8 +1471,9 @@ function buildSafeToAutomate(signals: SignalSummary, risks: RiskSummary): string
 function buildNeedsHumanApproval(signals: SignalSummary, risks: RiskSummary): string[] {
   const items: string[] = [];
   const categories = risks.categories;
+  const explicitlyRequestsApproval = hasPrimitive(signals, "approval");
 
-  if (hasRisk(categories, "external_communication")) {
+  if (hasRisk(categories, "external_communication") && explicitlyRequestsApproval) {
     addUnique(items, "Any external message before it is sent");
   }
 
@@ -1527,7 +1493,7 @@ function buildNeedsHumanApproval(signals: SignalSummary, risks: RiskSummary): st
     addUnique(items, "Any visa or immigration eligibility recommendation");
   }
 
-  if (hasRisk(categories, "employment")) {
+  if (hasRisk(categories, "employment") && hasRisk(categories, "high_stakes_decision")) {
     addUnique(items, "Any employment decision or recommendation");
   }
 
@@ -1535,7 +1501,7 @@ function buildNeedsHumanApproval(signals: SignalSummary, risks: RiskSummary): st
     addUnique(items, "Any account access or permission change");
   }
 
-  if (hasRisk(categories, "personal_data")) {
+  if (hasRisk(categories, "personal_data") && explicitlyRequestsApproval) {
     addUnique(items, "Any personal data access, export, or sharing decision");
   }
 
@@ -1551,7 +1517,7 @@ function buildNeedsHumanApproval(signals: SignalSummary, risks: RiskSummary): st
     addUnique(items, "Any workflow step that changes real systems or user records");
   }
 
-  if (hasRisk(categories, "complaint_or_angry_user")) {
+  if (hasRisk(categories, "complaint_or_angry_user") && explicitlyRequestsApproval) {
     addUnique(items, "Any complaint escalation or emotionally sensitive response");
   }
 
@@ -1677,11 +1643,10 @@ function getStepText(step: WorkflowStep): string {
 function getHumanBoundaryStepIds(steps: readonly WorkflowStep[]): string[] {
   return steps
     .filter((step) =>
-      step.automation_policy === "human_approval"
-      || step.automation_policy === "draft_only"
+      step.approval_required
+      || step.primitive === "approval"
+      || step.automation_policy === "human_approval"
       || step.real_world_execution === "requires_human_trigger"
-      || step.real_world_execution === "draft_only"
-      || /\b(?:manual review|approval|block|blocked|draft-only|without sending|without writing)\b/.test(getStepText(step))
     )
     .map((step) => step.id);
 }
@@ -1763,8 +1728,9 @@ function buildStepDerivedApprovalGate(steps: readonly WorkflowStep[]): HumanAppr
 function buildHumanApprovalGates(steps: readonly WorkflowStep[], risks: RiskSummary): HumanApprovalGate[] {
   const categories = risks.categories;
   const gates: HumanApprovalGate[] = [];
+  const hasRequestedApproval = steps.some((step) => step.primitive === "approval" && step.approval_required);
 
-  if (hasRisk(categories, "external_communication")) {
+  if (hasRisk(categories, "external_communication") && hasRequestedApproval) {
     gates.push(
       buildApprovalGate(
         steps,
@@ -1816,7 +1782,7 @@ function buildHumanApprovalGates(steps: readonly WorkflowStep[], risks: RiskSumm
     );
   }
 
-  if (hasAnyRisk(categories, dataAccessCategories)) {
+  if (hasRisk(categories, "account_access") || (hasRisk(categories, "personal_data") && hasRequestedApproval)) {
     gates.push(
       buildApprovalGate(
         steps,
@@ -1850,7 +1816,7 @@ function buildHumanApprovalGates(steps: readonly WorkflowStep[], risks: RiskSumm
     );
   }
 
-  if (hasRisk(categories, "complaint_or_angry_user")) {
+  if (hasRisk(categories, "complaint_or_angry_user") && hasRequestedApproval) {
     gates.push(
       buildApprovalGate(
         steps,
@@ -1867,7 +1833,7 @@ function buildHumanApprovalGates(steps: readonly WorkflowStep[], risks: RiskSumm
     );
   }
 
-  if (hasRisk(categories, "real_world_execution")) {
+  if (hasRisk(categories, "real_world_execution") && hasRequestedApproval) {
     gates.push(
       buildApprovalGate(
         steps,
@@ -2011,10 +1977,6 @@ function buildAssumptions(mode: CompileMode): string[] {
 
 function buildOpenQuestions(signals: SignalSummary, risks: RiskSummary): string[] {
   const questions = signals.missing_critical_info.map(questionForMissingInfo);
-
-  if (hasRisk(risks.categories, "external_communication")) {
-    addUnique(questions, "Who approves external messages before they are sent?");
-  }
 
   if (hasAnyRisk(risks.categories, financialRiskCategories)) {
     addUnique(questions, "Which payment or refund policy should reviewers use?");

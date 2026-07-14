@@ -135,6 +135,9 @@ Rules:
 - Always include at least one safe internal step.
 - If the prompt is vague, propose a safe clarification-oriented workflow and include open questions.
 - Include internal tasks when requested, but do not substitute them for requested external actions.
+- Treat inboxes, emails, messages, students, customers, applicants, and Slack mentions as sources or context unless an outbound verb explicitly requests sending, replying, notifying, forwarding, publishing, or posting.
+- Do not infer fields, classification, review tasks, approval gates, drafts, replies, or notifications from a business domain alone.
+- Include only user-requested primitives, technically necessary connector steps, and minimal transformations directly required for the requested output.
 - Do not invent integrations, credentials, or production connectors.`;
 
 export function buildBlueprintArchitectUserPrompt(input: {

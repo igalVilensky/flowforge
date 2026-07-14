@@ -224,6 +224,20 @@ export function buildPipelineRegressionChecks(): FixtureValidationCheck[] {
     ...jobApplicationAnswers.map((answer) => answer.answer),
   ].join(" ");
   const jobApplicationBlueprint = buildBlueprintForIntent(jobApplicationIntent).blueprint;
+  const supportSummaryIntent = [
+    "Automate my tasks.",
+    "Support emails from students.",
+    "A summary.",
+    "When a new email arrives in the student-support@university.edu inbox.",
+  ].join(" ");
+  const supportSummary = buildBlueprintForIntent(supportSummaryIntent);
+  const supportSummaryText = supportSummary.blueprint.steps
+    .map((step) => `${step.label} ${step.description} ${step.output}`)
+    .join(" ")
+    .toLowerCase();
+  const supportSlack = buildBlueprintForIntent(
+    "When a support email arrives, summarize it and send the summary to the support team in Slack.",
+  );
   const extremeRefundSession = buildDeterministicClarificationSession({
     originalInput: "Automatically issue refunds for approved customer requests.",
     answers: [
@@ -319,6 +333,24 @@ export function buildPipelineRegressionChecks(): FixtureValidationCheck[] {
         step.label === "Send acknowledgement email" && step.automation_policy === "automate",
       ),
       "The blueprint must preserve the requested acknowledgement send action.",
+    ),
+    check(
+      "inboundSupportEmailDoesNotInventActions",
+      supportSummary.signals.workflow_primitives.includes("summarization")
+        && !supportSummary.signals.has_external_action
+        && supportSummary.blueprint.human_approval_gates.length === 0
+        && supportSummaryText.includes("collect support email")
+        && supportSummaryText.includes("summarize source item")
+        && !/order id|complaint reason|urgency|customer name|review task|draft|reply|approval/.test(supportSummaryText),
+      "An inbound support email summarized internally must not invent fields, review tasks, drafts, replies, or approval gates.",
+    ),
+    check(
+      "explicitSlackSendIsPreserved",
+      supportSlack.signals.has_external_action
+        && supportSlack.signals.workflow_primitives.includes("notification")
+        && supportSlack.blueprint.steps.some((step) => step.label === "Send requested Slack message")
+        && supportSlack.blueprint.human_approval_gates.length === 0,
+      "An explicitly requested Slack send must remain in the blueprint without an invented approval gate.",
     ),
     check(
       "extremeAutomaticRefundStillNeedsBoundary",

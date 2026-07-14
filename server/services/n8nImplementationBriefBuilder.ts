@@ -141,6 +141,10 @@ function detectTriggerDescription(input: string, compileJob: CompileJob): string
 }
 
 function detectSource(input: string, compileJob: CompileJob, domain: BriefDomain): string {
+  const addressedInbox = input.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\s+inbox)\b/)?.[1];
+
+  if (addressedInbox) return addressedInbox;
+
   const inboxes = [
     "admissions inbox",
     "support inbox",
@@ -212,35 +216,8 @@ function detectExplicitExtractedFields(input: string): string[] {
   return fields;
 }
 
-function detectExtractedFields(input: string, domain: BriefDomain): string[] {
+function detectExtractedFields(input: string, _domain: BriefDomain): string[] {
   const fields = detectExplicitExtractedFields(input);
-
-  if (domain === "admissions") {
-    if (fields.length === 0 || input.includes("candidate details") || input.includes("application fields")) {
-      addUnique(fields, "candidate name", 80);
-      addUnique(fields, "role", 80);
-      addUnique(fields, "portfolio link", 80);
-      addUnique(fields, "application source", 80);
-    }
-
-    if (input.includes("candidate name")) addUnique(fields, "candidate name", 80);
-    if (input.includes("portfolio")) addUnique(fields, "portfolio link", 80);
-    if (input.includes("application source")) addUnique(fields, "application source", 80);
-  }
-
-  if (domain === "support" && fields.length === 0) {
-    addUnique(fields, "customer name", 80);
-    addUnique(fields, "issue summary", 80);
-    addUnique(fields, "urgency", 80);
-    addUnique(fields, "account identifier", 80);
-  }
-
-  if (domain === "finance" && fields.length === 0) {
-    addUnique(fields, "customer name", 80);
-    addUnique(fields, "invoice number", 80);
-    addUnique(fields, "amount", 80);
-    addUnique(fields, "refund or billing reason", 80);
-  }
 
   return uniqueStrings(fields, 8, 80);
 }
@@ -269,72 +246,47 @@ function detectClassificationTarget(input: string, domain: BriefDomain): string 
   return "";
 }
 
-function buildClassificationRules(target: string, domain: BriefDomain): string[] {
+function buildClassificationRules(target: string, _domain: BriefDomain): string[] {
   if (!target) return [];
 
-  if (domain === "admissions") {
-    return [
-      "Use only visible application email content and extracted fields.",
-      "Label missing candidate, role, portfolio, or source details as needs manual review.",
-      "Treat priority labels as internal triage, not final admissions or hiring decisions.",
-    ];
-  }
-
-  if (domain === "support") {
-    return [
-      "Use issue urgency, customer impact, and missing information to assign priority.",
-      "Escalate complaints, threats, refunds, or account access requests to manual review.",
-      "Keep any reply as a draft until a human approves it.",
-    ];
-  }
-
-  if (domain === "finance") {
-    return [
-      "Use invoice, amount, reason, and account details to label the review category.",
-      "Route refunds, payments, and billing changes to manual review.",
-      "Do not execute payment, refund, or record-update actions automatically.",
-    ];
-  }
-
   return [
-    "Use only the provided source data and extracted fields.",
-    "Flag missing required details as needs manual review.",
-    "Keep labels internal until a human approves downstream action.",
+    `Classify ${target} using only criteria explicitly stated in the clarified request.`,
+    "Use only the provided source data and explicitly requested fields.",
   ];
 }
 
 function detectInternalOutputs(input: string, domain: BriefDomain, classificationTarget: string): string[] {
   const outputs: string[] = [];
 
-  if (domain === "admissions") {
-    addUnique(outputs, "internal admissions review task", 100);
-    addUnique(outputs, "candidate summary", 100);
-    if (classificationTarget) addUnique(outputs, "priority label", 100);
-  } else if (domain === "support") {
-    addUnique(outputs, "support triage task", 100);
-    addUnique(outputs, "issue summary", 100);
-    if (classificationTarget) addUnique(outputs, "priority or category label", 100);
-  } else if (domain === "finance") {
-    addUnique(outputs, "finance review task", 100);
-    addUnique(outputs, "billing or refund summary", 100);
-    if (classificationTarget) addUnique(outputs, "review category label", 100);
+  if (hasAny(input, ["summary", "summarize", "digest", "recap"])) {
+    addUnique(outputs, "summary", 100);
   }
+
+  if (hasAny(input, ["tags", "tag the", "labels", "label the"])) {
+    addUnique(outputs, "tags", 100);
+  }
+
+  if (classificationTarget) addUnique(outputs, `${classificationTarget} label`, 100);
 
   if (hasAny(input, ["create task", "create an internal review task", "review task", "internal task"])) {
-    addUnique(outputs, domain === "generic" ? "internal review task" : outputs[0], 100);
+    addUnique(outputs, "internal task", 100);
   }
 
-  if (hasAny(input, ["draft", "reply", "response"])) {
-    addUnique(outputs, "draft reply for human review", 100);
+  if (hasAny(input, ["draft reply", "draft email", "email draft", "compose a reply", "write a reply"])) {
+    addUnique(outputs, "draft reply", 100);
+  }
+
+  if (/\bsend\b.{0,100}\bslack\b|\bslack\b.{0,100}\bsend\b/.test(input)) {
+    addUnique(outputs, "Slack message", 100);
+  } else if (/\bsend\b.{0,100}\b(?:email|reply|message)\b/.test(input)) {
+    addUnique(outputs, "sent email or message", 100);
   }
 
   if (hasAny(input, ["report", "dashboard", "digest"])) {
     addUnique(outputs, "internal report", 100);
   }
 
-  if (outputs.length === 0) {
-    addUnique(outputs, "safe internal review summary", 100);
-  }
+  if (outputs.length === 0) addUnique(outputs, "requested output", 100);
 
   return uniqueStrings(outputs, 6, 100);
 }
@@ -357,7 +309,6 @@ function detectBlockedActions(compileJob: CompileJob, input: string): string[] {
   // allowed to change the requested action in the implementation brief.
   for (const item of [
     ...(blueprint.not_safe_to_automate ?? []),
-    ...(blueprint.not_recommended ?? []),
     ...(safety?.blocked_or_not_recommended ?? []),
     ...(safety?.must_remain_draft_only ?? []),
   ]) {
@@ -370,7 +321,7 @@ function detectBlockedActions(compileJob: CompileJob, input: string): string[] {
 function detectHumanApprovalGates(compileJob: CompileJob, blockedActions: readonly string[]): string[] {
   const gates = uniqueStrings((compileJob.result.human_approval_gates ?? []).map(humanGateText), 8, 160);
 
-  if (gates.length === 0 && (compileJob.risks.requires_human_review || blockedActions.length > 0)) {
+  if (gates.length === 0 && blockedActions.length > 0) {
     gates.push("Manual review required before external communication or production execution.");
   }
 
@@ -432,12 +383,10 @@ function buildWorkflowGoal(
     parts.push(`classify ${classificationTarget}`);
   }
 
-  const reviewTask = internalOutputs.find((output) => output.includes("review task") || output.includes("triage task"));
-
-  if (reviewTask) {
-    parts.push(`prepare ${reviewTask}`);
-  } else if (internalOutputs.length > 0) {
-    parts.push(`prepare ${internalOutputs[0]}`);
+  for (const output of internalOutputs) {
+    parts.push(output.includes("sent ") || output.includes("Slack message")
+      ? `produce ${output}`
+      : `prepare ${output}`);
   }
 
   if (parts.length === 0) {
@@ -558,6 +507,7 @@ function buildImplementationWorkflowName(
 function buildRecommendedNodes(
   domain: BriefDomain,
   triggerDescription: string,
+  source: string,
   extractedFields: readonly string[],
   classificationTarget: string,
   internalOutputs: readonly string[],
@@ -569,21 +519,14 @@ function buildRecommendedNodes(
     ? reviewWorkflowLabelForDomain(domain)
     : workflowLabelForDomain(domain);
   const trigger = normalizeInput(triggerDescription);
+  const normalizedSource = normalizeInput(source);
 
   if (hasAny(trigger, ["daily", "morning", "weekly", "weekday", "monthly", "scheduled", "every"])) {
     addUnique(nodes, `Schedule: ${scheduleLabel(triggerDescription)} ${workflowLabel}`, 100);
+  } else if (hasAny(`${trigger} ${normalizedSource}`, ["email", "inbox", "gmail", "imap", "outlook"])) {
+    addUnique(nodes, "Email Trigger: Configurable Inbox", 100);
   } else {
     addUnique(nodes, `Manual Trigger: ${workflowLabel}`, 100);
-  }
-
-  if (domain === "admissions") {
-    addUnique(nodes, "Sample Application Email", 100);
-  } else if (domain === "support") {
-    addUnique(nodes, "Sample Support Message", 100);
-  } else if (domain === "finance") {
-    addUnique(nodes, "Sample Billing Request", 100);
-  } else {
-    addUnique(nodes, "Sample Internal Request", 100);
   }
 
   if (extractedFields.length > 0) {
@@ -598,22 +541,21 @@ function buildRecommendedNodes(
   }
 
   if (internalOutputs.some((output) => output.includes("draft reply") || output.includes("response"))) {
-    addUnique(nodes, "Draft Reply For Review", 100);
+    addUnique(nodes, "Draft Reply", 100);
   }
 
-  if (internalOutputs.some((output) => output.includes("review task") || output.includes("triage task"))) {
-    if (domain === "admissions") addUnique(nodes, "Prepare Admissions Review Task", 100);
-    else if (domain === "support") addUnique(nodes, "Prepare Support Review Task", 100);
-    else if (domain === "finance") addUnique(nodes, "Prepare Finance Review Task", 100);
-    else addUnique(nodes, "Prepare Internal Review Task", 100);
-  } else {
-    addUnique(nodes, "Prepare Internal Review Summary", 100);
+  if (internalOutputs.includes("summary")) addUnique(nodes, "Summarize Incoming Content", 100);
+  if (internalOutputs.includes("tags")) addUnique(nodes, "Generate Requested Tags", 100);
+  if (internalOutputs.includes("internal task")) addUnique(nodes, "Create Requested Internal Task", 100);
+  if (internalOutputs.includes("Slack message")) addUnique(nodes, "Send Summary To Slack", 100);
+  if (internalOutputs.includes("sent email or message")) addUnique(nodes, "Send Requested Email Or Message", 100);
+
+  if (internalOutputs.includes("summary") && !internalOutputs.includes("Slack message")) {
+    addUnique(nodes, "Output Summary", 100);
   }
 
   if (humanApprovalGates.length > 0 || blockedActions.length > 0) {
     addUnique(nodes, "Manual Review Required", 100);
-  } else {
-    addUnique(nodes, "Ready For Internal Review", 100);
   }
 
   return nodes.slice(0, 7);
@@ -642,6 +584,7 @@ export function buildN8nImplementationBrief(compileJob: CompileJob): N8nImplemen
   const recommendedNodes = buildRecommendedNodes(
     domain,
     triggerDescription,
+    source,
     extractedFields,
     classificationTarget,
     internalOutputs,

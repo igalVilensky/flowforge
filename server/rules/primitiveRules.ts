@@ -59,19 +59,15 @@ export const repeatedProcessPhrases = [
 
 export const externalActionPhrases = [
   "send",
-  "email",
-  "reply",
-  "message",
-  "customer",
-  "student",
-  "slack",
-  "client",
-  "partner",
-  "applicant",
+  "send to",
+  "send email",
+  "send a message",
+  "reply to",
+  "forward to",
+  "notify",
   "publish",
+  "post to",
   "post to social media",
-  "social media post",
-  "social media",
 ] as const;
 
 export const clearOutputPhrases = [
@@ -230,7 +226,20 @@ export const primitiveRules: readonly PrimitiveRule[] = [
   },
   {
     primitive: "notification",
-    phrases: ["notify", "send email", "message", "slack", "alert", "send notification"],
+    phrases: [
+      "notify",
+      "send",
+      "send email",
+      "send a message",
+      "send notification",
+      "reply to",
+      "forward to",
+      "publish",
+      "post to",
+    ],
+    patterns: [
+      /\b(?:email|message)\s+(?:the\s+|a\s+|an\s+|my\s+|our\s+)?(?:team|customer|student|applicant|client|partner|owner|manager|user|recipient)\b/,
+    ],
     rough_action: "Notify the relevant person or system",
     possible_tool: "notifier",
   },
@@ -301,6 +310,9 @@ export const riskRules: readonly RiskRule[] = [
   {
     categories: ["external_communication"],
     phrases: externalActionPhrases,
+    patterns: [
+      /\b(?:email|message)\s+(?:the\s+|a\s+|an\s+|my\s+|our\s+)?(?:team|customer|student|applicant|client|partner|owner|manager|user|recipient)\b/,
+    ],
   },
   {
     categories: ["refund_or_payment", "financial"],

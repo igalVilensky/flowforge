@@ -177,4 +177,45 @@ assert.equal(
   "External action risk alone must not silently rewrite clarified automatic-send intent.",
 );
 
+const supportSummaryJob = structuredClone(validCompileJob);
+supportSummaryJob.input.raw = "Automate my tasks. Support emails from students. A summary. When a new email arrives in the student-support@university.edu inbox.";
+supportSummaryJob.input.trimmed = supportSummaryJob.input.raw;
+supportSummaryJob.result.human_approval_gates = [];
+supportSummaryJob.result.not_safe_to_automate = [];
+supportSummaryJob.result.not_recommended = [];
+supportSummaryJob.risks.categories = [];
+supportSummaryJob.risks.requires_human_review = false;
+if (supportSummaryJob.safety_critic) {
+  supportSummaryJob.safety_critic.blocked_or_not_recommended = [];
+  supportSummaryJob.safety_critic.must_remain_draft_only = [];
+}
+const supportSummaryBrief = buildN8nImplementationBrief(supportSummaryJob);
+const supportSummaryBriefText = JSON.stringify(supportSummaryBrief).toLowerCase();
+assert.match(supportSummaryBrief.recommended_nodes[0] ?? "", /email trigger/i);
+assert.deepEqual(supportSummaryBrief.internal_outputs, ["summary"]);
+assert.match(supportSummaryBrief.recommended_nodes.join(" "), /summarize incoming content/i);
+assert.doesNotMatch(
+  supportSummaryBriefText,
+  /order id|complaint reason|urgency|customer name|account identifier|review task|draft reply|manual trigger|sample support/,
+);
+const unknownEmailProviderWarnings = collectN8nWorkflowWarnings(
+  normalizeAndValidateGeneratedWorkflow(workflow([
+    node({ name: "Configurable Email Trigger", type: "n8n-nodes-base.emailReadImap" }),
+    node({ name: "Summarize Incoming Content", type: "n8n-nodes-base.code", parameters: { jsCode: "return items;" } }),
+  ]), compactInput),
+  {
+    ...compactInput,
+    trigger_description: supportSummaryBrief.trigger_description,
+    source: supportSummaryBrief.source,
+  },
+);
+assert.match(unknownEmailProviderWarnings.join(" "), /email provider is unspecified/i);
+
+const supportSlackJob = structuredClone(supportSummaryJob);
+supportSlackJob.input.raw = "When a support email arrives, summarize it and send the summary to the support team in Slack.";
+supportSlackJob.input.trimmed = supportSlackJob.input.raw;
+const supportSlackBrief = buildN8nImplementationBrief(supportSlackJob);
+assert.ok(supportSlackBrief.internal_outputs.includes("Slack message"));
+assert.match(supportSlackBrief.recommended_nodes.join(" "), /send summary to slack/i);
+
 console.log("PASS n8n generator hard/soft validation regressions");
