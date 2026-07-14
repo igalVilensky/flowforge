@@ -4,19 +4,6 @@ import type { AutomationReadinessScore, RiskSummary, SignalSummary } from "../..
 const GENERIC_TEMPLATE =
   "When [trigger happens], read [data source], extract/classify [important fields], create [safe internal output], and route [risky or external actions] to [human/team] before anything is sent, updated, charged, deleted, or executed.";
 
-const HIGH_STAKES_RISK_CATEGORIES = [
-  "financial",
-  "refund_or_payment",
-  "legal",
-  "medical",
-  "visa_or_immigration",
-  "employment",
-  "account_access",
-  "high_stakes_decision",
-  "real_world_execution",
-  "delete_or_destructive_action",
-] as const;
-
 const DATA_PRIMITIVES = [
   "classification",
   "extraction",
@@ -43,12 +30,6 @@ function countWords(input: string): number {
 
 function hasPrimitive(signals: SignalSummary, primitives: readonly PrimitiveName[]): boolean {
   return signals.workflow_primitives.some((primitive) => primitives.includes(primitive));
-}
-
-function hasHighStakesRisk(risks: RiskSummary): boolean {
-  return risks.categories.some((category) =>
-    HIGH_STAKES_RISK_CATEGORIES.includes(category as (typeof HIGH_STAKES_RISK_CATEGORIES)[number]),
-  );
 }
 
 function addMissingField(fields: ClarificationField[], field: ClarificationField): void {
@@ -80,94 +61,50 @@ function hasNamedInputData(input: string): boolean {
     || /\b(?:source material|campaign brief|product description|blog post|image assets|brand assets|marketing points)\b/.test(input);
 }
 
-function hasApprovalOwner(input: string): boolean {
-  return /\b(?:route|send|forward|assign|escalate|hand off|handoff)\s+(?:it\s+)?to\s+(?:the\s+)?[a-z0-9 -]{2,80}?(?:team|lead|owner|manager|agent|reviewer|advisor|staff|human)\b/.test(input)
-    || /\b(?:support|finance|admissions|sales|hr|legal|medical)\s+(?:team|lead|manager|owner|reviewer|advisor)\b/.test(input)
-    || /\b(?:human|manager|reviewer|agent|owner|staff|team|approver|advisor)\b/.test(input);
-}
-
 function hasApprovalBoundary(input: string): boolean {
   return /\b(?:for|to)\s+review\b/.test(input)
     || /\b(?:review|approve|approval|human approval|manual approval|sign off|sign-off)\b/.test(input)
     || /\bbefore\s+any\s+(?:reply|message|email|response|refund|charge|account update|update|change)\s+(?:is\s+)?(?:sent|made|issued|executed|applied)\b/.test(input);
 }
 
-function hasExternalActionBoundary(input: string): boolean {
-  return /\bbefore\s+any\s+(?:reply|message|email|response|refund|charge|account update|update|change)\s+(?:is\s+)?(?:sent|made|issued|executed|applied)\b/.test(input)
-    || /\bbefore\s+sending\b/.test(input)
-    || /\bwithout\s+(?:automatically\s+)?(?:sending|send|updating|update|charging|charge|refunding|refund|deleting|delete)\b/.test(input)
-    || /\b(?:no|never|do not|don't)\s+(?:automatically\s+)?(?:send|message|email|update|charge|refund|delete)\b/.test(input)
-    || /\b(?:draft only|draft-only|human-approved before sending|review before sending|before posting|before publishing)\b/.test(input)
-    || /\bexternal action is blocked until explicit human approval\b/.test(input);
-}
-
-function hasSuccessCriteria(input: string): boolean {
-  return /\b(?:success|correctly|done|ran correctly|worked|verify|verified|created|tagged|assigned|routed|no messages were sent|no message was sent)\b/.test(input);
+function needsBlockingApprovalBoundary(input: string): boolean {
+  return /\b(?:transfer|transferring|send|sending|move|moving) (?:money|funds|payments?)\b/.test(input)
+    || /\b(?:automatically\s+)?(?:issue|issuing|process|processing|approve|approving|execute|executing)\s+(?:an?\s+)?refunds?\b|\brefunds?\s+automatically\b/.test(input)
+    || /\b(?:delete|deleting|remove|removing|drop|dropping|erase|erasing) (?:production|live) (?:data|records?|database|table)\b/.test(input)
+    || /\b(?:change|changing|grant|granting|revoke|revoking|disable|disabling|reset|resetting) (?:user |account )?(?:access|permissions?|roles?)\b/.test(input)
+    || /\b(?:make|making|decide|deciding|determine|determining|approve|approving) (?:a |the )?(?:legal|medical) (?:decision|diagnosis|recommendation|outcome)\b/.test(input)
+    || /\b(?:make|making|automate|automating)?\s*(?:final|automatic(?:ally)?)\s+(?:hiring|firing|employment) decisions?\b|\b(?:automatically\s+)?(?:hire|fire|reject)\s+(?:employees?|candidates?)\b/.test(input);
 }
 
 function detectMissingFields(
   processInput: string,
   signals: SignalSummary,
-  risks: RiskSummary,
 ): ClarificationField[] {
   const input = normalizeInput(processInput);
   const missing: ClarificationField[] = [];
   const vague = isVagueInput(processInput, signals);
-  const hasDataPrimitive = hasPrimitive(signals, DATA_PRIMITIVES);
-  const highStakes = hasHighStakesRisk(risks);
   const dataSourceKnown = hasNamedDataSource(input);
   const inputDataKnown = hasNamedInputData(input);
-  const ownerKnown = signals.has_human_actor || hasApprovalOwner(input);
   const approvalBoundaryKnown = hasApprovalBoundary(input);
-  const externalBoundaryKnown = hasExternalActionBoundary(input);
-  const successCriteriaKnown = hasSuccessCriteria(input);
 
   if (!signals.has_trigger) {
     addMissingField(missing, "trigger");
   }
 
-  if ((vague || !hasDataPrimitive) && !dataSourceKnown) {
+  if (!dataSourceKnown && !inputDataKnown) {
     addMissingField(missing, "data_source");
-  }
-
-  if ((vague || !hasDataPrimitive) && !inputDataKnown) {
-    addMissingField(missing, "input_data");
   }
 
   if (!signals.has_clear_output) {
     addMissingField(missing, "output");
   }
 
-  if (vague) {
+  if (vague && !hasPrimitive(signals, DATA_PRIMITIVES)) {
     addMissingField(missing, "decision_rules");
   }
 
-  if (signals.has_external_action) {
-    if (!ownerKnown) {
-      addMissingField(missing, "human_owner");
-    }
-
-    if (!approvalBoundaryKnown) {
-      addMissingField(missing, "approval_boundary");
-    }
-
-    if (!externalBoundaryKnown) {
-      addMissingField(missing, "external_action_boundary");
-    }
-  }
-
-  if (highStakes) {
-    if (!ownerKnown) {
-      addMissingField(missing, "human_owner");
-    }
-
-    if (!approvalBoundaryKnown) {
-      addMissingField(missing, "approval_boundary");
-    }
-  }
-
-  if ((highStakes || vague) && !successCriteriaKnown) {
-    addMissingField(missing, "success_criteria");
+  if (needsBlockingApprovalBoundary(input) && !approvalBoundaryKnown) {
+    addMissingField(missing, "approval_boundary");
   }
 
   return missing;
@@ -329,22 +266,8 @@ export type BuildClarificationPlanInput = {
 export function buildClarificationPlan(input: BuildClarificationPlanInput): ClarificationPlan {
   const { processInput, signals, risks, readiness, route } = input;
 
-  const missingFields = detectMissingFields(processInput, signals, risks);
-  const routeNeedsClarification = route === "needs_clarification";
-  const lowReadiness = readiness.score < 60;
-  const hasMissingCriticalInfo = signals.missing_critical_info.length > 0;
-  const vague = isVagueInput(processInput, signals);
-  const externalOrHighStakes = signals.has_external_action || hasHighStakesRisk(risks);
-
-  const needed =
-    missingFields.length > 0
-    && (
-      routeNeedsClarification
-      || lowReadiness
-      || hasMissingCriticalInfo
-      || vague
-      || externalOrHighStakes
-    );
+  const missingFields = detectMissingFields(processInput, signals);
+  const needed = missingFields.length > 0;
 
   if (!needed) {
     return {

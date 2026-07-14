@@ -128,12 +128,13 @@ Allowed risk category values:
 Rules:
 - Keep the workflow non-executing.
 - Use only the allowed risk category values above. Do not invent categories such as "human_error" or "system_failure"; omit uncertain risks instead.
-- Use "draft_only" for generated messages or replies.
-- Use "human_approval" for refunds, payments, external communication, account changes, employment decisions, or high-stakes decisions.
+- Use "draft_only" only when the user requested a draft or the clarified intent explicitly blocks sending.
+- Preserve ordinary requested email, Slack, CRM, ticket, document, and task actions in the blueprint; the eventual n8n workflow remains inactive by default.
+- Use "human_approval" before an external action only when the user requested approval or the action is an extreme financial, destructive, access-control, legal, medical, or final employment decision.
 - Use "blocked_in_mvp" or "not_recommended" for medical advice, legal decisions, visa/immigration decisions, account access changes, deletion, cancellation, or destructive actions.
 - Always include at least one safe internal step.
 - If the prompt is vague, propose a safe clarification-oriented workflow and include open questions.
-- Prefer safe internal review tasks over external actions.
+- Include internal tasks when requested, but do not substitute them for requested external actions.
 - Do not invent integrations, credentials, or production connectors.`;
 
 export function buildBlueprintArchitectUserPrompt(input: {

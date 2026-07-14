@@ -23,11 +23,13 @@ Important behavior:
 - The first question must match the ambiguity in the user's request.
 - For "automate my tasks", ask what task category they want to automate first.
 - For "automate emails", ask what kind of emails and what output they want.
-- For "refunds", "payments", "legal", "medical", "visa", "employment", "account access", or "delete", collect a human owner and approval boundary before compiling.
+- Treat human owner, named reviewer, approval boundaries, success criteria, credentials, implementation settings, and detailed decision rules as optional for ordinary workflows.
+- Do not ask safety questions merely because the request mentions email, sending, messages, Slack, CRM updates, external actions, or employment.
+- Ask for an approval boundary only when the core request itself is an unguarded extreme action such as transferring money, automatically issuing refunds, deleting production data, changing account access, making legal or medical decisions, or making final hiring/firing decisions.
 - If the user already answered previous questions, use those answers and ask the next most important question.
 - Do not ask five questions at once.
 - Do not ask for "data source" before understanding the user's task category.
-- Do not suggest automatic external sending, refunds, account changes, deletion, or high-stakes decisions.
+- Preserve the requested action. Sending stays sending, drafting stays drafting, and approval-before-send stays approval-before-send.
 - Keep questions short, concrete, and friendly.
 - Use plain language.
 
@@ -66,11 +68,11 @@ JSON shape:
 }
 
 Readiness rules:
-- ready_to_compile=true only when there is enough information to build a safe non-executing workflow preview.
-- Minimum useful facts: workflow goal, task type, trigger or timing, input/source, desired output.
-- If external communication or real-world changes are involved, also require human owner and approval boundary.
-- If high-stakes topics are involved, also require human owner and clear draft-only/human-review boundary.
-- rewritten_compile_prompt must be safe, concrete, internal-first, and non-executing.`;
+- ready_to_compile=true as soon as trigger/timing, source/input, main action/task, and desired output are understandable.
+- Workflow goal and task type may be inferred from the original request and answers; they do not both need separate explicit answers.
+- Missing optional governance or implementation details must not block an ordinary workflow.
+- For the extreme actions listed above, require only a clear approval boundary when one is not already present.
+- rewritten_compile_prompt must be concrete, preserve the requested actions, and state that the generated n8n workflow remains inactive until reviewed.`;
 
 export function buildClarificationConversationUserPrompt(input: {
     originalInput: string;
@@ -86,7 +88,8 @@ export function buildClarificationConversationUserPrompt(input: {
                 use_previous_answers: true,
                 return_json_only: true,
                 never_execute_actions: true,
-                keep_external_actions_human_reviewed: true,
+                preserve_requested_actions: true,
+                optional_details_must_not_block: true,
             },
         },
         null,

@@ -13,7 +13,7 @@ function clampScore(score: number): number {
   return Math.max(0, Math.min(100, score));
 }
 
-function scoreSignalReadiness(signalSummary: SignalSummary, riskSummary: RiskSummary): number {
+function scoreSignalReadiness(signalSummary: SignalSummary): number {
   let score = readinessBaseScore;
 
   if (signalSummary.has_trigger) {
@@ -42,22 +42,6 @@ function scoreSignalReadiness(signalSummary: SignalSummary, riskSummary: RiskSum
 
   if (signalSummary.missing_critical_info.length > 0) {
     score -= readinessPenalties.missing_critical_info;
-  }
-
-  if (signalSummary.has_external_action) {
-    score -= readinessPenalties.external_action;
-  }
-
-  if (signalSummary.has_sensitive_data) {
-    score -= readinessPenalties.sensitive_data;
-  }
-
-  if (riskSummary.categories.includes("real_world_execution")) {
-    score -= readinessPenalties.real_world_execution;
-  }
-
-  if (riskSummary.risk_level === "high") {
-    score -= readinessPenalties.high_risk;
   }
 
   return clampScore(score);
@@ -97,7 +81,7 @@ function getWeaknesses(signalSummary: SignalSummary, riskSummary: RiskSummary): 
   }
 
   if (signalSummary.has_external_action) {
-    weaknesses.push("External communication requires approval.");
+    weaknesses.push("External actions should be reviewed and tested before activation.");
   }
 
   if (signalSummary.has_sensitive_data) {
@@ -105,11 +89,11 @@ function getWeaknesses(signalSummary: SignalSummary, riskSummary: RiskSummary): 
   }
 
   if (riskSummary.categories.includes("real_world_execution")) {
-    weaknesses.push("Real-world execution is blocked in MVP.");
+    weaknesses.push("Real-world execution remains inactive until the workflow is reviewed.");
   }
 
   if (riskSummary.risk_level === "high") {
-    weaknesses.push("High-risk category requires human ownership.");
+    weaknesses.push("High-impact actions warrant careful review before activation.");
   }
 
   if (weaknesses.length === 0) {
@@ -124,7 +108,7 @@ export function scoreReadiness(
   riskSummary: RiskSummary,
 ): AutomationReadinessScore {
   return {
-    score: scoreSignalReadiness(signalSummary, riskSummary),
+    score: scoreSignalReadiness(signalSummary),
     strengths: getStrengths(signalSummary),
     weaknesses: getWeaknesses(signalSummary, riskSummary),
   };

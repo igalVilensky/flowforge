@@ -229,8 +229,17 @@ function getRiskLevelForCategories(categories: readonly RiskCategory[]): RiskLev
   return categories.length > 0 ? "medium" : "low";
 }
 
-function needsBlueprintHumanReview(categories: readonly RiskCategory[], risks: RiskSummary): boolean {
-  return risks.requires_human_review || hasAnyRisk(categories, ["personal_data", "complaint_or_angry_user"]);
+function needsBlueprintHumanReview(categories: readonly RiskCategory[]): boolean {
+  return hasAnyRisk(categories, [
+    "financial",
+    "refund_or_payment",
+    "legal",
+    "medical",
+    "visa_or_immigration",
+    "account_access",
+    "high_stakes_decision",
+    "delete_or_destructive_action",
+  ]);
 }
 
 function buildStep(definition: StepDefinition): WorkflowStep {
@@ -907,11 +916,11 @@ function getAutomationBoundary(
   risks: RiskSummary,
   readiness: AutomationReadinessScore,
 ): AutomationBoundary {
-  if (hasRisk(risks.categories, "real_world_execution") || hasRisk(risks.categories, "delete_or_destructive_action")) {
+  if (hasRisk(risks.categories, "delete_or_destructive_action")) {
     return "not_safe_to_automate";
   }
 
-  if (needsBlueprintHumanReview(risks.categories, risks)) {
+  if (needsBlueprintHumanReview(risks.categories)) {
     return "human_approval_required";
   }
 
@@ -1067,11 +1076,8 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
 
   const categories = risks.categories;
   const requiresApprovalStep =
-    needsBlueprintHumanReview(categories, risks)
-    || signals.has_external_action
+    needsBlueprintHumanReview(categories)
     || hasPrimitive(signals, "approval")
-    || context.domain !== "generic"
-    || context.hasDraftReply
     || context.hasExplicitExternalMessageBlock
     || context.hasExplicitFinancialActionBlock
     || context.hasExplicitProductionWriteBlock;
@@ -1400,11 +1406,7 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
         real_world_execution: "requires_human_trigger",
       }),
     );
-  } else if (
-    hasRisk(categories, "external_communication")
-    || context.hasExplicitExternalMessageBlock
-    || hasPrimitive(signals, "notification")
-  ) {
+  } else if (context.hasExplicitExternalMessageBlock) {
     const blockLabelByDomain: Record<BlueprintDomain, string> = {
       admissions: "Block external messaging",
       support: "Block automatic sending",
@@ -1426,6 +1428,30 @@ function buildWorkflowSteps(processInput: string, signals: SignalSummary, risks:
         approval_required: true,
         risk_categories: categoriesFrom(categories, ["external_communication", "personal_data", "complaint_or_angry_user"]),
         real_world_execution: "requires_human_trigger",
+      }),
+    );
+  } else if (hasRisk(categories, "external_communication") || hasPrimitive(signals, "notification")) {
+    const actionLabelByDomain: Record<BlueprintDomain, string> = {
+      admissions: "Send acknowledgement email",
+      support: "Send requested support message",
+      finance: "Send requested finance message",
+      content: "Publish requested content",
+      generic: "Run requested external action",
+    };
+
+    steps.push(
+      buildStep({
+        id: `${context.domain}_run_requested_external_action`,
+        label: actionLabelByDomain[context.domain],
+        description: "Perform the requested external action when the imported workflow is configured and activated.",
+        primitive: "notification",
+        actor: "system",
+        input: "Prepared workflow output",
+        output: "Requested external action completed",
+        automation_policy: requiresApprovalStep ? "human_approval" : "automate",
+        approval_required: requiresApprovalStep,
+        risk_categories: categoriesFrom(categories, ["external_communication", "personal_data", "real_world_execution"]),
+        real_world_execution: requiresApprovalStep ? "requires_human_trigger" : "none",
       }),
     );
   } else if (context.domain === "generic" || hasRisk(categories, "real_world_execution")) {
@@ -1552,10 +1578,6 @@ function buildNotRecommended(signals: SignalSummary, risks: RiskSummary): string
     addUnique(items, "Skipping human review for sensitive categories");
   }
 
-  if (hasRisk(categories, "external_communication")) {
-    addUnique(items, "Sending messages directly from the preview compiler");
-  }
-
   if (signals.missing_critical_info.length > 0) {
     addUnique(items, "Relying on incomplete trigger, output, permission, or execution details");
   }
@@ -1564,12 +1586,8 @@ function buildNotRecommended(signals: SignalSummary, risks: RiskSummary): string
 }
 
 function buildNotSafeToAutomate(risks: RiskSummary): string[] {
-  const items = ["Automatic real-world execution in the MVP"];
+  const items: string[] = [];
   const categories = risks.categories;
-
-  if (hasRisk(categories, "external_communication")) {
-    addUnique(items, "Sending external messages without a human trigger");
-  }
 
   if (hasAnyRisk(categories, financialRiskCategories)) {
     addUnique(items, "Charging, refunding, or changing payment outcomes automatically");

@@ -90,6 +90,21 @@ function hasAny(text: string, patterns: RegExp[]): boolean {
     return patterns.some((pattern) => pattern.test(text));
 }
 
+function inferSourceDescription(value: string): string {
+    const normalized = normalizeText(value);
+    const inboxMatch = normalized.match(
+        /\b(?:in|from|via|through)\s+(?:the\s+)?((?:[a-z0-9-]+\s+){0,2}inbox)\b/i,
+    );
+
+    if (inboxMatch?.[1]) return normalizeText(inboxMatch[1]);
+
+    const systemMatch = normalized.match(
+        /\b(gmail|slack|zendesk|intercom|hubspot|salesforce|notion|airtable|google sheets?)\b/i,
+    );
+
+    return systemMatch?.[1] ? normalizeText(systemMatch[1]) : normalized;
+}
+
 export function inferKnownFacts(input: RunClarificationConversationAgentInput): ClarificationKnownFacts {
     const text = intentText(input);
     const answerText = input.answers.map((answer) => answer.answer).join(" ").trim();
@@ -120,7 +135,7 @@ export function inferKnownFacts(input: RunClarificationConversationAgentInput): 
 
     if (taskType) {
         knownFacts.task_type = normalizeText(taskType);
-    } else if (!isVeryVagueTaskRequest(input.originalInput) && input.answers.length === 0) {
+    } else if (!isVeryVagueTaskRequest(input.originalInput)) {
         knownFacts.task_type = normalizeText(input.originalInput);
     }
 
@@ -139,8 +154,18 @@ export function inferKnownFacts(input: RunClarificationConversationAgentInput): 
         knownFacts.trigger = normalizeText(input.originalInput);
     }
 
+    const inferredSourceAnswer = [...input.answers]
+        .reverse()
+        .find((answer) => hasAny(answer.answer.toLowerCase(), [
+            /\binbox\b|\bemail\b|\bform\b|\bticket\b|\bcrm\b|\bspreadsheet\b|\bdatabase\b/,
+            /\b(?:gmail|slack|zendesk|intercom|hubspot|salesforce|notion|airtable)\b/,
+            /\b(?:arrives?|received|submitted|created)\s+(?:in|from|via|through)\b/,
+        ]));
+
     if (dataSource) {
         knownFacts.data_source = normalizeText(dataSource);
+    } else if (inferredSourceAnswer) {
+        knownFacts.data_source = inferSourceDescription(inferredSourceAnswer.answer);
     } else if (input.answers.length === 0 && hasAny(text, [
         /support inbox|admissions inbox|shared inbox|zendesk|intercom|hubspot|salesforce|gmail/,
         /google sheet|spreadsheet|database|campaign brief|product description|source material|brand assets/,
@@ -197,30 +222,40 @@ export function inferKnownFacts(input: RunClarificationConversationAgentInput): 
 
 export function hasEnoughInformation(knownFacts: ClarificationKnownFacts): boolean {
     const concrete = getConcreteKnownFacts(knownFacts);
+    const actionIsKnown = isConcreteKnownFact(concrete.task_type, "task_type")
+        || isConcreteKnownFact(concrete.workflow_goal, "workflow_goal");
 
     return Boolean(
-        isConcreteKnownFact(concrete.workflow_goal, "workflow_goal")
-        && isConcreteKnownFact(concrete.task_type, "task_type")
+        actionIsKnown
         && isConcreteKnownFact(concrete.trigger, "trigger")
         && (isConcreteKnownFact(concrete.data_source, "data_source") || isConcreteKnownFact(concrete.input_data, "input_data"))
         && isConcreteKnownFact(concrete.desired_output, "desired_output"),
     );
 }
 
-function needsHumanBoundary(input: RunClarificationConversationAgentInput): boolean {
+function needsBlockingApprovalBoundary(input: RunClarificationConversationAgentInput): boolean {
     const text = intentText(input);
     return hasAny(text, [
-        /send|reply|email|message|external|publish|posting|social media/,
-        /refund|payment|charge|invoice|billing/,
-        /legal|medical|visa|immigration|employment/,
-        /delete|remove|account|access|update/,
+        /\b(?:transfer|transferring|send|sending|move|moving) (?:money|funds|payments?)\b/,
+        /\b(?:automatically\s+)?(?:issue|issuing|process|processing|approve|approving|execute|executing)\s+(?:an?\s+)?refunds?\b|\brefunds?\s+automatically\b/,
+        /\b(?:delete|deleting|remove|removing|drop|dropping|erase|erasing) (?:production|live) (?:data|records?|database|table)\b/,
+        /\b(?:change|changing|grant|granting|revoke|revoking|disable|disabling|reset|resetting) (?:user |account )?(?:access|permissions?|roles?)\b/,
+        /\b(?:make|making|decide|deciding|determine|determining|approve|approving) (?:a |the )?(?:legal|medical) (?:decision|diagnosis|recommendation|outcome)\b/,
+        /\b(?:make|making|automate|automating)?\s*(?:final|automatic(?:ally)?)\s+(?:hiring|firing|employment) decisions?\b|\b(?:automatically\s+)?(?:hire|fire|reject)\s+(?:employees?|candidates?)\b/,
     ]);
 }
 
-function hasHumanBoundary(knownFacts: ClarificationKnownFacts): boolean {
-    return isConcreteKnownFact(knownFacts.human_owner, "human_owner")
-        && (isConcreteKnownFact(knownFacts.approval_boundary, "approval_boundary")
-            || isConcreteKnownFact(knownFacts.external_action_boundary, "external_action_boundary"));
+function hasApprovalBoundary(knownFacts: ClarificationKnownFacts): boolean {
+    return isConcreteKnownFact(knownFacts.approval_boundary, "approval_boundary")
+        || isConcreteKnownFact(knownFacts.external_action_boundary, "external_action_boundary");
+}
+
+function isReadyToCompile(
+    input: RunClarificationConversationAgentInput,
+    knownFacts: ClarificationKnownFacts,
+): boolean {
+    return hasEnoughInformation(knownFacts)
+        && (!needsBlockingApprovalBoundary(input) || hasApprovalBoundary(knownFacts));
 }
 
 function buildCompilePrompt(input: RunClarificationConversationAgentInput, knownFacts: ClarificationKnownFacts): string {
@@ -234,9 +269,9 @@ function buildCompilePrompt(input: RunClarificationConversationAgentInput, known
         safety_constraints: [
             concreteFacts.approval_boundary,
             concreteFacts.external_action_boundary,
-            "Build a non-executing FlowForge workflow blueprint.",
-            "Keep external actions human-reviewed or draft-only.",
-            "Do not connect production credentials or execute real-world actions.",
+            "Preserve every action requested in the clarified intent.",
+            "Generate the workflow inactive so the user can review it before activation.",
+            "Credentials and exact implementation settings will be configured manually in n8n after import.",
         ].filter((constraint): constraint is string => Boolean(constraint)),
     });
 }
@@ -265,7 +300,11 @@ function buildCurrentSummary(
     knownFacts: ClarificationKnownFacts,
 ): string {
     if (knownFacts.task_type && knownFacts.desired_output) {
-        return normalizeText(`${knownFacts.task_type}, producing ${knownFacts.desired_output}.`);
+        const task = knownFacts.task_type.replace(/[.!?]+$/, "");
+        const output = knownFacts.desired_output
+            .replace(/^produce\s+/i, "")
+            .replace(/[.!?]+$/, "");
+        return normalizeText(`${task}, producing ${output}.`);
     }
 
     if (input.answers.length > 0) {
@@ -295,7 +334,7 @@ function questionWasAlreadyAnswered(input: RunClarificationConversationAgentInpu
         if (previousKind === question.kind && isConcreteKnownFact(answer.answer, question.kind)) return true;
 
         if (question.kind === "human_owner" || question.kind === "approval_boundary" || question.kind === "external_action_boundary") {
-            return /support lead|channel owner|manager|human|review|approve|before sending|before posting|before publishing|before anything/.test(previousAnswer);
+            return /support lead|channel owner|human|manual review|manually approve|requires approval|must approve|before (?:sending|posting|publishing|running|executing|issuing)|before anything/.test(previousAnswer);
         }
 
         if (question.kind === "decision_rules") {
@@ -378,32 +417,22 @@ function createFallbackQuestion(
         };
     }
 
-    if (needsHumanBoundary(input) && !isConcreteKnownFact(knownFacts.human_owner, "human_owner")) {
-        return {
-            id: "human_reviewer",
-            kind: "human_owner",
-            question: "Who reviews the result before anything is sent or changed?",
-            why_it_matters: "External replies and sensitive actions need accountable human ownership.",
-            example_answer: "The support lead reviews every draft before sending.",
-        };
-    }
-
-    if (needsHumanBoundary(input) && !hasHumanBoundary(knownFacts)) {
+    if (needsBlockingApprovalBoundary(input) && !hasApprovalBoundary(knownFacts)) {
         return {
             id: "approval_boundary",
             kind: "approval_boundary",
-            question: "What must stay human-approved or draft-only?",
-            why_it_matters: "This prevents FlowForge from planning automatic external actions.",
-            example_answer: "No replies are sent automatically. The support lead reviews every draft.",
+            question: "What approval should be required before this high-risk action runs?",
+            why_it_matters: "This action could cause irreversible or high-stakes consequences.",
+            example_answer: "A human must explicitly approve the action before it runs.",
         };
     }
 
     return {
-        id: "success_criteria",
-        kind: "success_criteria",
-        question: "How will you know the workflow worked correctly?",
-        why_it_matters: "Success criteria help FlowForge generate useful dry-run checks.",
-        example_answer: "A draft reply, tags, and a support-lead task are created, with no message sent automatically.",
+        id: "desired_output",
+        kind: "desired_output",
+        question: "What useful result should the workflow produce?",
+        why_it_matters: "A concrete output is required to build the workflow.",
+        example_answer: "A summary, acknowledgement email, tags, and an internal task.",
     };
 }
 
@@ -417,8 +446,8 @@ export function buildDeterministicClarificationSession(
         ...inferKnownFacts(input),
     };
 
-    if (hasEnoughInformation(knownFacts) && (!needsHumanBoundary(input) || hasHumanBoundary(knownFacts))) {
-        return buildReadySession(input, knownFacts, "Enough clarification has been collected to compile a safe preview.");
+    if (isReadyToCompile(input, knownFacts)) {
+        return buildReadySession(input, knownFacts, "Trigger, source, action, and output are clear enough to compile.");
     }
 
     if (input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
@@ -480,6 +509,14 @@ export function normalizeAgentSession(
         );
     }
 
+    if (isReadyToCompile(input, parsedSession.known_facts)) {
+        return buildReadySession(
+            input,
+            parsedSession.known_facts,
+            "Trigger, source, action, and output are clear enough to compile.",
+        );
+    }
+
     const isExplicitNeedsAnswer = parsedSession.status === "needs_answer"
         && parsedSession.ready_to_compile === false
         && parsedSession.next_question !== null;
@@ -503,7 +540,7 @@ export function normalizeAgentSession(
     }
 
     const enoughInfo = hasEnoughInformation(parsedSession.known_facts);
-    const boundaryOk = !needsHumanBoundary(input) || hasHumanBoundary(parsedSession.known_facts);
+    const boundaryOk = !needsBlockingApprovalBoundary(input) || hasApprovalBoundary(parsedSession.known_facts);
 
     if (parsedSession.ready_to_compile && parsedSession.status === "ready_to_compile" && enoughInfo && boundaryOk) {
         parsedSession = buildReadySession(
@@ -575,6 +612,15 @@ export async function runClarificationConversationAgent(
     input: RunClarificationConversationAgentInput,
 ): Promise<ClarificationSessionResponse> {
     const preflightFacts = inferKnownFacts(input);
+
+    if (isReadyToCompile(input, preflightFacts)) {
+        return clarificationSessionResponseSchema.parse({
+            session: buildReadySession(input, preflightFacts, "Trigger, source, action, and output are clear enough to compile."),
+            used_ai: false,
+            provider: "deterministic" satisfies AgentProvider,
+            fallback_used: false,
+        });
+    }
 
     if (input.answers.length >= MAX_CLARIFICATION_QUESTIONS) {
         return clarificationSessionResponseSchema.parse({

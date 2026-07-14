@@ -48,6 +48,25 @@ const sourceAnswer: ClarificationSessionAnswer = {
   answer: "A product description, campaign brief, brand assets, and key marketing points.",
 };
 
+const jobApplicationInput = "Handle new job applications automatically.";
+const jobApplicationAnswers: ClarificationSessionAnswer[] = [
+  {
+    question_id: "choose_task_category",
+    question: "What should the workflow do?",
+    answer: "Automatically send an acknowledgement email to applicants.",
+  },
+  {
+    question_id: "desired_output",
+    question: "What should the workflow produce?",
+    answer: "Produce a summary, acknowledgement email, tags, and an internal review task.",
+  },
+  {
+    question_id: "workflow_trigger",
+    question: "When should this workflow start?",
+    answer: "Trigger when an email with subject Job Application arrives in the HR inbox.",
+  },
+];
+
 function check(name: string, success: boolean, message: string): FixtureValidationCheck {
   return {
     name,
@@ -183,6 +202,43 @@ export function buildPipelineRegressionChecks(): FixtureValidationCheck[] {
     ready_to_compile: false,
     reason: "Ask for a trigger.",
   }, partialInput);
+  const jobApplicationSession = buildDeterministicClarificationSession(
+    { originalInput: jobApplicationInput, answers: jobApplicationAnswers },
+    "Regression fixture minimal readiness.",
+  );
+  const cautiousJobApplicationSession = normalizeAgentSession({
+    current_summary: "Job application acknowledgement workflow.",
+    known_facts: jobApplicationSession.known_facts,
+    next_question: {
+      id: "human_reviewer",
+      kind: "human_owner",
+      question: "Who reviews the result?",
+      why_it_matters: "Optional governance detail.",
+    },
+    status: "needs_answer",
+    ready_to_compile: false,
+    reason: "Provider requested an optional owner.",
+  }, { originalInput: jobApplicationInput, answers: jobApplicationAnswers });
+  const jobApplicationIntent = [
+    jobApplicationInput,
+    ...jobApplicationAnswers.map((answer) => answer.answer),
+  ].join(" ");
+  const jobApplicationBlueprint = buildBlueprintForIntent(jobApplicationIntent).blueprint;
+  const extremeRefundSession = buildDeterministicClarificationSession({
+    originalInput: "Automatically issue refunds for approved customer requests.",
+    answers: [
+      {
+        question_id: "desired_output",
+        question: "What should the workflow produce?",
+        answer: "Issue the approved refund and create a receipt.",
+      },
+      {
+        question_id: "workflow_trigger",
+        question: "When should this workflow start?",
+        answer: "When an approved refund request arrives from the billing form.",
+      },
+    ],
+  }, "Regression fixture extreme action boundary.");
 
   return [
     check(
@@ -241,6 +297,34 @@ export function buildPipelineRegressionChecks(): FixtureValidationCheck[] {
         && duplicateQuestion.status === "ready_to_compile"
         && duplicateQuestion.next_question === null,
       "A provider question that was already answered must not create another clarification loop.",
+    ),
+    check(
+      "jobApplicationCoreFactsCompileImmediately",
+      jobApplicationSession.ready_to_compile
+        && jobApplicationSession.status === "ready_to_compile"
+        && jobApplicationSession.next_question === null
+        && Boolean(jobApplicationSession.rewritten_compile_prompt),
+      "Trigger, source, action, and output must be sufficient without owner, boundary, or success-criteria questions.",
+    ),
+    check(
+      "optionalProviderQuestionDoesNotBlockCompile",
+      cautiousJobApplicationSession.ready_to_compile
+        && cautiousJobApplicationSession.status === "ready_to_compile"
+        && cautiousJobApplicationSession.next_question === null,
+      "A cautious provider must not override deterministic readiness with an optional human-owner question.",
+    ),
+    check(
+      "requestedAcknowledgementActionIsPreserved",
+      jobApplicationBlueprint.steps.some((step) =>
+        step.label === "Send acknowledgement email" && step.automation_policy === "automate",
+      ),
+      "The blueprint must preserve the requested acknowledgement send action.",
+    ),
+    check(
+      "extremeAutomaticRefundStillNeedsBoundary",
+      !extremeRefundSession.ready_to_compile
+        && extremeRefundSession.next_question?.kind === "approval_boundary",
+      "An automatic refund workflow without an approval boundary must still ask one blocking safety question.",
     ),
   ];
 }

@@ -104,31 +104,6 @@ const inputDataPhrases = [
   "marketing points",
 ] as const;
 
-const externalBoundaryPhrases = [
-  "before any reply is sent",
-  "before any message is sent",
-  "before any email is sent",
-  "before sending",
-  "without sending",
-  "no messages sent",
-  "no message is sent",
-  "no emails sent",
-  "no email is sent",
-  "do not send",
-  "don't send",
-  "draft only",
-  "draft-only",
-  "human-approved before sending",
-  "review before sending",
-  "for review before any reply is sent",
-  "for review before any message is sent",
-  "before posting",
-  "before publishing",
-  "approval before posting",
-  "approval before publishing",
-  "external action is blocked until explicit human approval",
-] as const;
-
 function normalizeInput(input: string): string {
   return input
     .normalize("NFKC")
@@ -314,22 +289,11 @@ function hasApprovalOwner(input: string): boolean {
     || /\b(?:support|finance|admissions|sales|hr|legal|medical)\s+(?:team|lead|manager|owner|reviewer|advisor)\b/.test(input);
 }
 
-function hasExternalActionBoundary(input: string): boolean {
-  return matchesAny(input, externalBoundaryPhrases)
-    || /\bbefore\s+any\s+(?:reply|message|email|response|refund|charge|account update|update|change)\s+(?:is\s+)?(?:sent|made|issued|executed|applied)\b/.test(input)
-    || /\b(?:without|never)\s+(?:automatically\s+)?(?:send|sending|update|updating|charge|charging|refund|refunding|delete|deleting|post|posting|publish|publishing)\b/.test(input)
-    || /\bexternal action is blocked until explicit human approval\b/.test(input);
-}
-
 function getMissingCriticalInfo(
   hasTrigger: boolean,
   hasClearOutput: boolean,
-  hasExternalAction: boolean,
-  hasSensitiveData: boolean,
-  hasRealWorldExecutionRisk: boolean,
-  hasDataSource: boolean,
-  hasOwner: boolean,
-  hasBoundary: boolean,
+  hasSourceOrInput: boolean,
+  hasMainAction: boolean,
 ): string[] {
   const missingInfo: string[] = [];
 
@@ -341,16 +305,12 @@ function getMissingCriticalInfo(
     missingInfo.push("Expected output is not clear.");
   }
 
-  if (hasExternalAction && (!hasOwner || !hasBoundary)) {
-    missingInfo.push("External channel and approval owner are not defined.");
+  if (!hasSourceOrInput) {
+    missingInfo.push("Data source or input is not clear.");
   }
 
-  if (hasSensitiveData && !hasDataSource) {
-    missingInfo.push("Data source and access permissions are not defined.");
-  }
-
-  if (hasRealWorldExecutionRisk && !hasBoundary) {
-    missingInfo.push("Execution target and rollback plan are not defined.");
+  if (!hasMainAction) {
+    missingInfo.push("Main workflow action is not clear.");
   }
 
   return missingInfo;
@@ -366,7 +326,6 @@ export function scanSignals(input: string): SignalSummary {
   const hasRepeatedProcess = matchesAny(normalizedInput, repeatedProcessPhrases);
   const hasExternalAction = riskFlags.includes("external_communication");
   const hasSensitiveData = riskFlags.some((category) => sensitiveRiskCategories.includes(category));
-  const hasRealWorldExecutionRisk = riskFlags.includes("real_world_execution");
   const hasClearOutput =
     matchesAny(normalizedInput, clearOutputPhrases) ||
     workflowPrimitives.some((primitive) => outputPrimitives.includes(primitive));
@@ -376,15 +335,22 @@ export function scanSignals(input: string): SignalSummary {
       ["classification", "routing", "approval", "risk_detection", "validation", "escalation"].includes(primitive),
     );
   const hasDataSource = hasNamedDataSource(normalizedInput);
+  const hasInputData = hasNamedInputData(normalizedInput);
   const hasOwner = hasApprovalOwner(normalizedInput);
-  const hasBoundary = hasExternalActionBoundary(normalizedInput);
   const hasHumanActor = hasOwner;
   const hasSystemActor = matchesAny(normalizedInput, systemActorPhrases) || hasDataSource || workflowPrimitives.length > 0;
-  const needsApproval =
-    hasExternalAction ||
-    hasRealWorldExecutionRisk ||
-    riskFlags.includes("high_stakes_decision") ||
-    riskFlags.includes("delete_or_destructive_action");
+  const needsApproval = riskFlags.some((category) => [
+    "financial",
+    "refund_or_payment",
+    "legal",
+    "medical",
+    "account_access",
+    "high_stakes_decision",
+    "delete_or_destructive_action",
+  ].includes(category));
+  const hasMainAction = workflowPrimitives.some((primitive) =>
+    primitive !== "intake" && primitive !== "risk_detection",
+  );
 
   return {
     has_trigger: hasTrigger,
@@ -400,12 +366,8 @@ export function scanSignals(input: string): SignalSummary {
     missing_critical_info: getMissingCriticalInfo(
       hasTrigger,
       hasClearOutput,
-      hasExternalAction,
-      hasSensitiveData,
-      hasRealWorldExecutionRisk,
-      hasDataSource,
-      hasOwner,
-      hasBoundary,
+      hasDataSource || hasInputData,
+      hasMainAction,
     ),
     rough_actions: getRoughActions(workflowPrimitives, needsApproval),
     possible_tools: getPossibleTools(workflowPrimitives, hasExternalAction, needsApproval),
