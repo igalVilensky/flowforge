@@ -351,39 +351,63 @@ function buildMainConnections(
   mainNodes: ResolvedSelectedNode[],
   connections: Record<string, unknown>,
 ): void {
-  for (let index = 0; index < mainNodes.length; index += 1) {
+  for (
+    let index = 0;
+    index < mainNodes.length;
+    index += 1
+  ) {
     const current = mainNodes[index];
 
     if (!current) {
       continue;
     }
 
+    /*
+     * Explicit conditional branches are connected either:
+     *
+     * condition output → first branch node
+     *
+     * or:
+     *
+     * previous node in the same branch → current branch node
+     */
     if (current.branch) {
-      const conditionIndex = findNearestConditionIndex(mainNodes, index);
+      const conditionIndex =
+        findNearestConditionIndex(
+          mainNodes,
+          index,
+        );
 
       if (conditionIndex === -1) {
         continue;
       }
 
-      const conditionNode = mainNodes[conditionIndex];
+      const conditionNode =
+        mainNodes[conditionIndex];
 
       if (!conditionNode) {
         continue;
       }
 
-      const previousBranchNode = findPreviousNodeInBranch(
-        mainNodes,
-        conditionIndex,
-        index,
-        current.branch,
-      );
+      const previousBranchNode =
+        findPreviousNodeInBranch(
+          mainNodes,
+          conditionIndex,
+          index,
+          current.branch,
+        );
 
       if (previousBranchNode) {
-        addConnection(connections, previousBranchNode.name, "main", {
-          node: current.name,
-          type: "main",
-          index: 0,
-        });
+        addConnection(
+          connections,
+          previousBranchNode.name,
+          "main",
+          {
+            node: current.name,
+            type: "main",
+            index: 0,
+          },
+        );
 
         continue;
       }
@@ -397,7 +421,9 @@ function buildMainConnections(
           type: "main",
           index: 0,
         },
-        branchOutputIndex(current.branch),
+        branchOutputIndex(
+          current.branch,
+        ),
       );
 
       continue;
@@ -407,31 +433,146 @@ function buildMainConnections(
       continue;
     }
 
-    const branchTails = collectBranchTailsBeforeIndex(mainNodes, index);
+    /*
+     * When the current node is a Merge node, treat the two
+     * immediately preceding main nodes as its two inputs.
+     *
+     * Example selection:
+     *
+     * Schedule
+     * Get Messages
+     * Get Notes
+     * Merge
+     *
+     * Connections:
+     *
+     * Get Messages → Merge input 0
+     * Get Notes    → Merge input 1
+     */
+    if (current.entry.key === "merge") {
+      const firstMergeSource =
+        mainNodes[index - 2];
+
+      const secondMergeSource =
+        mainNodes[index - 1];
+
+      if (
+        firstMergeSource
+        && secondMergeSource
+        && !firstMergeSource.branch
+        && !secondMergeSource.branch
+      ) {
+        addConnection(
+          connections,
+          firstMergeSource.name,
+          "main",
+          {
+            node: current.name,
+            type: "main",
+            index: 0,
+          },
+        );
+
+        addConnection(
+          connections,
+          secondMergeSource.name,
+          "main",
+          {
+            node: current.name,
+            type: "main",
+            index: 1,
+          },
+        );
+
+        continue;
+      }
+    }
+
+    const branchTails =
+      collectBranchTailsBeforeIndex(
+        mainNodes,
+        index,
+      );
 
     if (branchTails.length > 0) {
       for (const branchTail of branchTails) {
-        addConnection(connections, branchTail.name, "main", {
-          node: current.name,
-          type: "main",
-          index: 0,
-        });
+        addConnection(
+          connections,
+          branchTail.name,
+          "main",
+          {
+            node: current.name,
+            type: "main",
+            index: 0,
+          },
+        );
       }
 
       continue;
     }
 
-    const previous = mainNodes[index - 1];
+    const previous =
+      mainNodes[index - 1];
 
     if (!previous) {
       continue;
     }
 
-    addConnection(connections, previous.name, "main", {
-      node: current.name,
-      type: "main",
-      index: 0,
-    });
+    /*
+     * If the next node is Merge, the current node is the second
+     * merge source. It should start from the same upstream node
+     * as the first merge source instead of being connected after
+     * the first source.
+     *
+     * Before:
+     *
+     * Trigger → Source A → Source B → Merge
+     *
+     * After:
+     *
+     * Trigger → Source A
+     * Trigger → Source B
+     */
+    const next =
+      mainNodes[index + 1];
+
+    if (
+      next?.entry.key === "merge"
+      && index >= 2
+    ) {
+      const sharedUpstream =
+        mainNodes[index - 2];
+
+      if (
+        sharedUpstream
+        && !previous.branch
+        && !current.branch
+      ) {
+        addConnection(
+          connections,
+          sharedUpstream.name,
+          "main",
+          {
+            node: current.name,
+            type: "main",
+            index: 0,
+          },
+        );
+
+        continue;
+      }
+    }
+
+    addConnection(
+      connections,
+      previous.name,
+      "main",
+      {
+        node: current.name,
+        type: "main",
+        index: 0,
+      },
+    );
   }
 }
 
