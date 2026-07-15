@@ -205,6 +205,7 @@ export const safetyCriticReviewSchema = z
   .strict() satisfies z.ZodType<SafetyCriticReview>;
 
 const agentOutputProviderSchema = z.enum([
+  "openai",
   "groq",
   "gemini",
   "deterministic",

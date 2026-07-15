@@ -909,6 +909,12 @@ export async function runCompilePipeline(input: {
   const validation = safeValidateCompileJob(compileJob);
 
   if (!validation.success) {
+      console.error("[compile final validation] Failed", {
+    issues: validation.issues,
+    blueprintProvider: blueprintArchitectAgentResult.output.provider,
+    safetyProvider: safetyCriticAgentResult.output.provider,
+    clarificationProvider: clarificationAgentResult.output.provider,
+  });
     await emitProgress(emit, {
       type: "step_failed",
       step_id: "final_guard",

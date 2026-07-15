@@ -28,6 +28,7 @@ import {
 const requiredString = z.string().min(1, "Required string cannot be empty.");
 
 export const agentOutputProviderSchema = z.enum([
+    "openai",
     "groq",
     "gemini",
     "deterministic",
