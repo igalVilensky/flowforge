@@ -16,7 +16,7 @@ export const routerDecisionSchema = z
     reason: requiredString,
     safety_note: requiredString,
     suggested_next_step: requiredString,
-    provider: z.enum(["groq", "gemini", "deterministic"]),
+    provider: z.enum(["openai", "groq", "gemini", "deterministic"]),
     used_ai: z.boolean(),
     fallback_used: z.boolean(),
   })

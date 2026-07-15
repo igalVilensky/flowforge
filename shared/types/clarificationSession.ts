@@ -67,7 +67,7 @@ export type ClarificationSessionRequest = {
 export type ClarificationSessionResponse = {
     session: ClarificationSession;
     used_ai: boolean;
-    provider: "groq" | "gemini" | "deterministic";
+    provider: "openai" | "groq" | "gemini" | "deterministic";
     fallback_used: boolean;
     raw_response?: string;
 };

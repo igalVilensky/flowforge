@@ -1,5 +1,8 @@
-import type { CompactN8nGenerationInput } from "../../shared/types/n8nWorkflow";
 import type {
+  CompactN8nGenerationInput,
+} from "../../shared/types/n8nWorkflow";
+import type {
+  N8nConditionalBranch,
   N8nNodeSelection,
   N8nNodeSelectionIssue,
   SelectedN8nNode,
@@ -24,7 +27,8 @@ export type N8nNodeSelectorCall = (
   systemPrompt: string,
 ) => Promise<string>;
 
-export class N8nNodeSelectionError extends Error {
+export class N8nNodeSelectionError
+  extends Error {
   issues: N8nNodeSelectionIssue[];
 
   constructor(
@@ -38,7 +42,10 @@ export class N8nNodeSelectionError extends Error {
 }
 
 function isDebugEnabled(): boolean {
-  return process.env.N8N_SELECTOR_DEBUG === "true";
+  return (
+    process.env.N8N_SELECTOR_DEBUG
+    === "true"
+  );
 }
 
 function debugLog(
@@ -50,14 +57,19 @@ function debugLog(
     return;
   }
 
-  const prefix = `[n8n selector:${provider}]`;
+  const prefix =
+    `[n8n selector:${provider}]`;
 
   if (value === undefined) {
     console.log(prefix, message);
     return;
   }
 
-  console.log(prefix, message, value);
+  console.log(
+    prefix,
+    message,
+    value,
+  );
 }
 
 function debugError(
@@ -69,22 +81,19 @@ function debugError(
     return;
   }
 
-  const prefix = `[n8n selector:${provider}]`;
+  const prefix =
+    `[n8n selector:${provider}]`;
 
   if (value === undefined) {
     console.error(prefix, message);
     return;
   }
 
-  console.error(prefix, message, value);
-}
-
-function safeJsonStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+  console.error(
+    prefix,
+    message,
+    value,
+  );
 }
 
 function isRecord(
@@ -97,7 +106,9 @@ function isRecord(
   );
 }
 
-function normalizeText(value: unknown): string {
+function normalizeText(
+  value: unknown,
+): string {
   return typeof value === "string"
     ? value
         .normalize("NFKC")
@@ -108,18 +119,26 @@ function normalizeText(value: unknown): string {
     : "";
 }
 
-function stripJsonFence(value: string): string {
+function stripJsonFence(
+  value: string,
+): string {
   const trimmed = value.trim();
 
   const match = trimmed.match(
     /^```(?:json)?\s*([\s\S]*?)\s*```$/i,
   );
 
-  return match?.[1]?.trim() ?? trimmed;
+  return (
+    match?.[1]?.trim()
+    ?? trimmed
+  );
 }
 
-function parseSelectionJson(raw: string): unknown {
-  const cleaned = stripJsonFence(raw);
+function parseSelectionJson(
+  raw: string,
+): unknown {
+  const cleaned =
+    stripJsonFence(raw);
 
   try {
     return JSON.parse(cleaned);
@@ -138,7 +157,9 @@ function parseSelectionJson(raw: string): unknown {
   }
 }
 
-function normalizeStepIds(value: unknown): number[] {
+function normalizeStepIds(
+  value: unknown,
+): number[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -146,7 +167,9 @@ function normalizeStepIds(value: unknown): number[] {
   return [
     ...new Set(
       value.filter(
-        (item): item is number =>
+        (
+          item,
+        ): item is number =>
           typeof item === "number"
           && Number.isInteger(item)
           && item > 0,
@@ -163,27 +186,68 @@ function normalizeNodeName(
     typeof value === "string"
     && value.trim()
   ) {
-    return value.trim().slice(0, 100);
+    return value
+      .trim()
+      .slice(0, 100);
   }
 
   return (
-    getN8nNodeByKey(nodeKey)?.displayName
+    getN8nNodeByKey(
+      nodeKey,
+    )?.displayName
     ?? nodeKey
+  );
+}
+
+function normalizeReason(
+  value: unknown,
+): string | undefined {
+  if (
+    typeof value !== "string"
+    || !value.trim()
+  ) {
+    return undefined;
+  }
+
+  return value
+    .trim()
+    .slice(0, 240);
+}
+
+function normalizeConditionalBranch(
+  value: unknown,
+): N8nConditionalBranch
+  | undefined {
+  const normalized =
+    normalizeText(value);
+
+  if (normalized === "true") {
+    return "true";
+  }
+
+  if (normalized === "false") {
+    return "false";
+  }
+
+  return undefined;
+}
+
+function isConditionalNodeKey(
+  nodeKey: string,
+): boolean {
+  return (
+    nodeKey === "if"
+    || nodeKey === "switch"
+    || nodeKey === "filter"
   );
 }
 
 /**
  * Resolve exact catalog keys and case-only differences.
  *
- * Accepted:
- * - "asana" -> "asana"
- * - "Asana" -> "asana"
- * - "Notion" -> "notion"
- *
- * Rejected:
- * - "asena"
- * - "emailTrigger"
- * - "ai-informationExtractor"
+ * The lowercase value must be calculated before calling
+ * isKnownN8nNodeKey(). Otherwise TypeScript can narrow the
+ * false branch and incorrectly treat `trimmed` as `never`.
  */
 function resolveKnownNodeKey(
   value: string,
@@ -194,8 +258,6 @@ function resolveKnownNodeKey(
     return null;
   }
 
-  // Calculate before the type-guard call.
-  // Otherwise TypeScript may narrow `trimmed` to `never`.
   const lowerCaseValue =
     trimmed.toLowerCase();
 
@@ -210,252 +272,270 @@ function resolveKnownNodeKey(
         === lowerCaseValue,
     );
 
-  return caseInsensitiveMatch?.key ?? null;
+  return (
+    caseInsensitiveMatch?.key
+    ?? null
+  );
+}
+
+function deriveWorkflowName(
+  brief: CompactN8nGenerationInput,
+): string {
+  const request =
+    normalizeText(
+      brief.original_request,
+    );
+
+  if (
+    request.includes("invoice")
+    && (
+      request.includes(
+        "purchase order",
+      )
+      || request.includes(
+        "goods receipt",
+      )
+      || request.includes("match")
+      || request.includes("compare")
+    )
+  ) {
+    return (
+      "Invoice Matching and Review Workflow"
+    );
+  }
+
+  if (
+    request.includes("content")
+    && request.includes("gap")
+  ) {
+    return (
+      "Content Gap Review Workflow"
+    );
+  }
+
+  if (
+    request.includes("low stock")
+    || request.includes(
+      "replenishment",
+    )
+  ) {
+    return (
+      "Low Stock Replenishment Workflow"
+    );
+  }
+
+  if (
+    request.includes("candidate")
+    || request.includes(
+      "job application",
+    )
+  ) {
+    return (
+      "Job Application Review Workflow"
+    );
+  }
+
+  const briefName =
+    typeof brief.workflow_name
+      === "string"
+      ? brief.workflow_name.trim()
+      : "";
+
+  if (briefName) {
+    return briefName.slice(
+      0,
+      120,
+    );
+  }
+
+  return "Generated n8n Workflow";
 }
 
 /**
- * Determines whether the workflow clearly starts from an
- * external event rather than from a person clicking "Execute".
+ * Only original_request is trusted when deciding whether a
+ * domain term belongs in the workflow title.
  *
- * This intentionally uses strong signals only. When the trigger
- * remains genuinely unclear, manualTrigger is still allowed.
+ * Safety and deterministic fallback text may contain terms such
+ * as "refund" even when the user never requested a refund.
  */
-function isClearlyEventDriven(
+function workflowNameContainsUnrelatedTerm(
+  workflowName: string,
   brief: CompactN8nGenerationInput,
 ): boolean {
-  const source = normalizeText(brief.source);
+  const normalizedName =
+    normalizeText(workflowName);
 
-  const triggerDescription = normalizeText(
-    brief.trigger_description,
-  );
-
-  const originalRequest = normalizeText(
-    brief.original_request,
-  );
-
-  const context =
-    `${source} ${triggerDescription} ${originalRequest}`;
-
-  if (
-    source.includes("event source")
-    || source.includes("webhook")
-  ) {
-    return true;
-  }
-
-  if (
-    /^(when|whenever|once)\b/.test(
-      triggerDescription,
-    )
-  ) {
-    return true;
-  }
-
-  const eventPatterns: RegExp[] = [
-    /\bwhen\s+.+\s+drops?\s+below\b/,
-    /\bwhen\s+.+\s+rises?\s+above\b/,
-    /\bwhen\s+.+\s+falls?\s+below\b/,
-    /\bwhen\s+.+\s+changes?\b/,
-    /\bwhen\s+.+\s+is\s+created\b/,
-    /\bwhen\s+.+\s+is\s+updated\b/,
-    /\bwhen\s+.+\s+is\s+submitted\b/,
-    /\bwhen\s+.+\s+is\s+received\b/,
-    /\bwhen\s+.+\s+arrives?\b/,
-    /\bwhenever\s+.+\b/,
-    /\bon\s+.+\s+event\b/,
-    /\btriggered\s+by\s+.+\b/,
-    /\bwebhook\b/,
-  ];
-
-  return eventPatterns.some((pattern) =>
-    pattern.test(context)
-  );
-}
-
-function validateTriggerSemantics(input: {
-  brief: CompactN8nGenerationInput;
-  nodes: SelectedN8nNode[];
-  issues: N8nNodeSelectionIssue[];
-}): void {
-  const {
-    brief,
-    nodes,
-    issues,
-  } = input;
-
-  if (!isClearlyEventDriven(brief)) {
-    return;
-  }
-
-  const manualTriggerIndex =
-    nodes.findIndex(
-      (node) =>
-        node.nodeKey === "manualTrigger",
+  const originalRequest =
+    normalizeText(
+      brief.original_request,
     );
 
-  if (manualTriggerIndex === -1) {
-    return;
-  }
+  const guardedTerms = [
+    "refund",
+    "replenishment",
+    "low stock",
+    "candidate",
+    "admissions",
+    "invoice",
+    "content gap",
+  ];
 
-  issues.push({
-    path: `nodes.${manualTriggerIndex}.nodeKey`,
-    message:
-      'manualTrigger is not valid for this clearly event-driven workflow. Select an event-compatible trigger from the catalog, normally "webhook" when the concrete source integration is not specified.',
-    code: "invalid_type",
-  });
+  return guardedTerms.some(
+    (term) =>
+      normalizedName.includes(term)
+      && !originalRequest.includes(term),
+  );
 }
 
-function validateAndNormalizeSelection(
-  input: unknown,
-  fallbackWorkflowName: string,
+function normalizeWorkflowName(
+  value: unknown,
+  brief: CompactN8nGenerationInput,
+): string {
+  const candidate =
+    typeof value === "string"
+    && value.trim()
+      ? value
+          .trim()
+          .slice(0, 120)
+      : "";
+
+  if (
+    !candidate
+    || workflowNameContainsUnrelatedTerm(
+      candidate,
+      brief,
+    )
+  ) {
+    return deriveWorkflowName(
+      brief,
+    );
+  }
+
+  return candidate;
+}
+
+function normalizeSelection(
+  parsed: unknown,
   brief: CompactN8nGenerationInput,
 ): N8nNodeSelection {
-  const issues: N8nNodeSelectionIssue[] = [];
-
-  if (!isRecord(input)) {
+  if (!isRecord(parsed)) {
     throw new N8nNodeSelectionError(
-      "Node selector returned an invalid result.",
+      "Node selector returned an invalid selection.",
       [
         {
           path: "(root)",
-          message: "Expected a JSON object.",
-          code: "invalid_type",
+          message:
+            "The result must be a JSON object.",
+          code:
+            "invalid_selection",
         },
       ],
     );
   }
 
-  const rawNodes = Array.isArray(input.nodes)
-    ? input.nodes
-    : [];
-
-  if (rawNodes.length === 0) {
-    issues.push({
-      path: "nodes",
-      message:
-        "At least one selected node is required.",
-      code: "too_small",
-    });
+  if (!Array.isArray(parsed.nodes)) {
+    throw new N8nNodeSelectionError(
+      "Node selector returned no node array.",
+      [
+        {
+          path: "nodes",
+          message:
+            "nodes must be an array.",
+          code: "invalid_nodes",
+        },
+      ],
+    );
   }
 
-  const nodes: SelectedN8nNode[] = [];
+  const issues:
+    N8nNodeSelectionIssue[] = [];
 
-  rawNodes.forEach((rawNode, index) => {
-    const path = `nodes.${index}`;
+  const workflowName =
+    normalizeWorkflowName(
+      parsed.workflowName,
+      brief,
+    );
 
-    if (!isRecord(rawNode)) {
-      issues.push({
-        path,
-        message:
-          "Expected a node selection object.",
-        code: "invalid_type",
-      });
+  const nodes:
+    SelectedN8nNode[] = [];
 
-      return;
-    }
+  parsed.nodes.forEach(
+    (rawNode, index) => {
+      if (!isRecord(rawNode)) {
+        issues.push({
+          path: `nodes.${index}`,
+          message:
+            "Each selected node must be an object.",
+          code: "invalid_node",
+        });
 
-    const rawNodeKey =
-      typeof rawNode.nodeKey === "string"
-        ? rawNode.nodeKey.trim()
-        : "";
+        return;
+      }
 
-    const nodeKey =
-      resolveKnownNodeKey(rawNodeKey);
+      const rawKey =
+        typeof rawNode.nodeKey
+          === "string"
+          ? rawNode.nodeKey
+          : "";
 
-    if (!nodeKey) {
-      issues.push({
-        path: `${path}.nodeKey`,
-        message:
-          `Unknown catalog node key: ${
-            rawNodeKey || "(empty)"
-          }.`,
-        code: "unknown_node_key",
-      });
+      const nodeKey =
+        resolveKnownNodeKey(
+          rawKey,
+        );
 
-      return;
-    }
+      if (!nodeKey) {
+        issues.push({
+          path:
+            `nodes.${index}.nodeKey`,
+          message:
+            `Unknown catalog node key "${rawKey}".`,
+          code:
+            "unknown_node_key",
+        });
 
-    nodes.push({
-      stepIds: normalizeStepIds(
-        rawNode.stepIds,
-      ),
-      nodeKey,
-      name: normalizeNodeName(
-        rawNode.name,
+        return;
+      }
+
+      /*
+       * Conditional nodes create branches and cannot belong to
+       * one of their own outputs. Remove harmless model mistakes
+       * such as branch: "true" on an If node.
+       */
+      const branch =
+        isConditionalNodeKey(
+          nodeKey,
+        )
+          ? undefined
+          : normalizeConditionalBranch(
+              rawNode.branch,
+            );
+
+      nodes.push({
+        stepIds:
+          normalizeStepIds(
+            rawNode.stepIds,
+          ),
         nodeKey,
-      ),
-      ...(typeof rawNode.reason === "string"
-      && rawNode.reason.trim()
-        ? {
-            reason: rawNode.reason
-              .trim()
-              .slice(0, 240),
-          }
-        : {}),
-    });
-  });
-
-  const mainTriggers = nodes.filter(
-    (node) =>
-      getN8nNodeByKey(node.nodeKey)
-        ?.group === "trigger",
-  );
-
-  if (mainTriggers.length > 1) {
-    issues.push({
-      path: "nodes",
-      message:
-        "The selected main workflow contains more than one trigger. Choose one main trigger.",
-      code: "multiple_triggers",
-    });
-  }
-
-  for (
-    let index = 1;
-    index < nodes.length;
-    index += 1
-  ) {
-    const previous = getN8nNodeByKey(
-      nodes[index - 1]!.nodeKey,
-    );
-
-    const current = getN8nNodeByKey(
-      nodes[index]!.nodeKey,
-    );
-
-    if (
-      previous?.group === "trigger"
-      && current?.group === "trigger"
-    ) {
-      issues.push({
-        path: `nodes.${index}`,
-        message:
-          "A trigger cannot follow another trigger in the main path.",
-        code: "trigger_after_trigger",
+        name:
+          normalizeNodeName(
+            rawNode.name,
+            nodeKey,
+          ),
+        reason:
+          normalizeReason(
+            rawNode.reason,
+          ),
+        branch,
       });
-    }
-  }
-
-  validateTriggerSemantics({
-    brief,
-    nodes,
-    issues,
-  });
+    },
+  );
 
   if (issues.length > 0) {
     throw new N8nNodeSelectionError(
-      "Node selector returned an invalid architecture.",
+      "Node selector result failed normalization.",
       issues,
     );
   }
-
-  const workflowName =
-    typeof input.workflowName === "string"
-    && input.workflowName.trim()
-      ? input.workflowName
-          .trim()
-          .slice(0, 120)
-      : fallbackWorkflowName;
 
   return {
     workflowName,
@@ -463,297 +543,1370 @@ function validateAndNormalizeSelection(
   };
 }
 
-function formatRepairIssues(
-  issues: N8nNodeSelectionIssue[],
+function triggerContext(
+  brief: CompactN8nGenerationInput,
 ): string {
-  return issues
-    .map(
-      (issue) =>
-        `- ${issue.path}: ${issue.message}`,
-    )
-    .join("\n");
-}
-
-function buildRepairPrompt(input: {
-  originalPrompt: string;
-  rawResponse: string;
-  issues: N8nNodeSelectionIssue[];
-}): string {
-  return `
-Your previous node-selection response failed validation.
-
-Validation errors:
-${formatRepairIssues(input.issues)}
-
-Previous invalid response:
-${input.rawResponse}
-
-Repair instructions:
-- Return the complete corrected JSON object.
-- Use only exact, case-sensitive nodeKey values from the catalog in the original request.
-- Copy catalog keys exactly.
-- Do not invent node keys.
-- Do not use display names as nodeKey values.
-- Do not add prefixes or suffixes to node keys.
-- Correct every listed validation error.
-- Correct only what is necessary.
-- Preserve valid node selections unless they must change to fix validation.
-- When manualTrigger is rejected because the workflow is event-driven, select an event-compatible trigger.
-- When the external event source is not a named catalog integration, normally use the exact catalog key "webhook".
-- Return JSON only.
-- Do not include markdown fences.
-- Do not include explanations.
-
-Original node-selection request:
-${input.originalPrompt}
-`.trim();
-}
-
-function shouldRepairWithOpenAI(
-  provider: N8nNodeSelectorProvider,
-  error: unknown,
-): error is N8nNodeSelectionError {
-  return (
-    provider === "openai"
-    && error instanceof N8nNodeSelectionError
+  return normalizeText(
+    [
+      brief.trigger_description,
+      brief.source,
+    ].join(" "),
   );
 }
 
-function parseAndValidateSelection(input: {
-  raw: string;
-  fallbackWorkflowName: string;
-  provider: N8nNodeSelectorProvider;
-  stage: "initial" | "repair";
-  brief: CompactN8nGenerationInput;
-}): N8nNodeSelection {
-  const {
-    raw,
-    fallbackWorkflowName,
-    provider,
-    stage,
-    brief,
-  } = input;
-
-  let parsed: unknown;
-
-  try {
-    parsed = parseSelectionJson(raw);
-  } catch (error) {
-    debugError(
-      provider,
-      `${stage} JSON parsing failed`,
-      {
-        rawResponse: raw,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-        issues:
-          error instanceof N8nNodeSelectionError
-            ? error.issues
-            : [],
-      },
+function isClearlyEventDriven(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const source =
+    normalizeText(
+      brief.source,
     );
 
-    throw error;
+  const triggerDescription =
+    normalizeText(
+      brief.trigger_description,
+    );
+
+  const originalRequest =
+    normalizeText(
+      brief.original_request,
+    );
+
+  const context = [
+    source,
+    triggerDescription,
+    originalRequest,
+  ].join(" ");
+
+  if (
+    source.includes(
+      "event source",
+    )
+    || source.includes("webhook")
+  ) {
+    return true;
   }
+
+  if (
+    /^(when|whenever|once|after)\b/.test(
+      triggerDescription,
+    )
+  ) {
+    return true;
+  }
+
+  const eventPatterns:
+    RegExp[] = [
+      /\bwhen\s+.+\s+drops?\s+below\b/,
+      /\bwhen\s+.+\s+falls?\s+below\b/,
+      /\bwhen\s+.+\s+rises?\s+above\b/,
+      /\bwhen\s+.+\s+exceeds?\b/,
+      /\bwhen\s+.+\s+reaches?\b/,
+      /\bwhen\s+.+\s+changes?\b/,
+      /\bwhen\s+.+\s+becomes?\b/,
+      /\bwhen\s+.+\s+is\s+created\b/,
+      /\bwhen\s+.+\s+is\s+updated\b/,
+      /\bwhen\s+.+\s+is\s+submitted\b/,
+      /\bwhen\s+.+\s+is\s+received\b/,
+      /\bwhen\s+.+\s+is\s+completed\b/,
+      /\bwhen\s+.+\s+is\s+finished\b/,
+      /\bwhen\s+.+\s+is\s+approved\b/,
+      /\bwhen\s+.+\s+is\s+rejected\b/,
+      /\bwhen\s+.+\s+is\s+closed\b/,
+      /\bwhen\s+.+\s+is\s+opened\b/,
+      /\bwhen\s+.+\s+is\s+published\b/,
+      /\bwhen\s+.+\s+is\s+deleted\b/,
+      /\bwhen\s+.+\s+is\s+archived\b/,
+      /\bwhen\s+.+\s+is\s+assigned\b/,
+      /\bwhen\s+.+\s+is\s+moved\b/,
+      /\bwhen\s+.+\s+is\s+added\b/,
+      /\bwhen\s+.+\s+is\s+removed\b/,
+      /\bwhen\s+.+\s+completes?\b/,
+      /\bwhen\s+.+\s+finishes?\b/,
+      /\bwhen\s+.+\s+arrives?\b/,
+      /\bwhen\s+.+\s+submits?\b/,
+      /\bwhen\s+.+\s+publishes?\b/,
+      /\bwhen\s+.+\s+fails?\b/,
+      /\bwhenever\s+.+\b/,
+      /\bon\s+.+\s+event\b/,
+      /\btriggered\s+by\s+.+\b/,
+      /\bafter\s+.+\s+is\s+completed\b/,
+      /\bafter\s+.+\s+is\s+finished\b/,
+      /\bafter\s+.+\s+is\s+approved\b/,
+      /\bwebhook\b/,
+    ];
+
+  return eventPatterns.some(
+    (pattern) =>
+      pattern.test(context),
+  );
+}
+
+function isExplicitGmailTrigger(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const context =
+    triggerContext(brief);
+
+  return (
+    context.includes("gmail")
+    || /\bgmail\s+(?:message|email|event|inbox)\b/.test(
+      context,
+    )
+  );
+}
+
+function isExplicitOutlookTrigger(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const context =
+    triggerContext(brief);
+
+  return (
+    context.includes("outlook")
+    || context.includes(
+      "microsoft 365",
+    )
+    || /\boutlook\s+(?:message|email|event|inbox)\b/.test(
+      context,
+    )
+  );
+}
+
+function isExplicitChatTrigger(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const context =
+    triggerContext(brief);
+
+  return (
+    context.includes("n8n chat")
+    || context.includes(
+      "chat message",
+    )
+    || context.includes(
+      "chat trigger",
+    )
+  );
+}
+
+function isExplicitScheduledTrigger(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const context =
+    normalizeText(
+      [
+        brief.trigger_description,
+        brief.source,
+        brief.original_request,
+      ].join(" "),
+    );
+
+  return (
+    context.includes("schedule")
+    || context.includes(
+      "scheduled",
+    )
+    || context.includes(
+      "every morning",
+    )
+    || context.includes(
+      "each morning",
+    )
+    || context.includes(
+      "every day",
+    )
+    || context.includes("daily")
+    || context.includes(
+      "every weekday",
+    )
+    || context.includes("weekly")
+    || context.includes("monthly")
+    || context.includes(
+      "every quarter",
+    )
+    || context.includes(
+      "quarterly",
+    )
+  );
+}
+
+function findTriggerIndexes(
+  nodes: SelectedN8nNode[],
+): number[] {
+  return nodes
+    .map(
+      (node, index) => ({
+        index,
+        entry:
+          getN8nNodeByKey(
+            node.nodeKey,
+          ),
+      }),
+    )
+    .filter(
+      ({ entry }) =>
+        entry?.group
+        === "trigger",
+    )
+    .map(
+      ({ index }) => index,
+    );
+}
+
+function validateTriggerSemantics(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  const triggerIndexes =
+    findTriggerIndexes(nodes);
+
+  if (
+    triggerIndexes.length === 0
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        "The workflow must contain one trigger.",
+      code: "missing_trigger",
+    });
+
+    return;
+  }
+
+  if (
+    triggerIndexes.length > 1
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        "The workflow must contain exactly one main trigger.",
+      code:
+        "multiple_triggers",
+    });
+
+    return;
+  }
+
+  const triggerIndex =
+    triggerIndexes[0];
+
+  if (
+    triggerIndex === undefined
+  ) {
+    return;
+  }
+
+  const triggerNode =
+    nodes[triggerIndex];
+
+  if (!triggerNode) {
+    return;
+  }
+
+  if (
+    isClearlyEventDriven(brief)
+    && triggerNode.nodeKey
+      === "manualTrigger"
+  ) {
+    issues.push({
+      path:
+        `nodes.${triggerIndex}.nodeKey`,
+      message:
+        'manualTrigger is invalid for this event-driven workflow. Use "webhook" when the concrete event source is unspecified.',
+      code:
+        "invalid_trigger_source",
+    });
+  }
+
+  if (
+    triggerNode.nodeKey
+      === "gmailTrigger"
+    && !isExplicitGmailTrigger(
+      brief,
+    )
+  ) {
+    issues.push({
+      path:
+        `nodes.${triggerIndex}.nodeKey`,
+      message:
+        'gmailTrigger is invalid because Gmail is not explicitly the source. Do not infer Gmail from a generic inbox.',
+      code:
+        "invalid_trigger_source",
+    });
+  }
+
+  if (
+    triggerNode.nodeKey
+      === "microsoftOutlookTrigger"
+    && !isExplicitOutlookTrigger(
+      brief,
+    )
+  ) {
+    issues.push({
+      path:
+        `nodes.${triggerIndex}.nodeKey`,
+      message:
+        "microsoftOutlookTrigger is invalid because Outlook is not explicitly the source.",
+      code:
+        "invalid_trigger_source",
+    });
+  }
+
+  if (
+    triggerNode.nodeKey
+      === "chatTrigger"
+    && !isExplicitChatTrigger(
+      brief,
+    )
+  ) {
+    issues.push({
+      path:
+        `nodes.${triggerIndex}.nodeKey`,
+      message:
+        "chatTrigger is invalid because the workflow is not started by an n8n chat message.",
+      code:
+        "invalid_trigger_source",
+    });
+  }
+
+  if (
+    triggerNode.nodeKey
+      === "scheduleTrigger"
+    && !isExplicitScheduledTrigger(
+      brief,
+    )
+  ) {
+    issues.push({
+      path:
+        `nodes.${triggerIndex}.nodeKey`,
+      message:
+        "scheduleTrigger is invalid because the request does not describe a scheduled start.",
+      code:
+        "invalid_trigger_source",
+    });
+  }
+}
+
+function findNearestConditionIndex(
+  nodes: SelectedN8nNode[],
+  fromIndex: number,
+): number {
+  for (
+    let index =
+      fromIndex - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const node =
+      nodes[index];
+
+    if (
+      node
+      && isConditionalNodeKey(
+        node.nodeKey,
+      )
+    ) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function requestHasConditionalActions(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const request =
+    normalizeText(
+      brief.original_request,
+    );
+
+  return (
+    /\bif\s+.+\s+(?:is|are)\s+(?:found|detected|identified)\b/.test(
+      request,
+    )
+    || /\bif\s+(?:gaps?|issues?|errors?|matches?|records?|items?)\b/.test(
+      request,
+    )
+    || /\bwhen\s+(?:gaps?|issues?|errors?)\s+(?:are\s+)?found\b/.test(
+      request,
+    )
+    || request.includes("either")
+    || request.includes(
+      "otherwise",
+    )
+    || request.includes(
+      "discrepancies",
+    )
+  );
+}
+
+function requestHasAlternativeOutcomes(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const request =
+    normalizeText(
+      brief.original_request,
+    );
+
+  return (
+    (
+      request.includes("either")
+      && request.includes(" or ")
+    )
+    || request.includes(
+      "otherwise",
+    )
+    || request.includes("if not")
+    || request.includes(
+      "if unmatched",
+    )
+    || request.includes(
+      "if discrepancies",
+    )
+    || request.includes(
+      "when discrepancies",
+    )
+    || (
+      request.includes(
+        "matched invoices",
+      )
+      && request.includes(
+        "discrepancies",
+      )
+    )
+    || (
+      request.includes("if ")
+      && request.includes("else")
+    )
+  );
+}
+
+function validateConditionalOrdering(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  if (
+    !requestHasConditionalActions(
+      brief,
+    )
+  ) {
+    return;
+  }
+
+  const conditionIndex =
+    nodes.findIndex(
+      (node) =>
+        isConditionalNodeKey(
+          node.nodeKey,
+        ),
+    );
+
+  if (
+    conditionIndex === -1
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        "The request contains conditional actions, but no If, Switch, or Filter node was selected.",
+      code:
+        "missing_condition_node",
+    });
+
+    return;
+  }
+
+  /*
+   * Only branch-labelled nodes are guarded outcome actions.
+   * Retrieval and comparison HTTP Request nodes are allowed
+   * before the condition.
+   */
+  const guardedActionBeforeCondition =
+    nodes.findIndex(
+      (node, index) =>
+        index < conditionIndex
+        && node.branch !== undefined,
+    );
+
+  if (
+    guardedActionBeforeCondition
+    !== -1
+  ) {
+    issues.push({
+      path:
+        `nodes.${guardedActionBeforeCondition}`,
+      message:
+        "A branch action appears before its conditional node.",
+      code:
+        "branch_action_before_condition",
+    });
+  }
+}
+
+function validateConditionalBranches(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  nodes.forEach(
+    (node, index) => {
+      if (!node.branch) {
+        return;
+      }
+
+      const conditionIndex =
+        findNearestConditionIndex(
+          nodes,
+          index,
+        );
+
+      if (
+        conditionIndex === -1
+      ) {
+        issues.push({
+          path:
+            `nodes.${index}.branch`,
+          message:
+            `Node "${node.name}" declares branch "${node.branch}" but no preceding conditional node exists.`,
+          code:
+            "branch_without_condition",
+        });
+      }
+    },
+  );
+
+  if (
+    !requestHasAlternativeOutcomes(
+      brief,
+    )
+  ) {
+    return;
+  }
+
+  const conditionIndex =
+    nodes.findIndex(
+      (node) =>
+        isConditionalNodeKey(
+          node.nodeKey,
+        ),
+    );
+
+  if (
+    conditionIndex === -1
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        "The original request contains alternative outcomes, but no conditional node was selected.",
+      code:
+        "missing_branch_condition",
+    });
+
+    return;
+  }
+
+  const nodesAfterCondition =
+    nodes.slice(
+      conditionIndex + 1,
+    );
+
+  const hasTrueBranch =
+    nodesAfterCondition.some(
+      (node) =>
+        node.branch === "true",
+    );
+
+  const hasFalseBranch =
+    nodesAfterCondition.some(
+      (node) =>
+        node.branch === "false",
+    );
+
+  if (
+    !hasTrueBranch
+    || !hasFalseBranch
+  ) {
+    issues.push({
+      path:
+        `nodes.${conditionIndex}`,
+      message:
+        'The request contains mutually exclusive outcomes. Add at least one node with branch "true" and one node with branch "false".',
+      code:
+        "missing_conditional_branches",
+    });
+  }
+}
+
+function requestRequiresComparison(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const request =
+    normalizeText(
+      brief.original_request,
+    );
+
+  return (
+    request.includes("compare")
+    || request.includes(
+      "matching",
+    )
+    || request.includes(
+      "matched",
+    )
+    || request.includes(
+      "reconcile",
+    )
+  );
+}
+
+function nodeLooksLikeExtraction(
+  node: SelectedN8nNode,
+): boolean {
+  return (
+    node.nodeKey
+    === "informationExtractor"
+  );
+}
+
+function nodeLooksLikeComparison(
+  node: SelectedN8nNode,
+): boolean {
+  const text =
+    normalizeText(
+      [
+        node.name,
+        node.reason ?? "",
+      ].join(" "),
+    );
+
+  const comparisonLanguage =
+    text.includes("compare")
+    || text.includes(
+      "comparison",
+    )
+    || text.includes("match")
+    || text.includes(
+      "reconcile",
+    )
+    || text.includes(
+      "validate against",
+    );
+
+  const retrievalLanguage =
+    text.includes("retrieve")
+    || text.includes("fetch")
+    || text.includes("load")
+    || text.includes(
+      "look up",
+    )
+    || text.includes(
+      "lookup",
+    );
+
+  const documentLanguage =
+    text.includes(
+      "purchase order",
+    )
+    || text.includes(" po ")
+    || text.includes(
+      "goods receipt",
+    )
+    || text.includes(" gr ")
+    || text.includes("erp");
+
+  return (
+    (comparisonLanguage
+      || retrievalLanguage)
+    && documentLanguage
+  );
+}
+
+function validateRequiredComparison(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  if (
+    !requestRequiresComparison(
+      brief,
+    )
+  ) {
+    return;
+  }
+
+  const conditionIndex =
+    nodes.findIndex(
+      (node) =>
+        isConditionalNodeKey(
+          node.nodeKey,
+        ),
+    );
+
+  if (
+    conditionIndex === -1
+  ) {
+    return;
+  }
+
+  const preconditionNodes =
+    nodes.slice(
+      0,
+      conditionIndex,
+    );
+
+  const hasExplicitComparison =
+    preconditionNodes.some(
+      (node) =>
+        nodeLooksLikeComparison(
+          node,
+        ),
+    );
+
+  if (!hasExplicitComparison) {
+    issues.push({
+      path:
+        `nodes.${conditionIndex}`,
+      message:
+        "The request requires comparing related records, but no explicit retrieval or comparison node appears before the condition. Extraction alone is not comparison. Add a comparison step such as an HTTP Request that retrieves and compares the purchase order and goods receipt before the If node.",
+      code:
+        "missing_comparison_step",
+    });
+  }
+
+  const onlyExtractionBeforeCondition =
+    preconditionNodes.some(
+      nodeLooksLikeExtraction,
+    )
+    && !hasExplicitComparison;
+
+  if (
+    onlyExtractionBeforeCondition
+  ) {
+    issues.push({
+      path:
+        `nodes.${conditionIndex}`,
+      message:
+        "Do not branch directly from Information Extractor output when external purchase-order or goods-receipt records still need to be retrieved and compared.",
+      code:
+        "condition_directly_after_extraction",
+    });
+  }
+}
+
+function summaryWasRequested(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const outputContext =
+    normalizeText(
+      [
+        ...brief.internal_outputs,
+        brief.workflow_goal,
+        brief.classification_target,
+      ].join(" "),
+    );
+
+  return (
+    outputContext.includes(
+      "summary",
+    )
+    || outputContext.includes(
+      "summarize",
+    )
+  );
+}
+
+function validateRequestedSummary(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  if (
+    !summaryWasRequested(
+      brief,
+    )
+  ) {
+    return;
+  }
+
+  const hasSummarizationNode =
+    nodes.some(
+      (node) =>
+        node.nodeKey
+        === "chainSummarization",
+    );
+
+  if (
+    !hasSummarizationNode
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        'The clarified output requests a summary. Include a "chainSummarization" node; a Set/Edit Fields node does not itself generate a natural-language summary.',
+      code:
+        "missing_summary_node",
+    });
+  }
+}
+
+function paymentActionsAreBlocked(
+  brief: CompactN8nGenerationInput,
+): boolean {
+  const blockedContext =
+    normalizeText(
+      [
+        ...brief
+          .blocked_or_not_safe_actions,
+        ...brief.warnings,
+        brief.safety_summary,
+      ].join(" "),
+    );
+
+  return (
+    blockedContext.includes(
+      "payment",
+    )
+    && (
+      blockedContext.includes(
+        "block",
+      )
+      || blockedContext.includes(
+        "blocked",
+      )
+      || blockedContext.includes(
+        "not safe",
+      )
+      || blockedContext.includes(
+        "automatic",
+      )
+      || blockedContext.includes(
+        "approval",
+      )
+    )
+  );
+}
+
+function nodeLooksLikeDirectPaymentAction(
+  node: SelectedN8nNode,
+): boolean {
+  const text =
+    normalizeText(
+      [
+        node.name,
+        node.reason ?? "",
+      ].join(" "),
+    );
+
+  const directAction =
+    text.includes(
+      "schedule payment",
+    )
+    || text.includes(
+      "initiate payment",
+    )
+    || text.includes(
+      "execute payment",
+    )
+    || text.includes(
+      "process payment",
+    )
+    || text.includes(
+      "send payment",
+    )
+    || text.includes(
+      "pay invoice",
+    );
+
+  const safeHandoff =
+    text.includes(
+      "approval and payment scheduling",
+    )
+    || (
+      text.includes("approval")
+      && text.includes(
+        "forward",
+      )
+    );
+
+  return (
+    directAction
+    && !safeHandoff
+  );
+}
+
+function validateBlockedPaymentActions(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  if (
+    !paymentActionsAreBlocked(
+      brief,
+    )
+  ) {
+    return;
+  }
+
+  nodes.forEach(
+    (node, index) => {
+      if (
+        !nodeLooksLikeDirectPaymentAction(
+          node,
+        )
+      ) {
+        return;
+      }
+
+      issues.push({
+        path: `nodes.${index}`,
+        message:
+          'Automatic payment actions are blocked. Remove the separate payment-scheduling node and use one safe handoff action such as "Forward Invoice for Approval and Payment Scheduling".',
+        code:
+          "blocked_payment_action",
+      });
+    },
+  );
+}
+
+function validateUnrequestedFinalActions(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  const request =
+    normalizeText(
+      brief.original_request,
+    );
+
+  nodes.forEach(
+    (node, index) => {
+      const nodeDescription =
+        normalizeText(
+          [
+            node.name,
+            node.reason ?? "",
+          ].join(" "),
+        );
+
+      const looksUnrequested =
+        nodeDescription.includes(
+          "log final status",
+        )
+        || nodeDescription.includes(
+          "notify sender",
+        )
+        || nodeDescription.includes(
+          "reply to sender",
+        )
+        || nodeDescription.includes(
+          "send confirmation",
+        )
+        || nodeDescription.includes(
+          "send acknowledgement",
+        )
+        || nodeDescription.includes(
+          "send acknowledgment",
+        );
+
+      if (!looksUnrequested) {
+        return;
+      }
+
+      const explicitlyRequested =
+        request.includes(
+          "notify sender",
+        )
+        || request.includes(
+          "reply to sender",
+        )
+        || request.includes(
+          "send confirmation",
+        )
+        || request.includes(
+          "send acknowledgement",
+        )
+        || request.includes(
+          "send acknowledgment",
+        )
+        || request.includes(
+          "log final status",
+        );
+
+      if (
+        !explicitlyRequested
+      ) {
+        issues.push({
+          path:
+            `nodes.${index}`,
+          message:
+            "This final reply, acknowledgement, sender notification, or status-log action was not requested.",
+          code:
+            "unrequested_action",
+        });
+      }
+    },
+  );
+}
+
+function validateCurrentWorkflowTerminology(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  const currentContext =
+    normalizeText(
+      brief.original_request,
+    );
+
+  const domainTerms = [
+    "replenishment",
+    "inventory",
+    "low stock",
+    "candidate",
+    "admissions",
+    "refund",
+    "support ticket",
+  ];
+
+  nodes.forEach(
+    (node, index) => {
+      const nodeText =
+        normalizeText(
+          [
+            node.name,
+            node.reason ?? "",
+          ].join(" "),
+        );
+
+      for (
+        const term
+        of domainTerms
+      ) {
+        if (
+          nodeText.includes(term)
+          && !currentContext.includes(
+            term,
+          )
+        ) {
+          issues.push({
+            path:
+              `nodes.${index}.name`,
+            message:
+              `The node contains unrelated terminology "${term}" that is absent from the original request.`,
+            code:
+              "unrelated_workflow_term",
+          });
+
+          break;
+        }
+      }
+    },
+  );
+}
+
+function validateSelection(
+  brief: CompactN8nGenerationInput,
+  selection: N8nNodeSelection,
+): void {
+  const issues:
+    N8nNodeSelectionIssue[] = [];
+
+  if (
+    selection.nodes.length === 0
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        "At least one node must be selected.",
+      code:
+        "empty_selection",
+    });
+  }
+
+  validateTriggerSemantics({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateConditionalOrdering({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateConditionalBranches({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateRequiredComparison({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateRequestedSummary({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateBlockedPaymentActions({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateUnrequestedFinalActions({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  validateCurrentWorkflowTerminology({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
+
+  if (issues.length > 0) {
+    throw new N8nNodeSelectionError(
+      "Node selection failed semantic validation.",
+      issues,
+    );
+  }
+}
+
+function buildRepairPrompt(
+  brief: CompactN8nGenerationInput,
+  previousOutput: string,
+  issues: N8nNodeSelectionIssue[],
+): string {
+  return [
+    buildN8nNodeSelectorUserPrompt({
+      brief,
+    }),
+    "",
+    "Your previous result was invalid:",
+    previousOutput
+    || "(previous output unavailable)",
+    "",
+    "Validation errors:",
+    JSON.stringify(
+      issues,
+      null,
+      2,
+    ),
+    "",
+    "Return one corrected complete JSON object.",
+    "Do not explain the corrections.",
+    "Base workflowName on original_request only.",
+    "Do not put branch metadata on the If, Switch, or Filter node itself.",
+    'Put branch "true" and branch "false" only on actions after the condition.',
+    "Include explicit retrieval/comparison before a match condition.",
+    'Use chainSummarization when the requested output is "a summary".',
+    "Do not create a separate direct payment-scheduling action when payment actions are blocked.",
+    'Use one safe action such as "Forward Invoice for Approval and Payment Scheduling".',
+  ].join("\n");
+}
+
+async function callAndValidate(
+  brief: CompactN8nGenerationInput,
+  call: N8nNodeSelectorCall,
+  provider:
+    N8nNodeSelectorProvider,
+  prompt: string,
+): Promise<{
+  raw: string;
+  selection:
+    N8nNodeSelection;
+}> {
+  const raw = await call(
+    prompt,
+    n8nNodeSelectorSystemPrompt,
+  );
 
   debugLog(
     provider,
-    `${stage} parsed model response`,
-    safeJsonStringify(parsed),
+    "Raw selector output:",
+    raw,
   );
 
-  try {
-    const selection =
-      validateAndNormalizeSelection(
-        parsed,
-        fallbackWorkflowName,
-        brief,
-      );
+  const parsed =
+    parseSelectionJson(raw);
 
-    debugLog(
-      provider,
-      `${stage} validated node selection`,
-      safeJsonStringify(selection),
+  const selection =
+    normalizeSelection(
+      parsed,
+      brief,
     );
 
-    return selection;
-  } catch (error) {
-    debugError(
-      provider,
-      `${stage} architecture validation failed`,
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-        issues:
-          error instanceof N8nNodeSelectionError
-            ? error.issues
-            : [],
-        parsedResponse: parsed,
-        rawResponse: raw,
-      },
-    );
+  debugLog(
+    provider,
+    "Normalized selection:",
+    selection,
+  );
 
-    throw error;
-  }
+  validateSelection(
+    brief,
+    selection,
+  );
+
+  return {
+    raw,
+    selection,
+  };
 }
 
 export async function selectN8nNodes(
   brief: CompactN8nGenerationInput,
-  callModel: N8nNodeSelectorCall,
-  provider: N8nNodeSelectorProvider =
-    "unknown",
+  call: N8nNodeSelectorCall,
+  provider:
+    N8nNodeSelectorProvider =
+      "unknown",
 ): Promise<N8nNodeSelection> {
   const prompt =
     buildN8nNodeSelectorUserPrompt({
       brief,
     });
 
-  const fallbackWorkflowName =
-    brief.workflow_name
-    || "Generated n8n Workflow";
-
-  debugLog(provider, "request started", {
-    workflowName: brief.workflow_name,
-    originalRequest:
-      brief.original_request,
-    triggerDescription:
-      brief.trigger_description,
-    source: brief.source,
-    clearlyEventDriven:
-      isClearlyEventDriven(brief),
-    promptLength: prompt.length,
-    systemPromptLength:
-      n8nNodeSelectorSystemPrompt.length,
-  });
-
-  let initialRaw: string;
-
   try {
-    initialRaw = await callModel(
-      prompt,
-      n8nNodeSelectorSystemPrompt,
-    );
-  } catch (error) {
-    debugError(
-      provider,
-      "provider request failed",
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      },
-    );
-
-    throw error;
-  }
-
-  debugLog(
-    provider,
-    "raw model response",
-    initialRaw,
-  );
-
-  try {
-    return parseAndValidateSelection({
-      raw: initialRaw,
-      fallbackWorkflowName,
-      provider,
-      stage: "initial",
-      brief,
-    });
-  } catch (initialError) {
-    if (
-      !shouldRepairWithOpenAI(
+    const first =
+      await callAndValidate(
+        brief,
+        call,
         provider,
-        initialError,
+        prompt,
+      );
+
+    return first.selection;
+  } catch (error) {
+    if (
+      provider !== "openai"
+      || !(
+        error instanceof
+          N8nNodeSelectionError
       )
     ) {
-      throw initialError;
+      throw error;
     }
 
-    debugLog(
+    debugError(
       provider,
-      "starting one repair attempt",
-      {
-        issues: initialError.issues,
-      },
+      "Initial selection failed validation. Retrying repair.",
+      error.issues,
     );
 
-    const repairPrompt =
-      buildRepairPrompt({
-        originalPrompt: prompt,
-        rawResponse: initialRaw,
-        issues: initialError.issues,
-      });
-
-    debugLog(
-      provider,
-      "repair request prepared",
-      {
-        repairPromptLength:
-          repairPrompt.length,
-        issueCount:
-          initialError.issues.length,
-      },
-    );
-
-    let repairedRaw: string;
-
-    try {
-      repairedRaw = await callModel(
-        repairPrompt,
-        n8nNodeSelectorSystemPrompt,
-      );
-    } catch (repairCallError) {
-      debugError(
-        provider,
-        "repair provider request failed",
-        {
-          error:
-            repairCallError instanceof Error
-              ? repairCallError.message
-              : String(repairCallError),
-        },
-      );
-
-      throw initialError;
-    }
-
-    debugLog(
-      provider,
-      "repair raw model response",
-      repairedRaw,
-    );
-
-    try {
-      return parseAndValidateSelection({
-        raw: repairedRaw,
-        fallbackWorkflowName,
-        provider,
-        stage: "repair",
+    const repaired =
+      await callAndValidate(
         brief,
-      });
-    } catch (repairValidationError) {
-      debugError(
+        call,
         provider,
-        "repair attempt failed; provider fallback will continue",
-        {
-          originalIssues:
-            initialError.issues,
-          repairIssues:
-            repairValidationError
-              instanceof N8nNodeSelectionError
-              ? repairValidationError.issues
-              : [],
-        },
+        buildRepairPrompt(
+          brief,
+          "",
+          error.issues,
+        ),
       );
 
-      throw repairValidationError;
-    }
+    debugLog(
+      provider,
+      "Repaired selection validated.",
+      repaired.selection,
+    );
+
+    return repaired.selection;
   }
 }

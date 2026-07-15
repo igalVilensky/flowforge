@@ -53,7 +53,7 @@ export type RouterDecision = {
   reason: string;
   safety_note: string;
   suggested_next_step: string;
-  provider: "groq" | "gemini" | "deterministic";
+  provider: "openai" | "groq" | "gemini" | "deterministic";
   used_ai: boolean;
   fallback_used: boolean;
 };

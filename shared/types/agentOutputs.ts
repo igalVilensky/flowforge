@@ -10,7 +10,11 @@ import type {
     WorkflowPrimitive,
 } from "./workflow";
 
-export type AgentOutputProvider = "groq" | "gemini" | "deterministic";
+export type AgentOutputProvider =
+  | "openai"
+  | "groq"
+  | "gemini"
+  | "deterministic";
 
 export type AgentOutputConfidence = "low" | "medium" | "high";
 
