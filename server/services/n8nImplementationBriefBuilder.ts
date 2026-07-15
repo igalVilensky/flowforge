@@ -3,16 +3,37 @@ import type {
   CompactN8nGenerationInput,
   N8nImplementationBrief,
 } from "../../shared/types/n8nWorkflow";
-
-type BriefDomain = "admissions" | "support" | "finance" | "generic";
+import type { WorkflowStep } from "../../shared/types/workflow";
 
 function truncateText(value: unknown, maxLength: number): string {
   const text = typeof value === "string" ? value : String(value ?? "");
   const normalized = text.replace(/\s+/g, " ").trim();
 
   if (normalized.length <= maxLength) return normalized;
-
   return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function addUnique(items: string[], value: unknown, maxLength = 160): void {
+  const text = truncateText(value, maxLength);
+
+  if (text && !items.includes(text)) {
+    items.push(text);
+  }
+}
+
+function uniqueStrings(
+  items: unknown[],
+  maxItems: number,
+  maxLength: number,
+): string[] {
+  const result: string[] = [];
+
+  for (const item of items) {
+    addUnique(result, item, maxLength);
+    if (result.length >= maxItems) break;
+  }
+
+  return result;
 }
 
 function normalizeInput(value: string): string {
@@ -24,87 +45,36 @@ function normalizeInput(value: string): string {
     .trim();
 }
 
-function addUnique(items: string[], item: unknown, maxLength = 160): void {
-  const text = truncateText(item, maxLength);
-
-  if (text && !items.includes(text)) {
-    items.push(text);
-  }
-}
-
-function uniqueStrings(items: unknown[], maxItems: number, maxLength: number): string[] {
-  const result: string[] = [];
-
-  for (const item of items) {
-    addUnique(result, item, maxLength);
-
-    if (result.length >= maxItems) {
-      break;
-    }
-  }
-
-  return result;
-}
-
 function hasAny(input: string, phrases: readonly string[]): boolean {
   return phrases.some((phrase) => input.includes(phrase));
-}
-
-function joinList(items: readonly string[]): string {
-  if (items.length === 0) return "";
-  if (items.length === 1) return items[0] ?? "";
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-
-  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
 }
 
 function titleCase(value: string): string {
   return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
-function humanGateText(gate: unknown): string {
-  if (!gate || typeof gate !== "object") {
-    return truncateText(gate, 160);
+function detectTriggerDescription(compileJob: CompileJob): string {
+  const trigger = compileJob.result.trigger;
+
+  if (trigger?.description?.trim()) {
+    return truncateText(
+      trigger.description.replace(/^rule-based .+ inferred from:\s*/i, ""),
+      180,
+    );
   }
 
-  const record = gate as Record<string, unknown>;
-  const label = truncateText(record.label || record.name || record.title || "Human approval gate", 80);
-  const reason = truncateText(record.reason || record.description || "", 90);
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
+  );
 
-  return reason ? `${label}: ${reason}` : label;
-}
+  const whenMatch = input.match(
+    /\b(when(?:ever)?|after|once)\s+(.+?)(?:,|\.|$)/,
+  );
 
-function findingText(finding: unknown): string {
-  if (!finding || typeof finding !== "object") {
-    return truncateText(finding, 180);
+  if (whenMatch?.[0]) {
+    return titleCase(truncateText(whenMatch[0].replace(/[,.]$/, ""), 160));
   }
 
-  const record = finding as Record<string, unknown>;
-  const severity = truncateText(record.severity, 24);
-  const title = truncateText(record.title || record.label || record.type || "Safety finding", 80);
-  const recommendation = truncateText(record.recommendation || record.explanation || "", 90);
-  const prefix = severity ? `${severity}: ` : "";
-
-  return recommendation ? `${prefix}${title}: ${recommendation}` : `${prefix}${title}`;
-}
-
-function detectDomain(input: string): BriefDomain {
-  if (hasAny(input, ["admissions", "candidate", "applicant", "job application", "application email", "portfolio"])) {
-    return "admissions";
-  }
-
-  if (hasAny(input, ["support", "ticket", "customer", "helpdesk", "zendesk", "complaint"])) {
-    return "support";
-  }
-
-  if (hasAny(input, ["invoice", "refund", "billing", "payment", "charge", "receipt"])) {
-    return "finance";
-  }
-
-  return "generic";
-}
-
-function detectTriggerDescription(input: string, compileJob: CompileJob): string {
   if (hasAny(input, ["every morning", "each morning"])) {
     return "Every morning";
   }
@@ -125,27 +95,30 @@ function detectTriggerDescription(input: string, compileJob: CompileJob): string
     return "Monthly";
   }
 
-  const whenMatch = input.match(/\b(when(?:ever)?|after|once)\s+(.+?)(?:,|\.|$)/);
-
-  if (whenMatch?.[0]) {
-    return titleCase(truncateText(whenMatch[0].replace(/[,.]$/, ""), 120));
-  }
-
-  const trigger = compileJob.result.trigger;
-
-  if (trigger?.description) {
-    return truncateText(trigger.description.replace(/^rule-based .+ inferred from:\s*/i, ""), 180);
-  }
-
-  return "Manual internal review trigger";
+  return "Manual trigger";
 }
 
-function detectSource(input: string, compileJob: CompileJob, domain: BriefDomain): string {
-  const addressedInbox = input.match(/\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\s+inbox)\b/)?.[1];
+function detectSource(
+  compileJob: CompileJob,
+  triggerDescription: string,
+): string {
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
+  );
 
-  if (addressedInbox) return addressedInbox;
+  const addressedInbox = input.match(
+    /\b([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})(?:\s+inbox)?\b/,
+  )?.[1];
 
-  const inboxes = [
+  if (addressedInbox) {
+    return `${addressedInbox} inbox`;
+  }
+
+  const knownSources = [
+    "gmail",
+    "outlook",
+    "microsoft 365",
+    "imap",
     "admissions inbox",
     "support inbox",
     "sales inbox",
@@ -153,480 +126,604 @@ function detectSource(input: string, compileJob: CompileJob, domain: BriefDomain
     "shared inbox",
     "email inbox",
     "inbox",
+    "google sheet",
+    "spreadsheet",
+    "notion",
+    "slack",
+    "webhook",
+    "form",
+    "database",
+    "crm",
   ];
-  const inbox = inboxes.find((candidate) => input.includes(candidate));
 
-  if (inbox) {
-    if (domain === "admissions" && hasAny(input, ["application", "candidate", "applicant"])) {
-      return `${inbox} / job application emails`;
-    }
+  const context = `${input} ${normalizeInput(triggerDescription)}`;
 
-    if (domain === "support") {
-      return `${inbox} / support emails`;
-    }
+  const source = knownSources.find((candidate) => context.includes(candidate));
 
-    if (domain === "finance") {
-      return `${inbox} / billing or refund emails`;
-    }
-
-    return `${inbox} / incoming emails`;
+  if (source) {
+    return source;
   }
 
-  const sourceMatch = input.match(/\bfrom\s+(?:the\s+)?([a-z0-9][a-z0-9 -]{1,60}?)(?:,|\.|\band\b|\bwithout\b|$)/);
-  const sourceText = sourceMatch?.[1]?.trim();
-
-  if (sourceText) {
-    return truncateText(sourceText, 120);
-  }
-
-  if (input.includes("email") || input.includes("emails")) {
-    if (domain === "admissions") return "job application emails";
-    if (domain === "support") return "support emails";
-    if (domain === "finance") return "billing or refund emails";
-
-    return "incoming emails";
-  }
-
-  if (compileJob.result.trigger?.source && compileJob.result.trigger.source !== "compiler_preview") {
+  if (
+    compileJob.result.trigger?.source &&
+    compileJob.result.trigger.source !== "compiler_preview"
+  ) {
     return truncateText(compileJob.result.trigger.source, 120);
   }
 
-  return "user-provided internal input";
+  return "user-configured source";
 }
 
-function cleanFieldName(value: string): string {
-  return value
-    .replace(/^(?:the|a|an)\s+/, "")
-    .replace(/\s+/g, " ")
-    .replace(/[.]+$/g, "")
-    .trim();
+function stepIsRequested(step: WorkflowStep): boolean {
+  return (
+    step.primitive !== "risk_detection" &&
+    step.primitive !== "validation" &&
+    !/^block\b/i.test(step.label) &&
+    !/^check safety\b/i.test(step.label)
+  );
+}
+
+function getBlueprintSteps(compileJob: CompileJob): WorkflowStep[] {
+  return compileJob.result.steps.filter(stepIsRequested);
 }
 
 function detectExplicitExtractedFields(input: string): string[] {
   const fields: string[] = [];
+
   const extractMatch = input.match(
-    /\bextract\s+(?:the\s+)?(.+?)(?:,\s*(?:classify|create|prepare|route|draft|write|send|notify|without|do not|don't)\b|\s+and\s+(?:classify|create|prepare|route|draft|write|send|notify)\b|\.|$)/,
+    /\bextract\s+(?:the\s+)?(.+?)(?:,\s*(?:classify|create|prepare|route|draft|write|send|notify)\b|\s+and\s+(?:classify|create|prepare|route|draft|write|send|notify)\b|\.|$)/,
   );
+
   const fieldText = extractMatch?.[1]?.split(/\bfrom\s+(?:the\s+)?/)[0] ?? "";
 
   for (const rawField of fieldText.replace(/\s+and\s+/g, ", ").split(/[,;]/)) {
-    addUnique(fields, cleanFieldName(rawField), 80);
+    const field = rawField
+      .replace(/^(?:the|a|an)\s+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    addUnique(fields, field, 80);
   }
 
   return fields;
 }
 
-function detectExtractedFields(input: string, _domain: BriefDomain): string[] {
-  const fields = detectExplicitExtractedFields(input);
+function detectExtractedFields(
+  compileJob: CompileJob,
+  steps: WorkflowStep[],
+): string[] {
+  if (!steps.some((step) => step.primitive === "extraction")) {
+    return [];
+  }
 
-  return uniqueStrings(fields, 8, 80);
-}
-
-function detectClassificationTarget(input: string, domain: BriefDomain): string {
-  const classifyMatch = input.match(
-    /\bclassify\s+(?:the\s+)?([a-z0-9 -]{2,80}?)(?:,|\.|\band\s+(?:create|prepare|route|draft|send|notify|log)\b|\bwithout\b|$)/,
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
   );
-  const target = cleanFieldName(classifyMatch?.[1] ?? "");
 
-  if (target) {
-    if (target === "priority" && domain === "admissions") return "application priority";
-    if (target === "priority" && domain === "support") return "support priority";
+  const explicitFields = detectExplicitExtractedFields(input);
 
-    return truncateText(target, 80);
+  if (explicitFields.length > 0) {
+    return explicitFields.slice(0, 8);
   }
 
-  if (hasAny(input, ["classify", "categorize", "triage", "label"])) {
-    if (domain === "admissions") return "application priority";
-    if (domain === "support") return "support priority";
-    if (domain === "finance") return "refund or billing review category";
+  const extractionStep = steps.find((step) => step.primitive === "extraction");
 
-    return "internal review category";
+  const candidateText = `${extractionStep?.description ?? ""} ${extractionStep?.output ?? ""}`;
+
+  const match = candidateText.match(/\bextract\s+(.+?)(?:\.|$)/i);
+
+  if (!match?.[1]) {
+    return [];
   }
 
-  return "";
+  return uniqueStrings(
+    match[1].replace(/\s+and\s+/gi, ", ").split(/[,;]/),
+    8,
+    80,
+  );
 }
 
-function buildClassificationRules(target: string, _domain: BriefDomain): string[] {
-  if (!target) return [];
+function detectClassificationTarget(
+  compileJob: CompileJob,
+  steps: WorkflowStep[],
+): string {
+  const classificationStep = steps.find(
+    (step) => step.primitive === "classification",
+  );
+
+  if (!classificationStep) {
+    return "";
+  }
+
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
+  );
+
+  const explicitMatch = input.match(
+    /\bclassify\s+(?:the\s+)?([a-z0-9 -]{2,80}?)(?:,|\.|\band\s+(?:create|prepare|route|draft|send|notify|log)\b|$)/,
+  );
+
+  if (explicitMatch?.[1]) {
+    return truncateText(explicitMatch[1].trim(), 80);
+  }
+
+  return truncateText(
+    classificationStep.output ||
+      classificationStep.label.replace(/^classify\s+/i, ""),
+    80,
+  );
+}
+
+function buildClassificationRules(target: string): string[] {
+  if (!target) {
+    return [];
+  }
 
   return [
-    `Classify ${target} using only criteria explicitly stated in the clarified request.`,
-    "Use only the provided source data and explicitly requested fields.",
+    `Classify ${target} using the clarified request and source data.`,
+    "Return a concise machine-readable value.",
   ];
 }
 
-function detectInternalOutputs(input: string, domain: BriefDomain, classificationTarget: string): string[] {
+function outputFromPrimitive(step: WorkflowStep): string | null {
+  switch (step.primitive) {
+    case "summarization":
+      return "summary";
+
+    case "drafting":
+      return step.output || "draft";
+
+    case "notification":
+      return step.output || "sent notification";
+
+    case "record_creation":
+      return step.output || "created record or task";
+
+    case "reporting":
+      return step.output || "report";
+
+    case "export":
+      return step.output || "export";
+
+    case "routing":
+      return step.output || "routed item";
+
+    default:
+      return null;
+  }
+}
+
+function detectRequestedOutputs(
+  compileJob: CompileJob,
+  steps: WorkflowStep[],
+): string[] {
   const outputs: string[] = [];
 
-  if (hasAny(input, ["summary", "summarize", "digest", "recap"])) {
-    addUnique(outputs, "summary", 100);
-  }
+  for (const step of steps) {
+    const output = outputFromPrimitive(step);
 
-  if (hasAny(input, ["tags", "tag the", "labels", "label the"])) {
-    addUnique(outputs, "tags", 100);
-  }
-
-  if (classificationTarget) addUnique(outputs, `${classificationTarget} label`, 100);
-
-  if (hasAny(input, ["create task", "create an internal review task", "review task", "internal task"])) {
-    addUnique(outputs, "internal task", 100);
-  }
-
-  if (hasAny(input, ["draft reply", "draft email", "email draft", "compose a reply", "write a reply"])) {
-    addUnique(outputs, "draft reply", 100);
-  }
-
-  if (/\bsend\b.{0,100}\bslack\b|\bslack\b.{0,100}\bsend\b/.test(input)) {
-    addUnique(outputs, "Slack message", 100);
-  } else if (/\bsend\b.{0,100}\b(?:email|reply|message)\b/.test(input)) {
-    addUnique(outputs, "sent email or message", 100);
-  }
-
-  if (hasAny(input, ["report", "dashboard", "digest"])) {
-    addUnique(outputs, "internal report", 100);
-  }
-
-  if (outputs.length === 0) addUnique(outputs, "requested output", 100);
-
-  return uniqueStrings(outputs, 6, 100);
-}
-
-function explicitNoExternalSend(input: string): boolean {
-  return /\b(?:without|do not|don't|never|no)\b.{0,80}\b(?:send|sending|reply|message|messages|email|emails|external message|external messages)\b/.test(input);
-}
-
-function detectBlockedActions(compileJob: CompileJob, input: string): string[] {
-  const blueprint = compileJob.result;
-  const safety = compileJob.safety_critic;
-  const blocked: string[] = [];
-
-  if (explicitNoExternalSend(input)) {
-    addUnique(blocked, "Do not send external messages.", 160);
-  }
-
-  // External execution and real-world risk are advisory by themselves. Only an
-  // explicit user boundary or a compiler/safety-critic blocked classification is
-  // allowed to change the requested action in the implementation brief.
-  for (const item of [
-    ...(blueprint.not_safe_to_automate ?? []),
-    ...(safety?.blocked_or_not_recommended ?? []),
-    ...(safety?.must_remain_draft_only ?? []),
-  ]) {
-    addUnique(blocked, item, 160);
-  }
-
-  return blocked.slice(0, 8);
-}
-
-function detectHumanApprovalGates(compileJob: CompileJob, blockedActions: readonly string[]): string[] {
-  const gates = uniqueStrings((compileJob.result.human_approval_gates ?? []).map(humanGateText), 8, 160);
-
-  if (gates.length === 0 && blockedActions.length > 0) {
-    gates.push("Manual review required before external communication or production execution.");
-  }
-
-  return gates;
-}
-
-function buildWarnings(compileJob: CompileJob, domain: BriefDomain): string[] {
-  const safety = compileJob.safety_critic;
-  const warnings = uniqueStrings(
-    [
-      ...(compileJob.risks.reasons ?? []),
-      ...(safety?.findings ?? []).map(findingText),
-      ...(compileJob.safety_critic_agent?.draft_only_warnings ?? []),
-      ...(compileJob.safety_critic_agent?.blocked_or_not_recommended ?? []),
-    ],
-    6,
-    180,
-  );
-
-  if (domain === "admissions" && compileJob.risks.categories.includes("employment")) {
-    addUnique(warnings, "Application priority labels are internal triage only and must not decide hiring outcomes.", 180);
-  }
-
-  return warnings.slice(0, 6);
-}
-
-function buildWorkflowGoal(
-  domain: BriefDomain,
-  source: string,
-  extractedFields: readonly string[],
-  classificationTarget: string,
-  internalOutputs: readonly string[],
-): string {
-  const parts: string[] = [];
-
-  if (domain === "admissions") {
-    parts.push(source.includes("email") ? "collect job application emails" : "collect job application items");
-  } else if (domain === "support") {
-    parts.push(source.includes("email") ? "collect support emails" : "triage support requests");
-  } else if (domain === "finance") {
-    parts.push("collect billing or refund requests");
-  } else {
-    parts.push("collect the source item for internal review");
-  }
-
-  if (extractedFields.length > 0) {
-    if (domain === "admissions") {
-      parts.push("extract candidate details");
-    } else if (domain === "support") {
-      parts.push("extract support request details");
-    } else if (domain === "finance") {
-      parts.push("extract billing details");
-    } else {
-      parts.push(`extract ${joinList(extractedFields.slice(0, 4))}`);
+    if (output) {
+      addUnique(outputs, output, 120);
     }
   }
 
-  if (classificationTarget) {
-    parts.push(`classify ${classificationTarget}`);
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
+  );
+
+  if (hasAny(input, ["summary", "summarize", "digest", "recap"])) {
+    addUnique(outputs, "summary", 120);
   }
 
-  for (const output of internalOutputs) {
-    parts.push(output.includes("sent ") || output.includes("Slack message")
-      ? `produce ${output}`
-      : `prepare ${output}`);
+  if (hasAny(input, ["tags", "tag the", "labels", "label the"])) {
+    addUnique(outputs, "tags", 120);
   }
 
-  if (parts.length === 0) {
-    return "Prepare a safe internal review workflow without executing production actions.";
+  if (/\bcreate\b.{0,50}\b(?:task|ticket|record)\b/.test(input)) {
+    addUnique(outputs, "internal task or record", 120);
   }
 
-  if (parts.length === 1) {
-    return truncateText(parts[0], 240);
+  if (/\bdraft\b.{0,50}\b(?:reply|email|message|response)\b/.test(input)) {
+    addUnique(outputs, "draft reply", 120);
   }
 
-  return truncateText(`${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`, 240);
+  if (
+    /\b(?:send|post|notify)\b.{0,100}\bslack\b|\bslack\b.{0,100}\b(?:send|post|notify)\b/.test(
+      input,
+    )
+  ) {
+    addUnique(outputs, "Slack message", 120);
+  } else if (
+    /\b(?:send|reply|notify|forward)\b.{0,100}\b(?:email|message|applicant|customer|student|team)\b/.test(
+      input,
+    )
+  ) {
+    addUnique(outputs, "sent email or message", 120);
+  }
+
+  if (hasAny(input, ["report", "dashboard"])) {
+    addUnique(outputs, "report", 120);
+  }
+
+  if (outputs.length === 0) {
+    const lastStep = steps.at(-1);
+
+    addUnique(outputs, lastStep?.output || "requested output", 120);
+  }
+
+  return outputs.slice(0, 8);
 }
 
-function scheduleLabel(triggerDescription: string): string {
-  const normalized = normalizeInput(triggerDescription);
+function recommendedNodeName(
+  step: WorkflowStep,
+  triggerDescription: string,
+  source: string,
+): string {
+  const context = normalizeInput(
+    `${triggerDescription} ${source} ${step.description}`,
+  );
 
-  if (normalized.includes("morning") || normalized.includes("daily") || normalized.includes("every day")) {
-    return "Daily";
+  if (
+    step.primitive === "intake" ||
+    step.id.includes("trigger") ||
+    step.label.toLowerCase().includes("collect")
+  ) {
+    if (hasAny(context, ["email", "inbox", "gmail", "imap", "outlook"])) {
+      return "Email Trigger: Configurable Inbox";
+    }
+
+    if (
+      hasAny(context, [
+        "daily",
+        "morning",
+        "weekly",
+        "weekday",
+        "monthly",
+        "schedule",
+        "every",
+      ])
+    ) {
+      return "Schedule Trigger";
+    }
+
+    if (context.includes("webhook")) {
+      return "Webhook Trigger";
+    }
+
+    return "Manual Trigger";
   }
 
-  if (normalized.includes("weekday")) return "Weekday";
-  if (normalized.includes("weekly")) return "Weekly";
-  if (normalized.includes("monthly")) return "Monthly";
+  switch (step.primitive) {
+    case "summarization":
+      return "AI Summarizer";
 
-  return "Scheduled";
+    case "extraction":
+      return "Extract Requested Fields";
+
+    case "classification":
+      return `Classify ${titleCase(step.output || "Requested Value")}`;
+
+    case "drafting":
+      return "Generate Requested Draft";
+
+    case "notification":
+      return /slack/i.test(`${step.label} ${step.description} ${step.output}`)
+        ? "Send Requested Slack Message"
+        : "Send Requested Message";
+
+    case "record_creation":
+      return "Create Requested Record Or Task";
+
+    case "routing":
+      return "Route Requested Item";
+
+    case "reporting":
+      return "Create Requested Report";
+
+    case "export":
+      return "Export Requested Output";
+
+    case "approval":
+      return "Human Approval";
+
+    default:
+      return step.label || titleCase(step.primitive);
+  }
 }
 
-function workflowLabelForDomain(domain: BriefDomain): string {
-  if (domain === "admissions") return "Admissions Intake";
-  if (domain === "support") return "Support Triage";
-  if (domain === "finance") return "Finance Review";
+function buildRecommendedNodes(
+  steps: WorkflowStep[],
+  triggerDescription: string,
+  source: string,
+  outputs: readonly string[],
+): string[] {
+  const nodes: string[] = [];
 
-  return "Internal Review";
+  for (const step of steps) {
+    addUnique(
+      nodes,
+      recommendedNodeName(step, triggerDescription, source),
+      100,
+    );
+  }
+
+  if (!nodes.some((node) => /trigger/i.test(node))) {
+    const triggerContext = normalizeInput(`${triggerDescription} ${source}`);
+
+    if (
+      hasAny(triggerContext, ["email", "inbox", "gmail", "imap", "outlook"])
+    ) {
+      nodes.unshift("Email Trigger: Configurable Inbox");
+    } else if (
+      hasAny(triggerContext, [
+        "daily",
+        "morning",
+        "weekly",
+        "weekday",
+        "monthly",
+        "schedule",
+        "every",
+      ])
+    ) {
+      nodes.unshift("Schedule Trigger");
+    } else {
+      nodes.unshift("Manual Trigger");
+    }
+  }
+
+  if (
+    outputs.includes("summary") &&
+    !nodes.some((node) => /summar/i.test(node))
+  ) {
+    nodes.push("AI Summarizer");
+  }
+
+  if (
+    outputs.includes("summary") &&
+    !nodes.some((node) => /output summary/i.test(node))
+  ) {
+    nodes.push("Output Summary");
+  }
+
+  return uniqueStrings(nodes, 8, 100);
 }
 
-function reviewWorkflowLabelForDomain(domain: BriefDomain): string {
-  if (domain === "admissions") return "Admissions Intake Review";
-  if (domain === "support") return "Support Triage Review";
-  if (domain === "finance") return "Finance Review";
+function explicitApprovalGates(steps: WorkflowStep[]): string[] {
+  return steps
+    .filter((step) => step.primitive === "approval" || step.approval_required)
+    .map((step) => truncateText(step.label || step.description, 160))
+    .filter(Boolean)
+    .slice(0, 4);
+}
 
-  return "Internal Review";
+function explicitBlockedActions(compileJob: CompileJob): string[] {
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
+  );
+
+  const blocked: string[] = [];
+
+  if (
+    /\b(?:do not|don't|never|without)\b.{0,80}\b(?:send|reply|publish|delete|update|charge|refund)\b/.test(
+      input,
+    )
+  ) {
+    addUnique(
+      blocked,
+      "Respect the explicit action boundary in the clarified request.",
+      160,
+    );
+  }
+
+  return blocked;
+}
+
+function buildWorkflowGoal(
+  compileJob: CompileJob,
+  steps: WorkflowStep[],
+  outputs: readonly string[],
+): string {
+  const blueprintSummary = truncateText(compileJob.result.summary, 280);
+
+  if (blueprintSummary) {
+    return blueprintSummary;
+  }
+
+  const stepLabels = steps.map((step) => step.label).filter(Boolean);
+
+  if (stepLabels.length > 0) {
+    return truncateText(stepLabels.join(" -> "), 280);
+  }
+
+  return truncateText(
+    `Produce ${outputs.join(", ") || "the requested output"}.`,
+    280,
+  );
 }
 
 function isGenericWorkflowName(value: string): boolean {
   const normalized = normalizeInput(value);
 
   return [
+    "workflow",
+    "automation",
+    "automation workflow",
     "classification workflow",
     "extraction workflow",
-    "safe automation preview",
-    "internal record workflow",
-    "drafting workflow",
-    "routing workflow",
-    "monitoring workflow",
     "summarization workflow",
-    "reporting workflow",
-    "job application intake workflow",
+    "processing workflow",
+    "generated workflow",
+    "generated n8n workflow",
+    "n8n workflow",
+    "safe automation preview",
+    "internal automation preview",
   ].includes(normalized);
 }
 
-function buildDomainWorkflowName(
-  input: string,
-  domain: BriefDomain,
-  classificationTarget: string,
-  internalOutputs: readonly string[],
-): string {
-  if (domain === "admissions") {
-    if (
-      hasAny(input, ["application", "job application", "candidate", "applicant"])
-      && internalOutputs.some((output) => output.includes("review task"))
-    ) {
-      return "Admissions Application Review Intake";
-    }
-
-    return "Admissions Intake Review";
-  }
-
-  if (domain === "support") {
-    if (classificationTarget.includes("priority") || classificationTarget.includes("category")) {
-      return "Support Triage Review Intake";
-    }
-
-    return "Support Review Intake";
-  }
-
-  if (domain === "finance") {
-    if (hasAny(input, ["refund", "payment", "invoice", "billing"])) {
-      return "Finance Request Review Intake";
-    }
-
-    return "Finance Review Intake";
-  }
-
-  return "Internal Review Intake";
+function cleanSourceForWorkflowName(source: string): string {
+  return source
+    .replace(/\b(?:email\s+)?inbox\b/gi, "")
+    .replace(/\buser-configured source\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function buildImplementationWorkflowName(
+function cleanOutputForWorkflowName(output: string): string {
+  return output
+    .replace(/\binternal\b/gi, "")
+    .replace(/\brequested\b/gi, "")
+    .replace(/\bor\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function deriveWorkflowName(
   compileJob: CompileJob,
-  input: string,
-  domain: BriefDomain,
-  classificationTarget: string,
-  internalOutputs: readonly string[],
+  implementationBrief: N8nImplementationBrief,
 ): string {
-  const blueprintName = truncateText(compileJob.result.workflow_name, 120);
-  const domainName = buildDomainWorkflowName(input, domain, classificationTarget, internalOutputs);
+  const existingName = truncateText(compileJob.result.workflow_name, 120);
 
-  if (!blueprintName || isGenericWorkflowName(blueprintName)) {
-    return domainName;
+  if (existingName && !isGenericWorkflowName(existingName)) {
+    return existingName;
   }
 
-  if (domain !== "generic" && isGenericWorkflowName(domainName)) {
-    return domainName;
+  const input = normalizeInput(
+    compileJob.input.trimmed || compileJob.input.raw,
+  );
+
+  if (
+    hasAny(input, [
+      "job application",
+      "job applications",
+      "candidate",
+      "candidates",
+      "admissions inbox",
+      "application priority",
+    ])
+  ) {
+    return "Admissions Application Review";
   }
 
-  return blueprintName;
-}
-
-function buildRecommendedNodes(
-  domain: BriefDomain,
-  triggerDescription: string,
-  source: string,
-  extractedFields: readonly string[],
-  classificationTarget: string,
-  internalOutputs: readonly string[],
-  humanApprovalGates: readonly string[],
-  blockedActions: readonly string[],
-): string[] {
-  const nodes: string[] = [];
-  const workflowLabel = humanApprovalGates.length > 0 || blockedActions.length > 0
-    ? reviewWorkflowLabelForDomain(domain)
-    : workflowLabelForDomain(domain);
-  const trigger = normalizeInput(triggerDescription);
-  const normalizedSource = normalizeInput(source);
-
-  if (hasAny(trigger, ["daily", "morning", "weekly", "weekday", "monthly", "scheduled", "every"])) {
-    addUnique(nodes, `Schedule: ${scheduleLabel(triggerDescription)} ${workflowLabel}`, 100);
-  } else if (hasAny(`${trigger} ${normalizedSource}`, ["email", "inbox", "gmail", "imap", "outlook"])) {
-    addUnique(nodes, "Email Trigger: Configurable Inbox", 100);
-  } else {
-    addUnique(nodes, `Manual Trigger: ${workflowLabel}`, 100);
+  if (
+    hasAny(input, [
+      "support inbox",
+      "support email",
+      "support ticket",
+      "customer support",
+    ])
+  ) {
+    return "Support Inbox Processing";
   }
 
-  if (extractedFields.length > 0) {
-    if (domain === "admissions") addUnique(nodes, "Extract Candidate Fields", 100);
-    else if (domain === "support") addUnique(nodes, "Extract Support Fields", 100);
-    else if (domain === "finance") addUnique(nodes, "Extract Billing Fields", 100);
-    else addUnique(nodes, "Extract Request Fields", 100);
+  if (
+    hasAny(input, [
+      "sales inbox",
+      "sales lead",
+      "sales leads",
+      "lead qualification",
+    ])
+  ) {
+    return "Sales Lead Processing";
   }
+
+  if (
+    hasAny(input, ["invoice", "invoices", "finance inbox", "expense receipt"])
+  ) {
+    return "Invoice Processing";
+  }
+
+  if (
+    hasAny(input, [
+      "employee onboarding",
+      "new employee",
+      "new hire",
+      "onboarding task",
+    ])
+  ) {
+    return "Employee Onboarding";
+  }
+
+  if (
+    hasAny(input, ["meeting notes", "meeting transcript", "meeting summary"])
+  ) {
+    return "Meeting Notes Processing";
+  }
+
+  const source = cleanSourceForWorkflowName(implementationBrief.source);
+
+  const output = cleanOutputForWorkflowName(
+    implementationBrief.internal_outputs[0] || "",
+  );
+
+  if (source && output) {
+    return titleCase(truncateText(`${source} ${output}`, 120));
+  }
+
+  if (source) {
+    return titleCase(truncateText(`${source} Processing`, 120));
+  }
+
+  if (output) {
+    return titleCase(truncateText(`${output} Workflow`, 120));
+  }
+
+  const classificationTarget = implementationBrief.classification_target;
 
   if (classificationTarget) {
-    addUnique(nodes, `Classify ${titleCase(classificationTarget)}`, 100);
+    return titleCase(truncateText(`${classificationTarget} Processing`, 120));
   }
 
-  if (internalOutputs.some((output) => output.includes("draft reply") || output.includes("response"))) {
-    addUnique(nodes, "Draft Reply", 100);
-  }
-
-  if (internalOutputs.includes("summary")) addUnique(nodes, "Summarize Incoming Content", 100);
-  if (internalOutputs.includes("tags")) addUnique(nodes, "Generate Requested Tags", 100);
-  if (internalOutputs.includes("internal task")) addUnique(nodes, "Create Requested Internal Task", 100);
-  if (internalOutputs.includes("Slack message")) addUnique(nodes, "Send Summary To Slack", 100);
-  if (internalOutputs.includes("sent email or message")) addUnique(nodes, "Send Requested Email Or Message", 100);
-
-  if (internalOutputs.includes("summary") && !internalOutputs.includes("Slack message")) {
-    addUnique(nodes, "Output Summary", 100);
-  }
-
-  if (humanApprovalGates.length > 0 || blockedActions.length > 0) {
-    addUnique(nodes, "Manual Review Required", 100);
-  }
-
-  return nodes.slice(0, 7);
+  return "Generated n8n Workflow";
 }
 
-export function buildN8nImplementationBrief(compileJob: CompileJob): N8nImplementationBrief {
-  const originalRequest = compileJob.input.trimmed || compileJob.input.raw;
-  const input = normalizeInput(originalRequest);
-  const domain = detectDomain(input);
-  const triggerDescription = detectTriggerDescription(input, compileJob);
-  const source = detectSource(input, compileJob, domain);
-  const extractedFields = detectExtractedFields(input, domain);
-  const classificationTarget = detectClassificationTarget(input, domain);
-  const classificationRules = buildClassificationRules(classificationTarget, domain);
-  const internalOutputs = detectInternalOutputs(input, domain, classificationTarget);
-  const blockedActions = detectBlockedActions(compileJob, input);
-  const humanApprovalGates = detectHumanApprovalGates(compileJob, blockedActions);
-  const warnings = buildWarnings(compileJob, domain);
-  const workflowGoal = buildWorkflowGoal(
-    domain,
-    source,
-    extractedFields,
-    classificationTarget,
-    internalOutputs,
-  );
+export function buildN8nImplementationBrief(
+  compileJob: CompileJob,
+): N8nImplementationBrief {
+  const steps = getBlueprintSteps(compileJob);
+  const triggerDescription = detectTriggerDescription(compileJob);
+  const source = detectSource(compileJob, triggerDescription);
+  const extractedFields = detectExtractedFields(compileJob, steps);
+  const classificationTarget = detectClassificationTarget(compileJob, steps);
+  const internalOutputs = detectRequestedOutputs(compileJob, steps);
+  const humanApprovalGates = explicitApprovalGates(steps);
+  const blockedActions = explicitBlockedActions(compileJob);
   const recommendedNodes = buildRecommendedNodes(
-    domain,
+    steps,
     triggerDescription,
     source,
-    extractedFields,
-    classificationTarget,
     internalOutputs,
-    humanApprovalGates,
-    blockedActions,
   );
 
   return {
-    workflow_goal: workflowGoal,
+    workflow_goal: buildWorkflowGoal(compileJob, steps, internalOutputs),
     trigger_description: triggerDescription,
     source,
     extracted_fields: extractedFields,
     classification_target: classificationTarget,
-    classification_rules: classificationRules,
+    classification_rules: buildClassificationRules(classificationTarget),
     internal_outputs: internalOutputs,
     human_approval_gates: humanApprovalGates,
     blocked_or_not_safe_actions: blockedActions,
-    warnings,
+    warnings: uniqueStrings(compileJob.result.assumptions ?? [], 6, 180),
     recommended_nodes: recommendedNodes,
   };
 }
 
-export function buildCompactN8nGenerationInput(compileJob: CompileJob): CompactN8nGenerationInput {
-  const blueprint = compileJob.result;
-  const safety = compileJob.safety_critic;
+export function buildCompactN8nGenerationInput(
+  compileJob: CompileJob,
+): CompactN8nGenerationInput {
   const implementationBrief = buildN8nImplementationBrief(compileJob);
-  const input = normalizeInput(compileJob.input.trimmed || compileJob.input.raw);
-  const workflowName = buildImplementationWorkflowName(
-    compileJob,
-    input,
-    detectDomain(input),
-    implementationBrief.classification_target,
-    implementationBrief.internal_outputs,
-  );
 
   return {
-    original_request: truncateText(compileJob.input.trimmed || compileJob.input.raw, 1000),
-    workflow_name: truncateText(workflowName, 120),
-    blueprint_summary: truncateText(blueprint.summary, 500),
-    safety_status: safety?.overall_status ?? compileJob.status,
-    safety_summary: truncateText(safety?.summary || "", 500),
-    next_safe_action: truncateText(safety?.next_safe_action || "", 300),
+    original_request: truncateText(
+      compileJob.input.trimmed || compileJob.input.raw,
+      1200,
+    ),
+    workflow_name: deriveWorkflowName(compileJob, implementationBrief),
+    blueprint_summary: truncateText(compileJob.result.summary, 500),
+    safety_status: "",
+    safety_summary: "",
+    next_safe_action: "",
     risk_level: compileJob.risks?.risk_level,
     readiness_score: compileJob.readiness?.score,
     ...implementationBrief,

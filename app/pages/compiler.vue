@@ -1506,7 +1506,11 @@ const n8nGeneratorMeta = computed(() => {
 });
 
 const n8nJsonFileName = computed(() => {
-  const source = job.value?.result?.workflow_name || "flowforge-n8n-draft";
+  const source =
+    n8nWorkflowDraft.value?.name
+    || job.value?.result?.workflow_name
+    || "flowforge-n8n-draft";
+
   const safeName = source
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
