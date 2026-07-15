@@ -153,40 +153,38 @@ export default defineEventHandler(
 
     try {
       const openAIContent =
-        await callOpenAI(
-          prompt,
-          systemPrompt,
-          {
-            modelEnv:
-              "OPENAI_USE_CASE_MODEL",
+  await callOpenAI(
+    prompt,
+    systemPrompt,
+    {
+      modelEnv:
+        "OPENAI_DISCOVERY_MODEL",
 
-            fallbackModelEnv:
-              "OPENAI_AGENT_MODEL",
+      fallbackModelEnv:
+        "OPENAI_AGENT_MODEL",
 
-            defaultModel:
-              "gpt-4.1-mini",
+      defaultModel:
+        "gpt-4.1-mini",
 
-            maxOutputTokensEnv:
-              "OPENAI_USE_CASE_MAX_OUTPUT_TOKENS",
+      maxOutputTokensEnv:
+        "OPENAI_DISCOVERY_MAX_OUTPUT_TOKENS",
 
-            fallbackMaxOutputTokensEnv:
-              "OPENAI_AGENT_MAX_OUTPUT_TOKENS",
+      fallbackMaxOutputTokensEnv:
+        "OPENAI_AGENT_MAX_OUTPUT_TOKENS",
 
-            defaultMaxOutputTokens: 900,
+      defaultMaxOutputTokens: 1800,
 
-            maxOutputTokensCap: 1600,
+      maxOutputTokensCap: 3000,
 
-            timeoutEnv:
-              "OPENAI_USE_CASE_TIMEOUT_MS",
+      timeoutEnv:
+        "OPENAI_DISCOVERY_TIMEOUT_MS",
 
-            fallbackTimeoutEnv:
-              "OPENAI_AGENT_TIMEOUT_MS",
+      timeoutMs: 40_000,
 
-            defaultTimeoutMs: 30_000,
-
-            jsonMode: true,
-          },
-        );
+      structuredOutputMode:
+        "json_object",
+    },
+  );
 
       const useCase =
         parseProviderResponse(
