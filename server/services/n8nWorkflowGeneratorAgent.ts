@@ -792,21 +792,11 @@ export async function runN8nWorkflowGeneratorAgent(
           ),
       );
 
-      console.log(
-  "Selected n8n architecture:",
-  JSON.stringify(selection, null, 2),
-);
-
       const generatedWorkflow =
   buildMinimalN8nWorkflowFromSelection(
     selection,
     compactInput.workflow_name,
   );
-
-  console.log(
-  "Built n8n workflow:",
-  JSON.stringify(generatedWorkflow, null, 2),
-);
 
       const validation = n8nWorkflowSchema.safeParse(generatedWorkflow);
 
