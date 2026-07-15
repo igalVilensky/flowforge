@@ -763,11 +763,26 @@ export async function runN8nWorkflowGeneratorAgent(
   input: { compileJob: CompileJob },
   dependencies?: N8nWorkflowGeneratorDependencies,
 ): Promise<N8nGenerateResponse> {
-  const compactInput = buildCompactN8nGenerationInput(input.compileJob);
-  const providerAttempts: N8nGeneratorProviderAttempt[] = [];
+  const compactInput =
+    buildCompactN8nGenerationInput(
+      input.compileJob,
+    );
 
-  for (const provider of ["openai", "groq"] as const) {
-    if (!providerConfigured(provider, dependencies)) {
+  const providerAttempts:
+    N8nGeneratorProviderAttempt[] = [];
+
+  for (
+    const provider of [
+      "openai",
+      "groq",
+    ] as const
+  ) {
+    if (
+      !providerConfigured(
+        provider,
+        dependencies,
+      )
+    ) {
       providerAttempts.push({
         provider,
         attempted: false,
@@ -777,40 +792,56 @@ export async function runN8nWorkflowGeneratorAgent(
             ? "OPENAI_API_KEY is not configured."
             : "GROQ_N8N_API_KEY is not configured.",
       });
+
       continue;
     }
 
     try {
-      const selection = await selectN8nNodes(
-        compactInput,
-        (prompt, systemPrompt) =>
-          callN8nProvider(
-            provider,
+      const selection =
+        await selectN8nNodes(
+          compactInput,
+          (
             prompt,
             systemPrompt,
-            dependencies,
-          ),
-      );
+          ) =>
+            callN8nProvider(
+              provider,
+              prompt,
+              systemPrompt,
+              dependencies,
+            ),
+          provider,
+        );
 
       const generatedWorkflow =
-  buildMinimalN8nWorkflowFromSelection(
-    selection,
-    compactInput.workflow_name,
-  );
+        buildMinimalN8nWorkflowFromSelection(
+          selection,
+          compactInput.workflow_name,
+        );
 
-      const validation = n8nWorkflowSchema.safeParse(generatedWorkflow);
+      const validation =
+        n8nWorkflowSchema.safeParse(
+          generatedWorkflow,
+        );
 
       if (!validation.success) {
         throw new N8nWorkflowGeneratorValidationError(
           "Generated n8n workflow JSON did not pass FlowForge technical validation.",
-          formatIssues(validation.error.issues),
+          formatIssues(
+            validation.error.issues,
+          ),
         );
       }
 
-      const workflow = validation.data;
-      const fallbackUsed = providerAttempts.some(
-        (attempt) => attempt.attempted && !attempt.success,
-      );
+      const workflow =
+        validation.data;
+
+      const fallbackUsed =
+        providerAttempts.some(
+          (attempt) =>
+            attempt.attempted
+            && !attempt.success,
+        );
 
       providerAttempts.push({
         provider,
@@ -820,42 +851,71 @@ export async function runN8nWorkflowGeneratorAgent(
 
       return {
         workflow_json: workflow,
-        warnings: collectN8nWorkflowWarnings(workflow, compactInput),
+        warnings:
+          collectN8nWorkflowWarnings(
+            workflow,
+            compactInput,
+          ),
         provider,
         used_ai: true,
         fallback_used: fallbackUsed,
-        provider_attempts: providerAttempts,
+        provider_attempts:
+          providerAttempts,
       };
     } catch (error) {
       providerAttempts.push({
         provider,
         attempted: true,
         success: false,
-        error_summary: summarizeProviderError(error),
-        ...(error instanceof N8nWorkflowGeneratorValidationError
-          ? { validation_issues: error.issues }
+        error_summary:
+          summarizeProviderError(error),
+        ...(error instanceof
+        N8nWorkflowGeneratorValidationError
+          ? {
+              validation_issues:
+                error.issues,
+            }
           : {}),
-        ...(error instanceof N8nNodeSelectionError
-          ? { validation_issues: error.issues }
+        ...(error instanceof
+        N8nNodeSelectionError
+          ? {
+              validation_issues:
+                error.issues,
+            }
           : {}),
       });
     }
   }
 
-  if (!providerAttempts.some((attempt) => attempt.attempted)) {
-    throw new N8nWorkflowGeneratorConfigError(providerAttempts);
+  if (
+    !providerAttempts.some(
+      (attempt) => attempt.attempted,
+    )
+  ) {
+    throw new N8nWorkflowGeneratorConfigError(
+      providerAttempts,
+    );
   }
 
   if (
-    providerAttempts.every((attempt) => !attempt.success)
+    providerAttempts.every(
+      (attempt) => !attempt.success,
+    )
     && providerAttempts.some(
       (attempt) =>
-        attempt.attempted && isProviderLimitError(attempt.error_summary),
+        attempt.attempted
+        && isProviderLimitError(
+          attempt.error_summary,
+        ),
     )
-    && providerAttempts.filter((attempt) => attempt.attempted).length === 1
+    && providerAttempts.filter(
+      (attempt) => attempt.attempted,
+    ).length === 1
   ) {
     throw new N8nWorkflowGeneratorProviderLimitError();
   }
 
-  throw new N8nWorkflowGeneratorProvidersFailedError(providerAttempts);
+  throw new N8nWorkflowGeneratorProvidersFailedError(
+    providerAttempts,
+  );
 }
