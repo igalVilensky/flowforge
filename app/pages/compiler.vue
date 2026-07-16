@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { ChevronRight, X } from "lucide-vue-next";
+import {
+  ArrowRight,
+  Check,
+  ChevronRight,
+  Clipboard,
+  Download,
+  Loader2,
+  Sparkles,
+  Workflow,
+  X,
+} from "lucide-vue-next";
 import type { CompileJob, CompileMode, CompileProgressEvent } from "../../shared/types/compileJob";
 import type { AgentDebugInfo } from "../../shared/types/agentOutputs";
 import type { N8nGenerateResponse, N8nWorkflow } from "../../shared/types/n8nWorkflow";
@@ -219,6 +229,31 @@ const hasInput = computed(() => trimmedInput.value.length > 0);
 const currentQuestion = computed(() => clarificationSession.value?.next_question ?? null);
 const isBusy = computed(() => runState.value === "clarifying" || runState.value === "compiling");
 const hasClarification = computed(() => Boolean(clarificationSession.value && currentQuestion.value));
+const unifiedLoadingTitle = computed(() =>
+  runState.value === "clarifying"
+    ? clarificationAnswers.value.length > 0
+      ? "Processing your answer"
+      : "Checking your request"
+    : "Compiling workflow",
+);
+const unifiedLoadingMessage = computed(() => {
+  if (runState.value === "clarifying") {
+    return clarificationAnswers.value.length > 0
+      ? "The clarifier is reviewing your answer and deciding whether another detail is needed."
+      : "FlowForge is deciding whether it can compile directly or needs one useful clarification.";
+  }
+
+  return currentProcessStatus.value.message || "The multi-agent compiler is building and reviewing your workflow blueprint.";
+});
+const unifiedLoadingStep = computed(() => {
+  if (runState.value === "clarifying") {
+    return clarificationAnswers.value.length > 0
+      ? "Clarifier · reviewing answer"
+      : "Clarifier · analyzing request";
+  }
+
+  return currentProcessStatus.value.label || "Compiler · preparing";
+});
 const answeredCount = computed(() => clarificationAnswers.value.length);
 const currentQuestionNumber = computed(() => answeredCount.value + 1);
 const clarificationProgressLabel = computed(() => `Question ${currentQuestionNumber.value} · stops when ready`);
@@ -2108,33 +2143,35 @@ function isPrimaryDisabled() {
 
 <template>
   <main class="console-shell">
-    <header class="topbar">
-      <div class="brandline">
-        <span class="brand-mark">FF</span>
-        <span class="brand-path">FlowForge / Compiler</span>
+    <header class="topbar app-header">
+      <div class="app-header-left">
+        <NuxtLink to="/" class="brand-mark" aria-label="FlowForge home">
+          FF
+        </NuxtLink>
+
+        <div class="crumb">
+          <span class="crumb-root">FlowForge</span>
+          <span class="crumb-sep">/</span>
+          <span class="crumb-leaf">
+            <Workflow :size="14" />
+            Compiler
+          </span>
+        </div>
       </div>
 
-      <div class="topbar-status">
-  <NuxtLink
-    to="/automation-studio"
-    class="idea-generator-link"
-  >
-    <span class="idea-generator-icon">✦</span>
+      <div class="app-header-right">
+        <NuxtLink to="/automation-studio" class="studio-link">
+          <Sparkles :size="14" />
+          Automation Studio
+          <ArrowRight :size="14" />
+        </NuxtLink>
 
-    <span class="idea-generator-copy">
-      <strong>Need an idea?</strong>
-      <small>Open Automation Studio</small>
-    </span>
+        <span class="status-pill" :class="`tone-${mainStatusTone}`">
+          <span class="pulse-dot" />
+          {{ mainStatus }}
+        </span>
 
-    <ChevronRight :size="16" />
-  </NuxtLink>
-
-  <span class="status-pill" :class="`tone-${mainStatusTone}`">
-    <span class="pulse-dot" />
-    {{ mainStatus }}
-  </span>
-
-  <div class="mode-menu-wrap">
+        <div class="mode-menu-wrap">
           <button
             type="button"
             class="mode-menu-trigger"
@@ -2178,45 +2215,52 @@ function isPrimaryDisabled() {
       </aside>
 
       <section class="workspace-panel">
-        <div v-if="isOrchestrating" class="orchestration-stage">
-          <section class="process-status-panel" aria-live="polite">
-            <div class="process-status-head">
-              <div>
-                <p class="eyebrow">Compiler</p>
-                <h1>Compiling workflow</h1>
+        <div v-if="isBusy" class="unified-loading-stage" aria-live="polite">
+          <section class="unified-loading-panel">
+            <div class="unified-loading-main">
+              <div class="unified-loading-icon">
+                <Loader2 class="spin" :size="24" />
               </div>
-              <span :class="`process-state-pill state-${currentProcessStatus.state}`">{{ currentProcessStatus.stateLabel }}</span>
+
+              <div class="unified-loading-copy">
+                <div class="unified-loading-kicker">
+                  <span>{{ runState === "clarifying" ? "Guided Clarifier" : "Multi-agent compiler" }}</span>
+                  <span class="unified-loading-state">Working</span>
+                </div>
+                <h1>{{ unifiedLoadingTitle }}</h1>
+                <p>{{ unifiedLoadingMessage }}</p>
+              </div>
             </div>
 
-            <div class="current-process-card">
-              <span class="process-orb" />
+            <div class="unified-current-step">
+              <span class="unified-step-dot" />
               <div>
-                <span>Current step</span>
-                <strong>{{ currentProcessStatus.label }}</strong>
-                <p>{{ currentProcessStatus.message }}</p>
+                <span>Current activity</span>
+                <strong>{{ unifiedLoadingStep }}</strong>
               </div>
             </div>
 
-            <div class="recent-events">
-              <div class="recent-events-title">
-                <span>Recent events</span>
-              </div>
+            <div v-if="runState === 'compiling'" class="unified-progress-list">
               <article
                 v-for="(event, index) in recentCompileEvents"
                 :key="`${index}-${progressEventLabel(event)}`"
-                class="recent-event"
+                class="unified-progress-item"
                 :class="`state-${progressEventState(event)}`"
               >
                 <span class="recent-event-dot" />
                 <strong>{{ progressEventLabel(event) }}</strong>
                 <span>{{ progressEventMessage(event) }}</span>
               </article>
-              <article v-if="recentCompileEvents.length === 0" class="recent-event state-running">
+              <article v-if="recentCompileEvents.length === 0" class="unified-progress-item state-running">
                 <span class="recent-event-dot" />
                 <strong>Compiler</strong>
                 <span>Opening stream</span>
               </article>
             </div>
+
+            <p v-else class="unified-loading-note">
+              Clarification is part of the same compile flow. Your request and previous answers remain saved.
+            </p>
           </section>
         </div>
 
@@ -2259,17 +2303,29 @@ function isPrimaryDisabled() {
         </div>
 
         <div v-else-if="hasClarification && currentQuestion" class="clarify-stage">
-          <div class="stage-kicker">
-            <span>Guided clarification</span>
-            <span>{{ clarificationProgressLabel }}</span>
+          <div class="clarification-header">
+            <div>
+              <p class="eyebrow">Guided clarification</p>
+              <h1>One detail before compilation</h1>
+            </div>
+            <span class="clarification-progress-pill">{{ clarificationProgressLabel }}</span>
           </div>
 
-          <div class="question-card">
-            <div class="question-kind">{{ currentQuestion.kind.replaceAll("_", " ") }}</div>
+          <div class="question-card refined-question-card">
+            <div class="question-card-topline">
+              <span class="question-kind">{{ currentQuestion.kind.replaceAll("_", " ") }}</span>
+              <span class="question-thinking-state">
+                <span class="status-dot" />
+                Waiting for your answer
+              </span>
+            </div>
+
             <h2>{{ currentQuestion.question }}</h2>
             <p>{{ currentQuestion.why_it_matters }}</p>
 
+            <label class="answer-field-label" for="clarification-answer">Your answer</label>
             <textarea
+              id="clarification-answer"
               v-model="clarificationAnswerDraft"
               class="answer-input"
               rows="4"
@@ -2278,9 +2334,12 @@ function isPrimaryDisabled() {
               @keydown.ctrl.enter.prevent="continueClarification"
             />
 
-            <div v-if="currentQuestion.example_answer" class="example-answer">
-              <span>Example</span>
-              {{ currentQuestion.example_answer }}
+            <div class="question-card-footer">
+              <div v-if="currentQuestion.example_answer" class="example-answer">
+                <span>Example</span>
+                {{ currentQuestion.example_answer }}
+              </div>
+              <span class="keyboard-hint">Ctrl/⌘ + Enter to continue</span>
             </div>
           </div>
         </div>
@@ -2345,31 +2404,26 @@ function isPrimaryDisabled() {
             </div>
 
             <section v-if="job" class="handoff-card">
-              <div class="handoff-head">
+              <div class="handoff-head primary-handoff-head">
                 <div>
                   <p class="eyebrow">Implementation handoff</p>
-                  <h2>n8n builder prompt</h2>
+                  <h2>Generate the n8n workflow draft</h2>
                   <p>
-                    Safe implementation brief generated from this blueprint. It keeps FlowForge non-executing and requires human approval before real-world actions.
+                    Create an inactive, importable workflow skeleton from the compiled blueprint. Connections are generated; credentials and production configuration remain manual.
                   </p>
                 </div>
-
-                <button type="button" class="handoff-copy" @click="copyN8nImplementationPrompt">
-                  {{ handoffCopied ? "Copied" : "Copy prompt" }}
-                </button>
               </div>
 
-              <details class="handoff-preview">
-                <summary>Preview implementation prompt</summary>
-                <pre>{{ n8nImplementationPrompt }}</pre>
-              </details>
-
-              <section class="n8n-json-draft" aria-label="n8n JSON draft generator">
-                <div class="n8n-json-head">
-                  <div>
+              <section class="n8n-json-draft refined-n8n-panel" aria-label="n8n JSON draft generator">
+                <div class="n8n-section-heading">
+                  <div class="n8n-heading-icon">
+                    <Workflow :size="19" />
+                  </div>
+                  <div class="n8n-heading-copy">
+                    <span class="n8n-section-kicker">Primary artifact</span>
                     <h3>n8n JSON draft</h3>
                     <p>
-                      Generate an importable workflow JSON draft from this safe blueprint while keeping production side effects disabled.
+                      Generate the importable workflow file directly from this blueprint. The draft stays inactive until it is reviewed and configured in n8n.
                     </p>
                   </div>
 
@@ -2379,50 +2433,95 @@ function isPrimaryDisabled() {
                     :disabled="!canGenerateN8nJson"
                     @click="generateN8nWorkflowDraft"
                   >
-                    <span v-if="n8nGeneratorState === 'generating'" class="mini-loader" />
-                    <span>{{ n8nGeneratorState === "generating" ? "Generating" : "Generate n8n JSON draft" }}</span>
+                    <Loader2 v-if="n8nGeneratorState === 'generating'" class="spin" :size="17" />
+                    <Sparkles v-else :size="17" />
+                    <span>{{ n8nGeneratorState === "generating" ? "Generating draft" : n8nWorkflowDraft ? "Regenerate draft" : "Generate JSON draft" }}</span>
                   </button>
                 </div>
 
-                <p class="n8n-safety-note">
-                  {{ n8nStaticSafetyWarning }}
-                </p>
+                <div class="n8n-safety-strip">
+                  <span class="n8n-safety-dot" />
+                  <div>
+                    <strong>Inactive by default</strong>
+                    <p>{{ n8nStaticSafetyWarning }}</p>
+                  </div>
+                </div>
 
                 <div
                   v-if="n8nGeneratorAgentCard"
-                  class="n8n-agent-inline"
+                  class="n8n-generation-status"
                   :class="[`agent-${n8nGeneratorAgentCard.status}`, `agent-tone-${n8nGeneratorAgentCard.providerTone}`]"
                 >
-                  <span class="agent-orb" />
+                  <div class="n8n-status-icon">
+                    <Loader2 v-if="n8nGeneratorState === 'generating'" class="spin" :size="18" />
+                    <Check v-else-if="n8nGeneratorState === 'ready'" :size="18" />
+                    <span v-else class="agent-orb" />
+                  </div>
                   <div>
                     <strong>{{ n8nGeneratorAgentCard.statusLabel }}</strong>
                     <p>{{ n8nGeneratorAgentCard.statusReason }}</p>
                   </div>
+                  <span v-if="n8nGeneratorMeta" class="n8n-meta-pill">{{ n8nGeneratorMeta }}</span>
                 </div>
 
-                <p v-if="n8nGenerateError" class="n8n-error">
-                  {{ n8nGenerateError }}
-                </p>
+                <div v-if="n8nGenerateError" class="n8n-message-panel tone-error">
+                  <strong>Generation failed</strong>
+                  <p>{{ n8nGenerateError }}</p>
+                </div>
 
-                <ul v-if="displayedN8nWarnings.length" class="n8n-warning-list">
-                  <li v-for="warning in displayedN8nWarnings" :key="warning">{{ warning }}</li>
-                </ul>
+                <div v-if="displayedN8nWarnings.length" class="n8n-message-panel tone-warning">
+                  <strong>Configuration notes</strong>
+                  <ul>
+                    <li v-for="warning in displayedN8nWarnings" :key="warning">{{ warning }}</li>
+                  </ul>
+                </div>
 
-                <div v-if="n8nWorkflowDraft" class="n8n-json-output">
+                <div v-if="n8nWorkflowDraft" class="n8n-json-output refined-json-output">
                   <div class="n8n-json-toolbar">
-                    <span>{{ n8nGeneratorMeta }}</span>
-                    <div>
-                      <button type="button" class="handoff-copy" @click="copyN8nWorkflowJson">
+                    <div class="n8n-file-meta">
+                      <span class="n8n-file-icon">{ }</span>
+                      <div>
+                        <strong>{{ n8nJsonFileName }}</strong>
+                        <span>Validated import draft</span>
+                      </div>
+                    </div>
+
+                    <div class="n8n-toolbar-actions">
+                      <button type="button" class="n8n-toolbar-button" @click="copyN8nWorkflowJson">
+                        <Check v-if="n8nJsonCopied" :size="15" />
+                        <Clipboard v-else :size="15" />
                         {{ n8nJsonCopied ? "Copied" : "Copy JSON" }}
                       </button>
-                      <button type="button" class="handoff-copy" @click="downloadN8nWorkflowJson">
-                        Download JSON
+                      <button type="button" class="n8n-toolbar-button primary" @click="downloadN8nWorkflowJson">
+                        <Download :size="15" />
+                        Download
                       </button>
                     </div>
                   </div>
 
                   <pre>{{ n8nWorkflowJsonText }}</pre>
                 </div>
+              </section>
+
+              <section class="prompt-secondary-card" aria-label="Secondary n8n implementation prompt">
+                <div class="prompt-secondary-head">
+                  <div>
+                    <span class="n8n-section-kicker">Secondary artifact</span>
+                    <h3>n8n builder prompt</h3>
+                    <p>
+                      Use the implementation brief when you want a readable node-by-node plan instead of the generated JSON file.
+                    </p>
+                  </div>
+
+                  <button type="button" class="handoff-copy" @click="copyN8nImplementationPrompt">
+                    {{ handoffCopied ? "Copied" : "Copy prompt" }}
+                  </button>
+                </div>
+
+                <details class="handoff-preview secondary-prompt-preview">
+                  <summary>Preview implementation prompt</summary>
+                  <pre>{{ n8nImplementationPrompt }}</pre>
+                </details>
               </section>
             </section>
           </section>
@@ -5348,5 +5447,1128 @@ The current endpoint returns the agent outcome and raw provider response when av
     width: 100%;
   }
 
+}
+
+
+/* ========================================================================== 
+   Studio-aligned compiler refinement layer
+   ========================================================================== */
+
+:global(html) {
+  color-scheme: dark;
+  background: #090d16;
+}
+
+:global(body) {
+  background: #090d16;
+  color: #f4f7fb;
+}
+
+.console-shell {
+  min-height: 100vh;
+  padding: 60px 0 76px;
+  background: #090d16;
+  color: #f4f7fb;
+}
+
+.app-header {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 60px;
+  padding: 0 22px;
+  border: 0;
+  border-bottom: 1px solid #263247;
+  border-radius: 0;
+  background: #0f1623;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.app-header-left,
+.app-header-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.app-header-left {
+  gap: 14px;
+}
+
+.app-header-right {
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.app-header .brand-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid #36445d;
+  border-radius: 8px;
+  background: rgba(124, 111, 242, 0.12);
+  color: #f4f7fb;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.crumb-root {
+  color: #6f7b8e;
+  font-weight: 600;
+}
+
+.crumb-sep {
+  color: #36445d;
+}
+
+.crumb-leaf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f4f7fb;
+  font-weight: 700;
+}
+
+.crumb-leaf svg {
+  color: #7c6ff2;
+}
+
+.compiler-context-label {
+  max-width: 260px;
+  overflow: hidden;
+  color: #a7b1c2;
+  font-size: 0.88rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid #263247;
+  border-radius: 7px;
+  padding: 0 11px;
+  color: #f4f7fb;
+  font-size: 0.86rem;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.studio-link svg:first-child {
+  color: #9185ff;
+}
+
+.studio-link:hover {
+  border-color: #36445d;
+  background: #131c2b;
+}
+
+.app-header .status-pill {
+  min-height: 32px;
+  border: 0;
+  padding: 0 10px;
+  box-shadow: none;
+  font-size: 0.82rem;
+}
+
+.app-header .mode-menu-trigger {
+  min-height: 38px;
+  border: 1px solid #263247;
+  border-radius: 8px;
+  background: #131c2b;
+  box-shadow: none;
+}
+
+.app-header .mode-menu-trigger:hover,
+.app-header .mode-menu-trigger.open {
+  border-color: #36445d;
+  background: #182235;
+}
+
+.console-grid {
+  min-height: calc(100vh - 136px);
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #090d16;
+  box-shadow: none;
+}
+
+.agent-rail,
+.side-panel {
+  background: #0f1623;
+  border-color: #263247;
+}
+
+.workspace-panel {
+  background: #090d16;
+}
+
+.action-bar {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 70;
+  min-height: 76px;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid #263247;
+  border-radius: 0;
+  background: #0f1623;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+/* Unified clarification and compile loader */
+
+.unified-loading-stage {
+  width: min(760px, 100%);
+  margin: auto;
+  padding: 28px;
+}
+
+.unified-loading-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border: 1px solid #263247;
+  border-radius: 12px;
+  background: #131c2b;
+  padding: 24px;
+  box-shadow: none;
+}
+
+.unified-loading-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.unified-loading-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: rgba(124, 111, 242, 0.14);
+  color: #9185ff;
+}
+
+.unified-loading-copy {
+  min-width: 0;
+}
+
+.unified-loading-kicker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+  color: #6f7b8e;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.unified-loading-state {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(244, 184, 96, 0.1);
+  color: #f4b860;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.unified-loading-copy h1 {
+  margin: 0;
+  color: #f4f7fb;
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
+  line-height: 1.25;
+}
+
+.unified-loading-copy p {
+  max-width: 640px;
+  margin: 8px 0 0;
+  color: #a7b1c2;
+  font-size: 0.94rem;
+  line-height: 1.65;
+}
+
+.unified-current-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #263247;
+  border-radius: 9px;
+  background: #182235;
+  padding: 13px 15px;
+}
+
+.unified-step-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #9185ff;
+  box-shadow: 0 0 0 5px rgba(124, 111, 242, 0.1);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.unified-current-step div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.unified-current-step span {
+  color: #6f7b8e;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.unified-current-step strong {
+  color: #f4f7fb;
+  font-size: 0.94rem;
+}
+
+.unified-progress-list {
+  display: grid;
+  gap: 7px;
+}
+
+.unified-progress-item {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 0.5fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  border-bottom: 1px solid #263247;
+  color: #a7b1c2;
+  font-size: 0.84rem;
+}
+
+.unified-progress-item:last-child {
+  border-bottom: 0;
+}
+
+.unified-progress-item strong {
+  color: #f4f7fb;
+}
+
+.unified-loading-note {
+  margin: 0;
+  color: #6f7b8e;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+/* Clarification */
+
+.clarify-stage {
+  width: min(760px, 100%);
+  margin: auto;
+  padding: 28px;
+}
+
+.clarification-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.clarification-header h1 {
+  margin: 4px 0 0;
+  color: #f4f7fb;
+  font-size: 1.35rem;
+}
+
+.clarification-progress-pill {
+  border: 1px solid #263247;
+  border-radius: 999px;
+  background: #131c2b;
+  padding: 6px 10px;
+  color: #a7b1c2;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.refined-question-card {
+  border: 1px solid #263247;
+  border-radius: 12px;
+  background: #131c2b;
+  padding: 22px;
+  box-shadow: none;
+}
+
+.question-card-topline,
+.question-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.question-thinking-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #3ddc97;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.question-thinking-state .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.refined-question-card h2 {
+  max-width: 680px;
+  margin: 18px 0 8px;
+  color: #f4f7fb;
+  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  line-height: 1.35;
+}
+
+.refined-question-card > p {
+  margin: 0 0 20px;
+  color: #a7b1c2;
+  line-height: 1.6;
+}
+
+.answer-field-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #a7b1c2;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.refined-question-card .answer-input {
+  width: 100%;
+  border: 1px solid #263247;
+  border-radius: 9px;
+  background: #182235;
+  color: #f4f7fb;
+  box-shadow: none;
+}
+
+.refined-question-card .answer-input:focus {
+  border-color: #7c6ff2;
+  box-shadow: 0 0 0 3px rgba(124, 111, 242, 0.12);
+  outline: none;
+}
+
+.question-card-footer {
+  align-items: flex-start;
+  margin-top: 12px;
+}
+
+.refined-question-card .example-answer {
+  flex: 1 1 auto;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #6f7b8e;
+}
+
+.keyboard-hint {
+  flex: 0 0 auto;
+  color: #6f7b8e;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+/* n8n JSON generator */
+
+.refined-n8n-panel {
+  margin-top: 18px;
+  border: 1px solid #263247;
+  border-radius: 12px;
+  background: #0f1623;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.n8n-section-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #263247;
+}
+
+.n8n-heading-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  background: rgba(124, 111, 242, 0.14);
+  color: #9185ff;
+}
+
+.n8n-section-kicker {
+  display: block;
+  margin-bottom: 3px;
+  color: #6f7b8e;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.n8n-heading-copy h3 {
+  margin: 0;
+  color: #f4f7fb;
+  font-size: 1.04rem;
+}
+
+.n8n-heading-copy p {
+  max-width: 720px;
+  margin: 5px 0 0;
+  color: #a7b1c2;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.refined-n8n-panel .n8n-generate-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: #7c6ff2;
+  padding: 0 15px;
+  color: #f4f7fb;
+  font-size: 0.86rem;
+  font-weight: 700;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.refined-n8n-panel .n8n-generate-button:hover:not(:disabled) {
+  background: #9185ff;
+}
+
+.n8n-safety-strip,
+.n8n-generation-status,
+.n8n-message-panel {
+  margin: 14px 20px 0;
+}
+
+.n8n-safety-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  border: 1px solid rgba(244, 184, 96, 0.26);
+  border-radius: 9px;
+  background: rgba(244, 184, 96, 0.07);
+  padding: 12px 14px;
+}
+
+.n8n-safety-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #f4b860;
+}
+
+.n8n-safety-strip strong {
+  color: #f4f7fb;
+  font-size: 0.85rem;
+}
+
+.n8n-safety-strip p {
+  margin: 3px 0 0;
+  color: #a7b1c2;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.n8n-generation-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid #263247;
+  border-radius: 9px;
+  background: #131c2b;
+  padding: 12px 14px;
+}
+
+.n8n-status-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(124, 111, 242, 0.12);
+  color: #9185ff;
+}
+
+.n8n-generation-status strong {
+  color: #f4f7fb;
+  font-size: 0.88rem;
+}
+
+.n8n-generation-status p {
+  margin: 3px 0 0;
+  color: #a7b1c2;
+  font-size: 0.82rem;
+}
+
+.n8n-meta-pill {
+  border: 1px solid #263247;
+  border-radius: 999px;
+  background: #182235;
+  padding: 5px 9px;
+  color: #a7b1c2;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.n8n-message-panel {
+  border: 1px solid #263247;
+  border-radius: 9px;
+  padding: 12px 14px;
+}
+
+.n8n-message-panel strong {
+  color: #f4f7fb;
+  font-size: 0.86rem;
+}
+
+.n8n-message-panel p,
+.n8n-message-panel ul {
+  margin: 6px 0 0;
+  color: #a7b1c2;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.n8n-message-panel.tone-error {
+  border-color: rgba(240, 106, 122, 0.35);
+  background: rgba(240, 106, 122, 0.07);
+}
+
+.n8n-message-panel.tone-warning {
+  border-color: rgba(244, 184, 96, 0.28);
+  background: rgba(244, 184, 96, 0.06);
+}
+
+.refined-json-output {
+  margin: 14px 20px 20px;
+  border: 1px solid #263247;
+  border-radius: 10px;
+  background: #090d16;
+  overflow: hidden;
+}
+
+.refined-json-output .n8n-json-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  border-bottom: 1px solid #263247;
+  background: #131c2b;
+  padding: 9px 11px 9px 14px;
+}
+
+.n8n-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.n8n-file-icon {
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  background: rgba(61, 220, 151, 0.1);
+  color: #3ddc97;
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.n8n-file-meta div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.n8n-file-meta strong {
+  overflow: hidden;
+  color: #f4f7fb;
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n8n-file-meta div span {
+  color: #6f7b8e;
+  font-size: 0.74rem;
+}
+
+.n8n-toolbar-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.n8n-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid #263247;
+  border-radius: 7px;
+  background: #182235;
+  padding: 0 10px;
+  color: #f4f7fb;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.n8n-toolbar-button:hover {
+  border-color: #36445d;
+}
+
+.n8n-toolbar-button.primary {
+  border-color: transparent;
+  background: #7c6ff2;
+}
+
+.n8n-toolbar-button.primary:hover {
+  background: #9185ff;
+}
+
+.refined-json-output pre {
+  max-height: 520px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #090d16;
+  padding: 18px;
+  color: #dce3ec;
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  overflow: auto;
+}
+
+.spin {
+  animation: compiler-spin 0.9s linear infinite;
+}
+
+@keyframes compiler-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1180px) {
+  .compiler-context-label {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-header {
+    padding: 0 14px;
+  }
+
+  .crumb-root,
+  .crumb-sep,
+  .studio-link span {
+    display: none;
+  }
+
+  .studio-link {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .studio-link svg:last-child {
+    display: none;
+  }
+
+  .n8n-section-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .refined-n8n-panel .n8n-generate-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
+@media (max-width: 680px) {
+  .app-header .status-pill {
+    display: none;
+  }
+
+  .app-header .mode-menu-trigger small,
+  .app-header .mode-menu-kicker {
+    display: none;
+  }
+
+  .unified-loading-stage,
+  .clarify-stage {
+    padding: 16px;
+  }
+
+  .unified-loading-main,
+  .clarification-header,
+  .question-card-topline,
+  .question-card-footer,
+  .refined-json-output .n8n-json-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .unified-progress-item {
+    grid-template-columns: auto 1fr;
+  }
+
+  .unified-progress-item > span:last-child {
+    grid-column: 2;
+  }
+
+  .keyboard-hint {
+    white-space: normal;
+  }
+
+  .n8n-generation-status {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .n8n-meta-pill {
+    grid-column: 1 / -1;
+    width: fit-content;
+  }
+
+  .n8n-toolbar-actions,
+  .n8n-toolbar-button {
+    width: 100%;
+  }
+}
+
+
+
+/* ==========================================================================
+   Layout correction layer
+   Keeps the Studio visual language without inheriting obsolete positioning.
+   ========================================================================== */
+
+.console-shell {
+  width: 100%;
+  min-height: 100vh;
+  padding: 84px 16px 108px;
+  overflow-x: hidden;
+}
+
+.console-grid {
+  width: min(1480px, 100%);
+  max-width: 1480px;
+  min-height: calc(100vh - 192px);
+  margin: 0 auto;
+  gap: 14px;
+}
+
+.workspace-panel {
+  min-width: 0;
+  min-height: calc(100vh - 192px);
+  overflow: visible;
+}
+
+.result-stage,
+.input-stage,
+.clarify-stage,
+.orchestration-stage,
+.error-panel {
+  min-height: auto;
+}
+
+.result-stage {
+  padding-bottom: 20px;
+}
+
+.blueprint-panel,
+.handoff-card,
+.refined-n8n-panel,
+.n8n-json-draft {
+  min-width: 0;
+  overflow: visible;
+}
+
+.refined-n8n-panel {
+  margin-bottom: 8px;
+}
+
+.n8n-json-output,
+.refined-json-output {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.action-bar {
+  position: fixed;
+  inset: auto 0 0 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: minmax(170px, auto) minmax(0, 1fr) minmax(170px, auto);
+  gap: 12px;
+  padding: 12px max(16px, calc((100vw - 1480px) / 2 + 16px));
+  border: 0;
+  border-top: 1px solid #263247;
+  border-radius: 0;
+  background: #0f1623;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.action-left,
+.action-status,
+.primary-action {
+  min-width: 0;
+}
+
+.action-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1100px) {
+  .console-grid {
+    grid-template-columns: 130px minmax(0, 1fr) 300px;
+  }
+}
+
+@media (max-width: 900px) {
+  .console-shell {
+    padding: 76px 12px 164px;
+  }
+
+  .console-grid {
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-panel {
+    padding: 14px;
+  }
+
+  .action-bar {
+    grid-template-columns: 1fr;
+    padding: 10px 12px;
+  }
+
+  .primary-action {
+    order: 1;
+    width: 100%;
+  }
+
+  .action-left {
+    order: 2;
+    justify-content: center;
+  }
+
+  .action-status {
+    order: 3;
+    white-space: normal;
+  }
+}
+
+
+/* ==========================================================================
+   Implementation artifact hierarchy and viewport scrollbar correction
+   ========================================================================== */
+
+.handoff-card {
+  padding-bottom: 22px;
+}
+
+.primary-handoff-head {
+  margin-bottom: 2px;
+}
+
+.refined-n8n-panel {
+  margin-top: 14px;
+  padding-bottom: 20px;
+  overflow: visible;
+}
+
+.n8n-safety-strip {
+  margin-bottom: 0;
+}
+
+.n8n-safety-strip:last-child {
+  margin-bottom: 0;
+}
+
+.prompt-secondary-card {
+  margin-top: 16px;
+  border: 1px solid #263247;
+  border-radius: 10px;
+  background: #131c2b;
+  padding: 16px;
+}
+
+.prompt-secondary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.prompt-secondary-head h3 {
+  margin: 0;
+  color: #f4f7fb;
+  font-size: 0.98rem;
+}
+
+.prompt-secondary-head p {
+  max-width: 720px;
+  margin: 5px 0 0;
+  color: #a7b1c2;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.secondary-prompt-preview {
+  margin-top: 12px;
+}
+
+:global(html),
+:global(body) {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(145, 133, 255, 0.72) #0f1623;
+}
+
+:global(html::-webkit-scrollbar),
+:global(body::-webkit-scrollbar) {
+  width: 10px;
+  height: 10px;
+}
+
+:global(html::-webkit-scrollbar-track),
+:global(body::-webkit-scrollbar-track) {
+  border-left: 1px solid #263247;
+  background: #0f1623;
+}
+
+:global(html::-webkit-scrollbar-thumb),
+:global(body::-webkit-scrollbar-thumb) {
+  min-height: 42px;
+  border: 2px solid #0f1623;
+  border-radius: 999px;
+  background: #7c6ff2;
+}
+
+:global(html::-webkit-scrollbar-thumb:hover),
+:global(body::-webkit-scrollbar-thumb:hover) {
+  background: #9185ff;
+}
+
+:global(html::-webkit-scrollbar-corner),
+:global(body::-webkit-scrollbar-corner) {
+  background: #0f1623;
+}
+
+@media (max-width: 760px) {
+  .prompt-secondary-head {
+    flex-direction: column;
+  }
+
+  .prompt-secondary-head .handoff-copy {
+    width: 100%;
+  }
+}
+
+</style>
+
+<style scoped>
+/* Final alignment corrections */
+.agent-card {
+  position: relative;
+}
+
+.agent-row-main {
+  grid-template-columns: minmax(0, 1fr);
+  padding-left: 22px;
+}
+
+.agent-row-main .agent-orb {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  margin: 0;
+  transform: translateY(-50%);
+}
+
+.agent-card-head .agent-orb {
+  align-self: center;
+  justify-self: center;
+  margin: 0;
+}
+
+.n8n-safety-strip {
+  align-items: center;
+}
+
+.n8n-safety-dot {
+  align-self: center;
+  margin-top: 0;
 }
 </style>

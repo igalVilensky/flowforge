@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import {
   AlertCircle,
+  AlertOctagon,
   ArrowRight,
   Check,
   Clipboard,
   ExternalLink,
-  Lightbulb,
-  LoaderCircle,
+  ListChecks,
+  Loader2,
   RefreshCw,
+  Search,
   Sparkles,
+  TrendingUp,
+  Users,
+  Wand2,
+  Workflow,
 } from "lucide-vue-next";
 
 type DiscoveryCategory =
@@ -74,192 +80,120 @@ const categoryOptions: Array<{
   value: DiscoveryCategory;
   label: string;
 }> = [
-  {
-    value: "surprise",
-    label: "Surprise me",
-  },
-  {
-    value: "customer_support",
-    label: "Customer Support",
-  },
-  {
-    value: "sales_crm",
-    label: "Sales & CRM",
-  },
-  {
-    value: "marketing_content",
-    label: "Marketing & Content",
-  },
-  {
-    value: "hr_recruiting",
-    label: "HR & Recruiting",
-  },
-  {
-    value: "finance_admin",
-    label: "Finance & Administration",
-  },
-  {
-    value: "operations_projects",
-    label: "Operations & Projects",
-  },
-  {
-    value: "ecommerce",
-    label: "E-commerce",
-  },
-  {
-    value: "personal_productivity",
-    label: "Personal Productivity",
-  },
+  { value: "surprise", label: "Surprise me" },
+  { value: "customer_support", label: "Customer Support" },
+  { value: "sales_crm", label: "Sales & CRM" },
+  { value: "marketing_content", label: "Marketing & Content" },
+  { value: "hr_recruiting", label: "HR & Recruiting" },
+  { value: "finance_admin", label: "Finance & Admin" },
+  { value: "operations_projects", label: "Operations & Projects" },
+  { value: "ecommerce", label: "E-commerce" },
+  { value: "personal_productivity", label: "Personal Productivity" },
 ];
 
-const selectedCategory =
-  ref<DiscoveryCategory>("surprise");
+// Perceived-progress copy while each request is in flight. These describe
+// the real pipeline (web research, then AI drafting) even though the
+// backend returns a single response — they just reflect what's likely
+// happening at each point in the wait.
+const ideaLoadingSteps = [
+  { icon: Search, text: "Searching the web for real examples…" },
+  { icon: Sparkles, text: "Asking the AI model to shape an idea…" },
+  { icon: Wand2, text: "Scoring value, difficulty and confidence…" },
+];
 
-const suggestion =
-  ref<AutomationSuggestion | null>(null);
+const useCaseLoadingSteps = [
+  { icon: Workflow, text: "Reviewing the automation idea…" },
+  { icon: Sparkles, text: "Drafting trigger, actions and result…" },
+  { icon: Wand2, text: "Writing the final workflow sentence…" },
+];
 
-const editableUseCase =
-  ref("");
+const selectedCategory = ref<DiscoveryCategory>("surprise");
+const suggestion = ref<AutomationSuggestion | null>(null);
+const editableUseCase = ref("");
+const useCaseProvider = ref<ProviderName | null>(null);
+const useCaseFallbackUsed = ref(false);
+const useCaseOpenAIError = ref<string | null>(null);
+const state = ref<PageState>("idle");
+const errorMessage = ref("");
+const copied = ref(false);
+const loadingStepIndex = ref(0);
 
-const useCaseProvider =
-  ref<ProviderName | null>(null);
+let loadingTimer: ReturnType<typeof setInterval> | null = null;
 
-const useCaseFallbackUsed =
-  ref(false);
+const isLoadingIdea = computed(() => state.value === "loading_idea");
+const isLoadingUseCase = computed(() => state.value === "loading_use_case");
+const isBusy = computed(() => isLoadingIdea.value || isLoadingUseCase.value);
+const hasSuggestion = computed(() => suggestion.value !== null);
+const hasUseCase = computed(() => editableUseCase.value.trim().length > 0);
 
-const useCaseOpenAIError =
-  ref<string | null>(null);
+const activeLoadingSteps = computed(() =>
+  isLoadingUseCase.value ? useCaseLoadingSteps : ideaLoadingSteps,
+);
 
-const state =
-  ref<PageState>("idle");
+const activeLoadingStep = computed(
+  () => activeLoadingSteps.value[loadingStepIndex.value],
+);
 
-const errorMessage =
-  ref("");
-
-const copied =
-  ref(false);
-
-const isLoadingIdea =
-  computed(
-    () =>
-      state.value ===
-      "loading_idea",
+const selectedCategoryLabel = computed(() => {
+  return (
+    categoryOptions.find((option) => option.value === selectedCategory.value)
+      ?.label ?? "Surprise me"
   );
+});
 
-const isLoadingUseCase =
-  computed(
-    () =>
-      state.value ===
-      "loading_use_case",
-  );
-
-const isBusy =
-  computed(
-    () =>
-      isLoadingIdea.value ||
-      isLoadingUseCase.value,
-  );
-
-const hasSuggestion =
-  computed(
-    () =>
-      suggestion.value !== null,
-  );
-
-const hasUseCase =
-  computed(
-    () =>
-      editableUseCase.value
-        .trim()
-        .length > 0,
-  );
-
-const selectedCategoryLabel =
-  computed(() => {
-    return (
-      categoryOptions.find(
-        (option) =>
-          option.value ===
-          selectedCategory.value,
-      )?.label ??
-      "Surprise me"
-    );
-  });
-
-const suggestionCategoryLabel =
-  computed(() => {
-    if (!suggestion.value) {
-      return selectedCategoryLabel.value;
-    }
-
-    return (
-      categoryOptions.find(
-        (option) =>
-          option.value ===
-          suggestion.value?.category,
-      )?.label ??
-      selectedCategoryLabel.value
-    );
-  });
-
-const fitTypeLabel =
-  computed(() => {
-    if (!suggestion.value) {
-      return "";
-    }
-
-    const labels:
-      Record<FitType, string> = {
-      automation_only:
-        "Automation",
-
-      agent_only:
-        "AI assistant",
-
-      agentic_workflow:
-        "Agentic workflow",
-    };
-
-    return labels[
-      suggestion.value.fitType
-    ];
-  });
-
-const ideaProviderLabel =
-  computed(() => {
-    return providerLabel(
-      suggestion.value?.provider ??
-      null,
-    );
-  });
-
-const useCaseProviderLabel =
-  computed(() => {
-    return providerLabel(
-      useCaseProvider.value,
-    );
-  });
-
-function providerLabel(
-  provider: ProviderName | null,
-) {
-  if (provider === "openai") {
-    return "OpenAI";
+const suggestionCategoryLabel = computed(() => {
+  if (!suggestion.value) {
+    return selectedCategoryLabel.value;
   }
+  return (
+    categoryOptions.find((option) => option.value === suggestion.value?.category)
+      ?.label ?? selectedCategoryLabel.value
+  );
+});
 
-  if (provider === "groq") {
-    return "Groq";
+const fitTypeLabel = computed(() => {
+  if (!suggestion.value) {
+    return "";
   }
+  const labels: Record<FitType, string> = {
+    automation_only: "Automation",
+    agent_only: "AI assistant",
+    agentic_workflow: "Agentic workflow",
+  };
+  return labels[suggestion.value.fitType];
+});
 
+const ideaProviderLabel = computed(() => providerLabel(suggestion.value?.provider ?? null));
+const useCaseProviderLabel = computed(() => providerLabel(useCaseProvider.value));
+
+const statusLabel = computed(() => {
+  if (isBusy.value) return "Working";
+  if (state.value === "failed") return "Error";
+  return "Ready";
+});
+
+const statusTone = computed<"ready" | "busy" | "error">(() => {
+  if (isBusy.value) return "busy";
+  if (state.value === "failed") return "error";
+  return "ready";
+});
+
+const contextLabel = computed(() => {
+  if (isLoadingIdea.value) return "Finding an idea for you…";
+  if (isLoadingUseCase.value) return "Drafting the workflow…";
+  if (hasUseCase.value) return "Use case ready to copy";
+  if (hasSuggestion.value) return "Idea ready — build the use case";
+  return "Ready for a workflow?";
+});
+
+function providerLabel(provider: ProviderName | null) {
+  if (provider === "openai") return "OpenAI";
+  if (provider === "groq") return "Groq";
   return "";
 }
 
-function handleCategoryChange(
-  category: DiscoveryCategory,
-) {
-  selectedCategory.value =
-    category;
-
+function handleCategoryChange(category: DiscoveryCategory) {
+  selectedCategory.value = category;
   resetAll();
 }
 
@@ -278,112 +212,94 @@ function resetAll() {
   resetUseCase();
 }
 
-async function generateIdea() {
-  state.value =
-    "loading_idea";
+function startLoadingCycle(stepCount: number) {
+  stopLoadingCycle();
+  loadingStepIndex.value = 0;
+  loadingTimer = setInterval(() => {
+    loadingStepIndex.value = (loadingStepIndex.value + 1) % stepCount;
+  }, 1500);
+}
 
+function stopLoadingCycle() {
+  if (loadingTimer) {
+    clearInterval(loadingTimer);
+    loadingTimer = null;
+  }
+}
+
+onUnmounted(() => {
+  stopLoadingCycle();
+});
+
+async function generateIdea() {
+  state.value = "loading_idea";
   errorMessage.value = "";
   suggestion.value = null;
-
   resetUseCase();
+  startLoadingCycle(ideaLoadingSteps.length);
 
   try {
-    const response =
-      await $fetch<AutomationSuggestion>(
-        "/api/suggest-automation",
-        {
-          method: "POST",
+    const response = await $fetch<AutomationSuggestion>(
+      "/api/suggest-automation",
+      {
+        method: "POST",
+        body: { category: selectedCategory.value },
+      },
+    );
 
-          body: {
-            category:
-              selectedCategory.value,
-          },
-        },
-      );
-
-    suggestion.value =
-      response;
-
-    state.value =
-      "idea_ready";
+    suggestion.value = response;
+    state.value = "idea_ready";
   } catch (error) {
-    state.value =
-      "failed";
-
-    errorMessage.value =
-      getErrorMessage(
-        error,
-        "The automation idea could not be generated.",
-      );
+    state.value = "failed";
+    errorMessage.value = getErrorMessage(
+      error,
+      "The automation idea could not be generated.",
+    );
+  } finally {
+    stopLoadingCycle();
   }
 }
 
 async function generateUseCase() {
-  if (!suggestion.value) {
-    return;
-  }
+  if (!suggestion.value) return;
 
-  state.value =
-    "loading_use_case";
-
+  state.value = "loading_use_case";
   errorMessage.value = "";
-
   resetUseCase();
+  startLoadingCycle(useCaseLoadingSteps.length);
 
   try {
-    const response =
-      await $fetch<UseCaseResponse>(
-        "/api/generate-use-case",
-        {
-          method: "POST",
+    const response = await $fetch<UseCaseResponse>(
+      "/api/generate-use-case",
+      {
+        method: "POST",
+        body: { suggestion: suggestion.value },
+      },
+    );
 
-          body: {
-            suggestion:
-              suggestion.value,
-          },
-        },
-      );
-
-    editableUseCase.value =
-      response.useCase;
-
-    useCaseProvider.value =
-      response.provider;
-
-    useCaseFallbackUsed.value =
-      response.fallbackUsed;
-
-    useCaseOpenAIError.value =
-      response.openAIError;
-
-    state.value =
-      "use_case_ready";
+    editableUseCase.value = response.useCase;
+    useCaseProvider.value = response.provider;
+    useCaseFallbackUsed.value = response.fallbackUsed;
+    useCaseOpenAIError.value = response.openAIError;
+    state.value = "use_case_ready";
   } catch (error) {
-    state.value =
-      "idea_ready";
-
-    errorMessage.value =
-      getErrorMessage(
-        error,
-        "The simple use case could not be generated.",
-      );
+    state.value = "idea_ready";
+    errorMessage.value = getErrorMessage(
+      error,
+      "The simple use case could not be generated.",
+    );
+  } finally {
+    stopLoadingCycle();
   }
 }
 
 async function copyUseCase() {
-  const value =
-    editableUseCase.value.trim();
-
-  if (!value) {
-    return;
-  }
+  const value = editableUseCase.value.trim();
+  if (!value) return;
 
   try {
-    await navigator.clipboard
-      .writeText(value);
-
+    await navigator.clipboard.writeText(value);
     copied.value = true;
-
     window.setTimeout(() => {
       copied.value = false;
     }, 1800);
@@ -393,602 +309,326 @@ async function copyUseCase() {
   }
 }
 
-function valueLabel(
-  value:
-    | "low"
-    | "medium"
-    | "high",
-) {
-  const labels = {
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-  };
-
+function valueLabel(value: "low" | "medium" | "high") {
+  const labels = { low: "Low", medium: "Medium", high: "High" };
   return labels[value];
 }
 
-function getErrorMessage(
-  error: unknown,
-  fallback: string,
-) {
-  if (
-    error &&
-    typeof error === "object" &&
-    "data" in error
-  ) {
-    const data =
-      error.data;
-
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error && typeof error === "object" && "data" in error) {
+    const data = (error as { data: unknown }).data;
     if (
       data &&
       typeof data === "object" &&
       "message" in data &&
-      typeof data.message ===
-        "string"
+      typeof (data as { message: unknown }).message === "string"
     ) {
-      return data.message;
+      return (data as { message: string }).message;
     }
   }
-
-  if (
-    error instanceof Error &&
-    error.message
-  ) {
+  if (error instanceof Error && error.message) {
     return error.message;
   }
-
   return fallback;
 }
 </script>
 
 <template>
   <main class="studio-page">
-    <div
-      class="background-orb orb-one"
-    />
-
-    <div
-      class="background-orb orb-two"
-    />
-
-    <div class="studio-shell">
-      <header class="topbar">
-        <NuxtLink
-          to="/"
-          class="brand"
-        >
-          <span class="brand-icon">
-            <Sparkles :size="22" />
-          </span>
-
-          <span class="brand-text">
-            <strong>FlowForge</strong>
-
-            <small>
-              Automation Idea Generator
-            </small>
-          </span>
+    <!-- Compact application header -->
+    <header class="app-header">
+      <div class="app-header-left">
+        <NuxtLink to="/compiler" class="brand-mark" aria-label="FlowForge home">
+          FF
         </NuxtLink>
 
-        <NuxtLink
-          to="/"
-          class="back-link"
-        >
-          Back to FlowForge
+        <div class="crumb">
+          <span class="crumb-root">FlowForge</span>
+          <span class="crumb-sep">/</span>
+          <span class="crumb-leaf">
+            <Sparkles :size="14" />
+            Automation Studio
+          </span>
+        </div>
+      </div>
+
+      <div class="app-header-right">
+        <span class="context-label">{{ contextLabel }}</span>
+
+        <NuxtLink to="/compiler" class="compiler-link">
+          Open Compiler
+          <ArrowRight :size="14" />
         </NuxtLink>
-      </header>
 
-      <section class="hero">
-        <div class="hero-label">
-          <Sparkles :size="18" />
+        <span class="status-pill" :class="`is-${statusTone}`">
+          <span class="status-dot" />
+          {{ statusLabel }}
+        </span>
+      </div>
+    </header>
 
-          One-click automation inspiration
-        </div>
-
-        <h1>
-          Discover a useful
-
-          <span>
-            automation idea
-          </span>
-        </h1>
-
-        <p>
-          Pick a category or let
-          FlowForge surprise you.
-          Generate one practical idea,
-          then turn it into a simple
-          workflow sentence you can edit
-          and copy.
-        </p>
-      </section>
-
-      <section class="process-row">
-        <article class="process-card">
-          <span class="process-number">
-            1
-          </span>
-
-          <div>
-            <strong>
-              Choose a category
-            </strong>
-
-            <p>
-              Select an area or keep the
-              random option.
-            </p>
+    <!-- Application body: control rail + results -->
+    <div class="app-body">
+      <aside class="control-rail">
+        <div class="rail-block">
+          <div class="rail-label-row">
+            <span class="rail-label">Category</span>
+            <span class="rail-hint">{{ selectedCategoryLabel }}</span>
           </div>
-        </article>
 
-        <ArrowRight
-          class="process-arrow"
-          :size="22"
-        />
-
-        <article class="process-card">
-          <span class="process-number">
-            2
-          </span>
-
-          <div>
-            <strong>
-              Get an idea
-            </strong>
-
-            <p>
-              FlowForge generates one
-              practical opportunity.
-            </p>
+          <div class="category-list">
+            <button
+              v-for="option in categoryOptions"
+              :key="option.value"
+              type="button"
+              class="category-item"
+              :class="{ selected: selectedCategory === option.value }"
+              :disabled="isBusy"
+              @click="handleCategoryChange(option.value)"
+            >
+              <Sparkles v-if="option.value === 'surprise'" :size="15" />
+              <span v-else class="category-dot" />
+              {{ option.label }}
+            </button>
           </div>
-        </article>
-
-        <ArrowRight
-          class="process-arrow"
-          :size="22"
-        />
-
-        <article class="process-card">
-          <span class="process-number">
-            3
-          </span>
-
-          <div>
-            <strong>
-              Create the use case
-            </strong>
-
-            <p>
-              Edit or copy the final
-              workflow sentence.
-            </p>
-          </div>
-        </article>
-      </section>
-
-      <section class="panel category-panel">
-        <div class="panel-heading">
-          <span class="step-label">
-            Step 1
-          </span>
-
-          <h2>
-            What area should we explore?
-          </h2>
-
-          <p>
-            Choose a category or let
-            FlowForge select one randomly.
-          </p>
-        </div>
-
-        <div class="category-grid">
-          <button
-            v-for="option in categoryOptions"
-            :key="option.value"
-            type="button"
-            class="category-button"
-            :class="{
-              selected:
-                selectedCategory ===
-                option.value,
-            }"
-            :disabled="isBusy"
-            @click="
-              handleCategoryChange(
-                option.value,
-              )
-            "
-          >
-            <Sparkles
-              v-if="
-                option.value ===
-                'surprise'
-              "
-              :size="17"
-            />
-
-            {{ option.label }}
-          </button>
         </div>
 
         <button
           type="button"
-          class="primary-button"
+          class="generate-button"
           :disabled="isBusy"
           @click="generateIdea"
         >
-          <LoaderCircle
-            v-if="isLoadingIdea"
-            class="spin"
-            :size="21"
-          />
-
-          <Sparkles
-            v-else
-            :size="21"
-          />
-
+          <Loader2 v-if="isLoadingIdea" class="spin" :size="18" />
+          <Wand2 v-else :size="18" />
           {{
             isLoadingIdea
-              ? "Generating idea..."
+              ? "Generating…"
               : hasSuggestion
                 ? "Generate another idea"
-                : selectedCategory ===
-                    "surprise"
-                  ? "Surprise me"
-                  : "Generate idea"
+                : "Generate idea"
           }}
         </button>
-      </section>
 
-      <section
-        v-if="errorMessage"
-        class="error-panel"
-      >
-        <AlertCircle :size="23" />
+        <p class="rail-footnote">
+          Ideas are researched on the web, then drafted by AI, one at a time,
+          so you can review each before building it out.
+        </p>
+      </aside>
 
-        <div>
-          <strong>
-            Something went wrong
-          </strong>
-
-          <p>
-            {{ errorMessage }}
-          </p>
-        </div>
-      </section>
-
-      <section
-        v-if="suggestion"
-        class="panel idea-panel"
-      >
-        <div class="idea-meta">
-          <div class="tag-list">
-            <span class="tag accent">
-              {{ fitTypeLabel }}
-            </span>
-
-            <span class="tag">
-              {{
-                suggestionCategoryLabel
-              }}
-            </span>
-
-            <span class="tag">
-              Value:
-              {{
-                valueLabel(
-                  suggestion.valueLevel,
-                )
-              }}
-            </span>
-
-            <span class="tag">
-              Difficulty:
-              {{
-                valueLabel(
-                  suggestion.difficulty,
-                )
-              }}
-            </span>
-          </div>
-
-          <span class="confidence">
-            {{ suggestion.confidence }}%
-            confidence
-          </span>
-        </div>
-
-        <div class="idea-heading">
-          <span class="idea-icon">
-            <Lightbulb :size="27" />
-          </span>
-
+      <section class="results-area">
+        <div v-if="errorMessage" class="error-panel">
+          <AlertCircle :size="19" />
           <div>
-            <span class="step-label">
-              Step 2
-            </span>
-
-            <h2>
-              {{ suggestion.title }}
-            </h2>
+            <strong>Something went wrong</strong>
+            <p>{{ errorMessage }}</p>
           </div>
         </div>
 
-        <div class="detail-grid">
-          <article class="detail-card">
-            <span class="card-title">
-              Pain point
-            </span>
-
-            <p>
-              {{ suggestion.painPoint }}
-            </p>
-          </article>
-
-          <article class="detail-card">
-            <span class="card-title">
-              Target user
-            </span>
-
-            <p>
-              {{ suggestion.targetUser }}
-            </p>
-          </article>
-
-          <article class="detail-card">
-            <span class="card-title">
-              Why it matters
-            </span>
-
-            <p>
-              {{ suggestion.whyItMatters }}
-            </p>
-          </article>
+        <!-- Empty state -->
+        <div v-if="!suggestion && !isLoadingIdea" class="empty-state">
+          <span class="empty-icon">
+            <Sparkles :size="22" />
+          </span>
+          <strong>No idea generated yet</strong>
+          <p>Pick a category on the left and generate one to get started.</p>
         </div>
 
-        <article class="workflow-card">
-          <span class="card-title">
-            Workflow idea
-          </span>
+        <!-- Idea loading state -->
+        <div v-if="isLoadingIdea" class="loading-panel">
+          <div class="loading-icon idea-tone">
+            <Loader2 class="spin" :size="22" />
+          </div>
+          <div class="loading-copy">
+            <strong>Generating your idea</strong>
+            <p class="loading-step">
+              <component :is="activeLoadingStep?.icon" :size="15" />
+              {{ activeLoadingStep?.text }}
+            </p>
+          </div>
+          <div class="loading-dots">
+            <span
+              v-for="(step, index) in ideaLoadingSteps"
+              :key="index"
+              class="loading-dot"
+              :class="{ active: index === loadingStepIndex }"
+            />
+          </div>
+        </div>
 
-          <p>
-            {{ suggestion.workflowIntent }}
-          </p>
-        </article>
-
-        <article
-          v-if="
-            suggestion.suggestedSteps.length
-          "
-          class="steps-card"
-        >
-          <span class="card-title">
-            Suggested flow
-          </span>
-
-          <div class="step-list">
-            <div
-              v-for="(
-                step,
-                index
-              ) in suggestion.suggestedSteps"
-              :key="`${index}-${step}`"
-              class="step-row"
-            >
-              <span class="step-index">
-                {{ index + 1 }}
+        <!-- Idea card -->
+        <article v-if="suggestion" class="card idea-card">
+          <div class="card-top-row">
+            <div class="tag-list">
+              <span class="tag tag-accent">{{ fitTypeLabel }}</span>
+              <span class="tag">{{ suggestionCategoryLabel }}</span>
+              <span class="tag">Value: {{ valueLabel(suggestion.valueLevel) }}</span>
+              <span class="tag">
+                Difficulty: {{ valueLabel(suggestion.difficulty) }}
               </span>
+            </div>
+            <span class="confidence">{{ suggestion.confidence }}% confidence</span>
+          </div>
 
-              <p>
-                {{ step }}
-              </p>
+          <h2 class="idea-title">{{ suggestion.title }}</h2>
+
+          <div class="detail-grid">
+            <div class="detail-item tone-error">
+              <div class="detail-heading">
+                <span class="detail-icon"><AlertOctagon :size="15" /></span>
+                <span class="detail-label">Pain point</span>
+              </div>
+              <p>{{ suggestion.painPoint }}</p>
+            </div>
+
+            <div class="detail-item tone-accent">
+              <div class="detail-heading">
+                <span class="detail-icon"><Users :size="15" /></span>
+                <span class="detail-label">Target user</span>
+              </div>
+              <p>{{ suggestion.targetUser }}</p>
+            </div>
+
+            <div class="detail-item tone-success">
+              <div class="detail-heading">
+                <span class="detail-icon"><TrendingUp :size="15" /></span>
+                <span class="detail-label">Why it matters</span>
+              </div>
+              <p>{{ suggestion.whyItMatters }}</p>
             </div>
           </div>
+
+          <div class="workflow-block">
+            <div class="detail-heading">
+              <span class="detail-icon tone-accent-solid"><Workflow :size="15" /></span>
+              <span class="detail-label">Workflow idea</span>
+            </div>
+            <p>{{ suggestion.workflowIntent }}</p>
+          </div>
+
+          <div v-if="suggestion.suggestedSteps.length" class="steps-block">
+            <div class="detail-heading">
+              <span class="detail-icon tone-accent-solid"><ListChecks :size="15" /></span>
+              <span class="detail-label">Suggested flow</span>
+            </div>
+            <ol class="step-list">
+              <li v-for="(step, index) in suggestion.suggestedSteps" :key="`${index}-${step}`">
+                <span class="step-index">{{ index + 1 }}</span>
+                <span>{{ step }}</span>
+              </li>
+            </ol>
+          </div>
+
+          <a
+            v-if="suggestion.source"
+            :href="suggestion.source.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="source-link"
+          >
+            <ExternalLink :size="14" />
+            Source: {{ suggestion.source.title }}
+          </a>
+
+          <div class="provider-row">
+            <span>Generated with <strong>{{ ideaProviderLabel }}</strong></span>
+            <span v-if="suggestion.fallbackUsed" class="fallback-badge">Fallback used</span>
+          </div>
+          <p v-if="suggestion.fallbackUsed && suggestion.openAIError" class="fallback-detail">
+            {{ suggestion.openAIError }}
+          </p>
+
+          <div class="card-actions">
+            <button
+              type="button"
+              class="secondary-button"
+              :disabled="isBusy"
+              @click="generateIdea"
+            >
+              <RefreshCw :size="16" />
+              Try another
+            </button>
+
+            <button
+              type="button"
+              class="primary-button"
+              :disabled="isBusy"
+              @click="generateUseCase"
+            >
+              <Loader2 v-if="isLoadingUseCase" class="spin" :size="17" />
+              <Sparkles v-else :size="17" />
+              {{
+                isLoadingUseCase
+                  ? "Generating use case…"
+                  : hasUseCase
+                    ? "Regenerate use case"
+                    : "Generate use case"
+              }}
+            </button>
+          </div>
         </article>
 
-        <a
-          v-if="suggestion.source"
-          :href="suggestion.source.url"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="source-link"
-        >
-          <ExternalLink :size="18" />
-
-          <span>
-            Source:
-            {{ suggestion.source.title }}
-          </span>
-        </a>
-
-        <div class="provider-panel">
-          <div class="provider-summary">
-            <span>
-              Idea generated with
-            </span>
-
-            <strong>
-              {{ ideaProviderLabel }}
-            </strong>
-
+        <!-- Use case loading state -->
+        <div v-if="isLoadingUseCase" class="loading-panel">
+          <div class="loading-icon success-tone">
+            <Loader2 class="spin" :size="22" />
+          </div>
+          <div class="loading-copy">
+            <strong>Building the use case</strong>
+            <p class="loading-step">
+              <component :is="activeLoadingStep?.icon" :size="15" />
+              {{ activeLoadingStep?.text }}
+            </p>
+          </div>
+          <div class="loading-dots">
             <span
-              v-if="
-                suggestion.fallbackUsed
-              "
-              class="fallback-badge"
-            >
-              Fallback used
-            </span>
-          </div>
-
-          <div
-            v-if="
-              suggestion.fallbackUsed &&
-              suggestion.openAIError
-            "
-            class="fallback-details"
-          >
-            <strong>
-              Why OpenAI was not used
-            </strong>
-
-            <p>
-              {{
-                suggestion.openAIError
-              }}
-            </p>
-          </div>
-        </div>
-
-        <div class="idea-actions">
-          <button
-            type="button"
-            class="secondary-button"
-            :disabled="isBusy"
-            @click="generateIdea"
-          >
-            <RefreshCw :size="20" />
-
-            Try another
-          </button>
-
-          <button
-            type="button"
-            class="primary-button inline"
-            :disabled="isBusy"
-            @click="generateUseCase"
-          >
-            <LoaderCircle
-              v-if="isLoadingUseCase"
-              class="spin"
-              :size="21"
+              v-for="(step, index) in useCaseLoadingSteps"
+              :key="index"
+              class="loading-dot success"
+              :class="{ active: index === loadingStepIndex }"
             />
-
-            <Sparkles
-              v-else
-              :size="21"
-            />
-
-            {{
-              isLoadingUseCase
-                ? "Generating use case..."
-                : hasUseCase
-                  ? "Regenerate use case"
-                  : "Generate simple use case"
-            }}
-          </button>
-        </div>
-      </section>
-
-      <section
-        v-if="hasUseCase"
-        class="panel use-case-panel"
-      >
-        <div class="use-case-heading">
-          <div>
-            <span class="step-label">
-              Step 3
-            </span>
-
-            <h2>
-              Your simple workflow use case
-            </h2>
-
-            <p>
-              Edit the sentence directly or
-              copy it as it is.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            class="copy-button"
-            @click="copyUseCase"
-          >
-            <Check
-              v-if="copied"
-              :size="20"
-            />
-
-            <Clipboard
-              v-else
-              :size="20"
-            />
-
-            {{
-              copied
-                ? "Copied"
-                : "Copy"
-            }}
-          </button>
-        </div>
-
-        <textarea
-          v-model="editableUseCase"
-          class="use-case-textarea"
-          rows="7"
-          @input="copied = false"
-        />
-
-        <div class="use-case-footer">
-          <div class="structure-row">
-            <span>
-              Trigger
-            </span>
-
-            <ArrowRight :size="18" />
-
-            <span>
-              Main actions
-            </span>
-
-            <ArrowRight :size="18" />
-
-            <span>
-              Final result
-            </span>
           </div>
         </div>
 
-        <div class="provider-panel">
-          <div class="provider-summary">
-            <span>
-              Use case generated with
-            </span>
+        <!-- Use case card -->
+        <article v-if="hasUseCase" class="card use-case-card">
+          <div class="card-top-row">
+            <div>
+              <div class="detail-heading">
+                <span class="detail-icon tone-success-solid"><Workflow :size="15" /></span>
+                <span class="detail-label">Workflow use case</span>
+              </div>
+              <div class="structure-row">
+                <span>Trigger</span>
+                <ArrowRight :size="13" />
+                <span>Main actions</span>
+                <ArrowRight :size="13" />
+                <span>Result</span>
+              </div>
+            </div>
 
-            <strong>
-              {{ useCaseProviderLabel }}
-            </strong>
-
-            <span
-              v-if="
-                useCaseFallbackUsed
-              "
-              class="fallback-badge"
-            >
-              Fallback used
-            </span>
+            <button type="button" class="copy-button" @click="copyUseCase">
+              <Check v-if="copied" :size="16" />
+              <Clipboard v-else :size="16" />
+              {{ copied ? "Copied" : "Copy" }}
+            </button>
           </div>
 
-          <div
-            v-if="
-              useCaseFallbackUsed &&
-              useCaseOpenAIError
-            "
-            class="fallback-details"
-          >
-            <strong>
-              Why OpenAI was not used
-            </strong>
+          <textarea
+            v-model="editableUseCase"
+            class="use-case-textarea"
+            rows="6"
+            @input="copied = false"
+          />
 
-            <p>
-              {{ useCaseOpenAIError }}
-            </p>
+          <div class="provider-row">
+            <span>Generated with <strong>{{ useCaseProviderLabel }}</strong></span>
+            <span v-if="useCaseFallbackUsed" class="fallback-badge">Fallback used</span>
           </div>
-        </div>
+          <p v-if="useCaseFallbackUsed && useCaseOpenAIError" class="fallback-detail">
+            {{ useCaseOpenAIError }}
+          </p>
+        </article>
       </section>
     </div>
   </main>
@@ -1005,8 +645,8 @@ function getErrorMessage(
 
 :global(body) {
   margin: 0;
-  background: #080c14;
-  color: #f8fafc;
+  background: #090d16;
+  color: #f4f7fb;
   font-family:
     Inter,
     ui-sans-serif,
@@ -1020,669 +660,774 @@ function getErrorMessage(
 button,
 textarea {
   font: inherit;
+  color: inherit;
 }
 
 button {
   cursor: pointer;
+  border: none;
+  background: none;
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .studio-page {
-  position: relative;
   min-height: 100vh;
-  overflow: hidden;
-  padding: 32px 24px 88px;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(29, 40, 64, 0.72),
-      rgba(8, 12, 20, 0) 460px
-    ),
-    #080c14;
+  background: #090d16;
+  display: flex;
+  flex-direction: column;
+  font-size: 16px;
 }
 
-.background-orb {
-  position: fixed;
-  z-index: 0;
-  border-radius: 999px;
-  pointer-events: none;
-  filter: blur(115px);
-  opacity: 0.2;
-}
+/* ---------- Header ---------- */
 
-.orb-one {
-  top: -230px;
-  left: -170px;
-  width: 640px;
-  height: 640px;
-  background: #4f46e5;
-}
-
-.orb-two {
-  right: -240px;
-  bottom: -260px;
-  width: 720px;
-  height: 720px;
-  background: #7c3aed;
-}
-
-.studio-shell {
-  position: relative;
-  z-index: 1;
-  width: min(1160px, 100%);
-  margin: 0 auto;
-}
-
-.topbar {
+.app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 72px;
+  gap: 16px;
+  height: 60px;
+  flex: 0 0 auto;
+  padding: 0 22px;
+  border-bottom: 1px solid #263247;
+  background: #0f1623;
 }
 
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 15px;
-  color: #ffffff;
-  text-decoration: none;
-}
-
-.brand-icon {
-  display: grid;
-  width: 50px;
-  height: 50px;
-  place-items: center;
-  border: 1px solid rgba(165, 180, 252, 0.55);
-  border-radius: 15px;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(99, 102, 241, 0.4),
-      rgba(124, 58, 237, 0.24)
-    );
-  color: #e0e7ff;
-}
-
-.brand-text {
-  display: grid;
-  gap: 4px;
-}
-
-.brand strong {
-  color: #ffffff;
-  font-size: 1.14rem;
-}
-
-.brand small {
-  color: #c2cada;
-  font-size: 0.88rem;
-}
-
-.back-link {
-  border: 1px solid #49566f;
-  border-radius: 11px;
-  background: rgba(20, 27, 40, 0.94);
-  padding: 12px 17px;
-  color: #e2e8f0;
-  font-size: 0.94rem;
-  font-weight: 750;
-  text-decoration: none;
-}
-
-.back-link:hover {
-  border-color: #7d8ba7;
-  background: #202938;
-  color: #ffffff;
-}
-
-.hero {
-  max-width: 880px;
-  margin-bottom: 50px;
-}
-
-.hero-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 21px;
-  border: 1px solid rgba(165, 180, 252, 0.5);
-  border-radius: 999px;
-  background: rgba(99, 102, 241, 0.18);
-  padding: 10px 15px;
-  color: #e0e7ff;
-  font-size: 0.94rem;
-  font-weight: 800;
-}
-
-.hero h1 {
-  margin: 0;
-  color: #ffffff;
-  font-size: clamp(3rem, 6vw, 5.2rem);
-  line-height: 1.01;
-  letter-spacing: -0.055em;
-}
-
-.hero h1 span {
-  display: block;
-  background:
-    linear-gradient(
-      90deg,
-      #c7d2fe,
-      #e9d5ff,
-      #bfdbfe
-    );
-  background-clip: text;
-  color: transparent;
-}
-
-.hero p {
-  max-width: 790px;
-  margin: 26px 0 0;
-  color: #d1d8e5;
-  font-size: 1.18rem;
-  line-height: 1.75;
-}
-
-.process-row {
-  display: grid;
-  grid-template-columns:
-    minmax(0, 1fr)
-    auto
-    minmax(0, 1fr)
-    auto
-    minmax(0, 1fr);
+.app-header-left {
+  display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 26px;
+  min-width: 0;
 }
 
-.process-card {
-  display: flex;
-  min-height: 122px;
-  align-items: flex-start;
-  gap: 16px;
-  border: 1px solid #3c485e;
-  border-radius: 16px;
-  background: rgba(18, 25, 38, 0.96);
-  padding: 21px;
-}
-
-.process-number {
+.brand-mark {
   display: grid;
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
   place-items: center;
-  border-radius: 11px;
-  background: rgba(99, 102, 241, 0.22);
-  color: #e0e7ff;
-  font-size: 0.94rem;
-  font-weight: 850;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: 1px solid #36445d;
+  background: rgba(124, 111, 242, 0.12);
+  color: #f4f7fb;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-decoration: none;
 }
 
-.process-card strong {
-  display: block;
-  color: #ffffff;
-  font-size: 1.06rem;
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.95rem;
+  white-space: nowrap;
 }
 
-.process-card p {
-  margin: 8px 0 0;
-  color: #c2cada;
-  font-size: 0.94rem;
-  line-height: 1.6;
+.crumb-root {
+  color: #6f7b8e;
+  font-weight: 600;
 }
 
-.process-arrow {
-  color: #8792a8;
+.crumb-sep {
+  color: #36445d;
 }
 
-.panel {
-  margin-top: 24px;
-  border: 1px solid #3b465a;
-  border-radius: 19px;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(21, 29, 43, 0.99),
-      rgba(13, 19, 30, 0.99)
-    );
-  padding: 32px;
-  box-shadow:
-    0 26px 70px rgba(0, 0, 0, 0.32),
-    inset 0 1px rgba(255, 255, 255, 0.045);
+.crumb-leaf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f4f7fb;
+  font-weight: 700;
 }
 
-.panel-heading {
-  margin-bottom: 25px;
+.crumb-leaf svg {
+  color: #7c6ff2;
 }
 
-.step-label,
-.card-title {
-  display: block;
-  color: #b1bdd0;
-  font-size: 0.82rem;
-  font-weight: 850;
-  letter-spacing: 0.09em;
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.context-label {
+  color: #a7b1c2;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compiler-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #263247;
+  border-radius: 7px;
+  padding: 7px 11px;
+  color: #f4f7fb;
+  font-size: 0.88rem;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.compiler-link:hover {
+  border-color: #36445d;
+  background: #131c2b;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 11px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-pill.is-ready {
+  color: #3ddc97;
+  background: rgba(61, 220, 151, 0.1);
+}
+
+.status-pill.is-busy {
+  color: #f4b860;
+  background: rgba(244, 184, 96, 0.1);
+}
+
+.status-pill.is-error {
+  color: #f06a7a;
+  background: rgba(240, 106, 122, 0.1);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.status-pill.is-busy .status-dot {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---------- Body layout ---------- */
+
+.app-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 0;
+  min-height: 0;
+}
+
+.control-rail {
+  border-right: 1px solid #263247;
+  background: #0f1623;
+  padding: 22px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: sticky;
+  top: 60px;
+  align-self: start;
+  height: calc(100vh - 60px);
+  overflow-y: auto;
+}
+
+.rail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.rail-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rail-label {
+  color: #a7b1c2;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.panel-heading h2,
-.idea-heading h2,
-.use-case-heading h2 {
-  margin: 8px 0 0;
-  color: #ffffff;
-  font-size: 1.65rem;
-  line-height: 1.25;
+.rail-hint {
+  color: #6f7b8e;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.panel-heading p,
-.use-case-heading p {
-  margin: 11px 0 0;
-  color: #c5cedc;
-  font-size: 1rem;
-  line-height: 1.65;
-}
-
-.category-grid {
+.category-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 11px;
-  margin-bottom: 25px;
+  flex-direction: column;
+  gap: 5px;
 }
 
-.category-button {
-  display: inline-flex;
+.category-item {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  border: 1px solid #4b586e;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 10px 11px;
+  color: #a7b1c2;
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.category-item svg {
+  flex: 0 0 auto;
+  color: #6f7b8e;
+}
+
+.category-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
   border-radius: 999px;
-  background: #182130;
-  padding: 12px 17px;
-  color: #e1e7f0;
-  font-size: 0.96rem;
-  font-weight: 750;
+  background: #36445d;
 }
 
-.category-button:hover:not(:disabled) {
-  border-color: #7d8aa4;
-  background: #222d3e;
-  color: #ffffff;
+.category-item:hover:not(:disabled) {
+  background: #131c2b;
+  color: #f4f7fb;
 }
 
-.category-button.selected {
-  border-color: #9aa4ff;
-  background: rgba(99, 102, 241, 0.28);
-  color: #ffffff;
-  box-shadow:
-    0 0 0 1px rgba(129, 140, 248, 0.18);
+.category-item.selected {
+  border-color: #36445d;
+  background: rgba(124, 111, 242, 0.12);
+  color: #f4f7fb;
 }
 
-.primary-button,
-.secondary-button,
-.copy-button {
+.category-item.selected svg,
+.category-item.selected .category-dot {
+  color: #9185ff;
+  background: #9185ff;
+}
+
+.generate-button {
   display: inline-flex;
-  min-height: 50px;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  border-radius: 12px;
-  padding: 13px 20px;
-  font-size: 1rem;
-  font-weight: 850;
+  gap: 8px;
+  width: 100%;
+  height: 44px;
+  border-radius: 8px;
+  background: #7c6ff2;
+  color: #f4f7fb;
+  font-size: 0.96rem;
+  font-weight: 700;
 }
 
-.primary-button {
-  border: 1px solid #8588ff;
-  background:
-    linear-gradient(
-      135deg,
-      #6366f1,
-      #7c3aed
-    );
-  color: #ffffff;
-  box-shadow:
-    0 15px 34px rgba(99, 102, 241, 0.28);
+.generate-button:hover:not(:disabled) {
+  background: #9185ff;
 }
 
-.primary-button:hover:not(:disabled) {
-  background:
-    linear-gradient(
-      135deg,
-      #777af8,
-      #8b4cf0
-    );
-  transform: translateY(-1px);
+.rail-footnote {
+  margin: 0;
+  color: #6f7b8e;
+  font-size: 0.84rem;
+  line-height: 1.6;
 }
 
-.primary-button.inline {
-  width: auto;
+.results-area {
+  padding: 22px 26px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  overflow-y: auto;
 }
 
-.secondary-button,
-.copy-button {
-  border: 1px solid #526077;
-  background: #1a2331;
-  color: #edf2f7;
-}
-
-.secondary-button:hover:not(:disabled),
-.copy-button:hover:not(:disabled) {
-  border-color: #7b8aa5;
-  background: #243043;
-  color: #ffffff;
-}
+/* ---------- States ---------- */
 
 .error-panel {
   display: flex;
-  gap: 14px;
-  margin-top: 24px;
-  border: 1px solid rgba(248, 113, 113, 0.55);
-  border-radius: 16px;
-  background: rgba(127, 29, 29, 0.24);
-  padding: 20px 22px;
-  color: #fca5a5;
+  gap: 11px;
+  border: 1px solid rgba(240, 106, 122, 0.4);
+  border-radius: 10px;
+  background: rgba(240, 106, 122, 0.08);
+  padding: 14px 16px;
+  color: #f06a7a;
 }
 
 .error-panel strong {
-  color: #fee2e2;
-  font-size: 1.05rem;
+  color: #f4f7fb;
+  font-size: 0.96rem;
 }
 
 .error-panel p {
-  margin: 7px 0 0;
-  color: #f4c2c5;
-  font-size: 0.96rem;
-  line-height: 1.65;
+  margin: 5px 0 0;
+  color: #a7b1c2;
+  font-size: 0.9rem;
+  line-height: 1.55;
 }
 
-.idea-panel {
-  position: relative;
-  overflow: hidden;
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  border: 1px dashed #263247;
+  border-radius: 12px;
+  padding: 36px 26px;
+  color: #6f7b8e;
 }
 
-.idea-panel::before {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 4px;
-  background:
-    linear-gradient(
-      90deg,
-      #6366f1,
-      #8b5cf6,
-      #3b82f6
-    );
-  content: "";
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: rgba(124, 111, 242, 0.12);
+  color: #9185ff;
+  margin-bottom: 6px;
 }
 
-.idea-meta {
+.empty-state strong {
+  color: #f4f7fb;
+  font-size: 1.02rem;
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+/* Loading panel: icon + rotating step text + progress dots */
+
+.loading-panel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid #263247;
+  border-radius: 12px;
+  background: #131c2b;
+  padding: 20px 22px;
+}
+
+.loading-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: rgba(124, 111, 242, 0.14);
+  color: #9185ff;
+}
+
+.loading-icon.success-tone {
+  background: rgba(61, 220, 151, 0.14);
+  color: #3ddc97;
+}
+
+.loading-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.loading-copy strong {
+  color: #f4f7fb;
+  font-size: 1rem;
+}
+
+.loading-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: #a7b1c2;
+  font-size: 0.9rem;
+}
+
+.loading-step svg {
+  flex: 0 0 auto;
+  color: #9185ff;
+}
+
+.loading-dots {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.loading-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #263247;
+  transition: background-color 0.3s ease;
+}
+
+.loading-dot.active {
+  background: #9185ff;
+}
+
+.loading-dot.success.active {
+  background: #3ddc97;
+}
+
+/* ---------- Cards ---------- */
+
+.card {
+  border: 1px solid #263247;
+  border-radius: 12px;
+  background: #131c2b;
+  padding: 22px;
+}
+
+.card-top-row {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
+  gap: 14px;
+  flex-wrap: wrap;
 }
 
 .tag-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 9px;
+  gap: 7px;
 }
 
 .tag {
-  border: 1px solid #4a566d;
+  border: 1px solid #263247;
   border-radius: 999px;
-  background: #182130;
-  padding: 9px 12px;
-  color: #d6deea;
-  font-size: 0.84rem;
-  font-weight: 800;
+  background: #182235;
+  padding: 5px 11px;
+  color: #a7b1c2;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
-.tag.accent {
-  border-color: rgba(154, 164, 255, 0.65);
-  background: rgba(99, 102, 241, 0.24);
-  color: #eef2ff;
+.tag-accent {
+  border-color: #36445d;
+  background: rgba(124, 111, 242, 0.12);
+  color: #9185ff;
 }
 
 .confidence {
   flex: 0 0 auto;
-  color: #c3ccda;
-  font-size: 0.9rem;
-  font-weight: 750;
+  color: #6f7b8e;
+  font-size: 0.86rem;
+  font-weight: 650;
 }
 
-.idea-heading {
-  display: flex;
-  align-items: flex-start;
-  gap: 17px;
-  margin: 30px 0 26px;
-}
-
-.idea-icon {
-  display: grid;
-  flex: 0 0 auto;
-  width: 54px;
-  height: 54px;
-  place-items: center;
-  border: 1px solid rgba(250, 204, 21, 0.42);
-  border-radius: 15px;
-  background: rgba(250, 204, 21, 0.14);
-  color: #fde047;
-}
-
-.idea-heading h2 {
-  max-width: 860px;
-  font-size: clamp(1.65rem, 3vw, 2.35rem);
+.idea-title {
+  margin: 16px 0 18px;
+  color: #f4f7fb;
+  font-size: 1.55rem;
+  line-height: 1.35;
 }
 
 .detail-grid {
   display: grid;
-  grid-template-columns:
-    repeat(3, minmax(0, 1fr));
-  gap: 15px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 11px;
+  margin-bottom: 15px;
 }
 
-.detail-card,
-.workflow-card,
-.steps-card {
-  border: 1px solid #3b475c;
-  border-radius: 15px;
-  background: rgba(7, 11, 18, 0.62);
-  padding: 20px;
+.detail-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.detail-card p,
-.workflow-card p {
-  margin: 11px 0 0;
-  color: #d3dae6;
-  font-size: 1rem;
-  line-height: 1.7;
+.detail-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 6px;
 }
 
-.workflow-card,
-.steps-card {
-  margin-top: 15px;
+.detail-item {
+  border: 1px solid #263247;
+  border-left-width: 3px;
+  border-radius: 9px;
+  background: #182235;
+  padding: 13px 14px;
 }
 
-.workflow-card p {
-  color: #e3e8f0;
-  font-size: 1.05rem;
+.detail-item.tone-error {
+  border-left-color: #f06a7a;
+}
+
+.detail-item.tone-error .detail-icon {
+  background: rgba(240, 106, 122, 0.14);
+  color: #f06a7a;
+}
+
+.detail-item.tone-accent {
+  border-left-color: #7c6ff2;
+}
+
+.detail-item.tone-accent .detail-icon {
+  background: rgba(124, 111, 242, 0.14);
+  color: #9185ff;
+}
+
+.detail-item.tone-success {
+  border-left-color: #3ddc97;
+}
+
+.detail-item.tone-success .detail-icon {
+  background: rgba(61, 220, 151, 0.14);
+  color: #3ddc97;
+}
+
+.detail-icon.tone-accent-solid {
+  background: rgba(124, 111, 242, 0.14);
+  color: #9185ff;
+}
+
+.detail-icon.tone-success-solid {
+  background: rgba(61, 220, 151, 0.14);
+  color: #3ddc97;
+}
+
+.detail-label {
+  color: #a7b1c2;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.detail-item p {
+  margin: 9px 0 0;
+  color: #f4f7fb;
+  font-size: 0.98rem;
+  line-height: 1.6;
+}
+
+.workflow-block {
+  border: 1px solid #263247;
+  border-left: 3px solid #7c6ff2;
+  border-radius: 9px;
+  background: #182235;
+  padding: 14px;
+  margin-bottom: 11px;
+}
+
+.workflow-block p {
+  margin: 9px 0 0;
+  color: #f4f7fb;
+  font-size: 1.02rem;
+  line-height: 1.65;
+}
+
+.steps-block {
+  border: 1px solid #263247;
+  border-left: 3px solid #7c6ff2;
+  border-radius: 9px;
+  background: #182235;
+  padding: 14px;
+  margin-bottom: 15px;
 }
 
 .step-list {
-  display: grid;
-  gap: 13px;
-  margin-top: 17px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 
-.step-row {
+.step-list li {
   display: flex;
   align-items: flex-start;
-  gap: 14px;
+  gap: 11px;
+  color: #e2e7ee;
+  font-size: 0.98rem;
+  line-height: 1.6;
 }
 
 .step-index {
   display: grid;
-  flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
   place-items: center;
-  border: 1px solid #58667e;
-  border-radius: 10px;
-  background: #1b2534;
-  color: #f1f5f9;
-  font-size: 0.84rem;
-  font-weight: 850;
-}
-
-.step-row p {
-  margin: 3px 0 0;
-  color: #d5dce7;
-  font-size: 1rem;
-  line-height: 1.65;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: rgba(124, 111, 242, 0.16);
+  color: #9185ff;
+  font-size: 0.76rem;
+  font-weight: 800;
+  margin-top: 1px;
 }
 
 .source-link {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 19px;
-  color: #c3d3ff;
-  font-size: 0.92rem;
-  font-weight: 650;
+  gap: 6px;
+  margin-bottom: 15px;
+  color: #a7b1c2;
+  font-size: 0.88rem;
+  font-weight: 600;
   text-decoration: none;
 }
 
 .source-link:hover {
-  color: #ffffff;
+  color: #9185ff;
 }
 
-.provider-panel {
-  margin-top: 20px;
-  border: 1px solid #465269;
-  border-radius: 14px;
-  background: rgba(15, 22, 34, 0.9);
-  padding: 16px 18px;
-}
-
-.provider-summary {
+.provider-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  color: #c5cedc;
-  font-size: 0.94rem;
+  color: #6f7b8e;
+  font-size: 0.86rem;
+  padding-top: 13px;
+  border-top: 1px solid #263247;
 }
 
-.provider-summary strong {
-  color: #ffffff;
+.provider-row strong {
+  color: #f4f7fb;
 }
 
 .fallback-badge {
-  border: 1px solid rgba(251, 191, 36, 0.45);
+  border: 1px solid rgba(244, 184, 96, 0.4);
   border-radius: 999px;
-  background: rgba(251, 191, 36, 0.12);
-  padding: 5px 9px;
-  color: #fde68a;
-  font-size: 0.78rem;
+  background: rgba(244, 184, 96, 0.1);
+  padding: 3px 9px;
+  color: #f4b860;
+  font-size: 0.76rem;
   font-weight: 800;
 }
 
-.fallback-details {
-  margin-top: 13px;
-  border-top: 1px solid #3f4a5f;
-  padding-top: 13px;
-}
-
-.fallback-details strong {
-  color: #fde68a;
-  font-size: 0.9rem;
-}
-
-.fallback-details p {
-  margin: 7px 0 0;
-  color: #cbd5e1;
-  font-family:
-    "Roboto Mono",
-    "SFMono-Regular",
-    Consolas,
-    monospace;
-  font-size: 0.84rem;
-  line-height: 1.65;
+.fallback-detail {
+  margin: 8px 0 0;
+  color: #6f7b8e;
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
-.idea-actions {
+.card-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  margin-top: 28px;
+  gap: 10px;
+  margin-top: 18px;
 }
 
-.use-case-panel {
-  border-color: rgba(52, 211, 153, 0.48);
-}
-
-.use-case-heading {
-  display: flex;
+.secondary-button,
+.copy-button {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 22px;
-  margin-bottom: 21px;
+  gap: 7px;
+  height: 40px;
+  border: 1px solid #263247;
+  border-radius: 8px;
+  padding: 0 15px;
+  background: #182235;
+  color: #f4f7fb;
+  font-size: 0.9rem;
+  font-weight: 650;
 }
 
-.use-case-textarea {
-  width: 100%;
-  min-height: 195px;
-  resize: vertical;
-  border: 1px solid #58667d;
-  border-radius: 15px;
-  outline: none;
-  background: #080d16;
-  padding: 20px;
-  color: #ffffff;
-  font-size: 1.08rem;
-  line-height: 1.78;
+.secondary-button:hover:not(:disabled),
+.copy-button:hover:not(:disabled) {
+  border-color: #36445d;
 }
 
-.use-case-textarea:focus {
-  border-color: rgba(52, 211, 153, 0.85);
-  box-shadow:
-    0 0 0 4px rgba(52, 211, 153, 0.12);
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  border-radius: 8px;
+  padding: 0 16px;
+  background: #7c6ff2;
+  color: #f4f7fb;
+  font-size: 0.9rem;
+  font-weight: 700;
 }
 
-.use-case-footer {
-  margin-top: 17px;
+.primary-button:hover:not(:disabled) {
+  background: #9185ff;
+}
+
+.use-case-card {
+  border-color: rgba(61, 220, 151, 0.3);
 }
 
 .structure-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  color: #bcc7d7;
-  font-size: 0.9rem;
-  font-weight: 750;
+  gap: 6px;
+  margin-top: 8px;
+  color: #6f7b8e;
+  font-size: 0.82rem;
 }
 
 .structure-row span {
-  border: 1px solid #46536a;
+  border: 1px solid #263247;
   border-radius: 999px;
-  background: #182130;
-  padding: 9px 12px;
+  background: #182235;
+  padding: 3px 9px;
+}
+
+.use-case-textarea {
+  width: 100%;
+  min-height: 155px;
+  resize: vertical;
+  border: 1px solid #263247;
+  border-radius: 9px;
+  outline: none;
+  background: #090d16;
+  padding: 15px;
+  color: #f4f7fb;
+  font-size: 1.02rem;
+  line-height: 1.7;
+  margin: 15px 0;
+}
+
+.use-case-textarea:focus {
+  border-color: #7c6ff2;
+  box-shadow: 0 0 0 3px rgba(124, 111, 242, 0.15);
 }
 
 .spin {
-  animation:
-    spin 0.85s linear infinite;
+  animation: spin 0.85s linear infinite;
 }
 
 @keyframes spin {
@@ -1691,13 +1436,43 @@ button:disabled {
   }
 }
 
-@media (max-width: 900px) {
-  .process-row {
+/* ---------- Responsive ---------- */
+
+@media (max-width: 960px) {
+  .app-body {
     grid-template-columns: 1fr;
   }
 
-  .process-arrow {
-    display: none;
+  .control-rail {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid #263247;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .rail-block {
+    flex: 1 1 100%;
+  }
+
+  .category-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .category-item {
+    width: auto;
+  }
+
+  .generate-button {
+    width: auto;
+    flex: 1 1 auto;
+  }
+
+  .rail-footnote {
+    flex-basis: 100%;
   }
 
   .detail-grid {
@@ -1705,45 +1480,45 @@ button:disabled {
   }
 }
 
-@media (max-width: 650px) {
-  .studio-page {
-    padding:
-      20px 14px 56px;
+@media (max-width: 640px) {
+  .app-header {
+    height: auto;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    row-gap: 8px;
   }
 
-  .topbar,
-  .idea-meta,
-  .use-case-heading,
-  .idea-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .topbar {
-    margin-bottom: 52px;
-  }
-
-  .back-link,
-  .primary-button,
-  .secondary-button,
-  .copy-button {
+  .app-header-right {
     width: 100%;
+    justify-content: space-between;
   }
 
-  .hero h1 {
-    font-size: 2.75rem;
+  .context-label {
+    display: none;
   }
 
-  .hero p {
-    font-size: 1.04rem;
+  .results-area {
+    padding: 16px 14px 40px;
   }
 
-  .panel {
-    padding: 22px;
+  .loading-panel {
+    flex-wrap: wrap;
   }
 
-  .confidence {
-    align-self: flex-start;
+  .loading-dots {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .card-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .primary-button,
+  .secondary-button {
+    width: 100%;
+    justify-content: center;
   }
 }
 </style>
