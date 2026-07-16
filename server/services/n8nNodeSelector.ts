@@ -754,6 +754,44 @@ function findTriggerIndexes(
     );
 }
 
+/**
+ * This generator currently builds one connected n8n workflow.
+ *
+ * If the model returns multiple independent triggers, preserve
+ * the first workflow and remove the secondary trigger together
+ * with every node after it.
+ */
+function keepPrimaryWorkflowOnly(
+  selection: N8nNodeSelection,
+): N8nNodeSelection {
+  const triggerIndexes =
+    findTriggerIndexes(
+      selection.nodes,
+    );
+
+  if (triggerIndexes.length <= 1) {
+    return selection;
+  }
+
+  const secondaryTriggerIndex =
+    triggerIndexes[1];
+
+  if (
+    secondaryTriggerIndex
+    === undefined
+  ) {
+    return selection;
+  }
+
+  return {
+    ...selection,
+    nodes: selection.nodes.slice(
+      0,
+      secondaryTriggerIndex,
+    ),
+  };
+}
+
 function validateTriggerSemantics(
   input: {
     brief:
@@ -1393,17 +1431,52 @@ function validateRequestedSummary(
         === "chainSummarization",
     );
 
-  if (
-    !hasSummarizationNode
-  ) {
-    issues.push({
-      path: "nodes",
-      message:
-        'The clarified output requests a summary. Include a "chainSummarization" node; a Set/Edit Fields node does not itself generate a natural-language summary.',
-      code:
-        "missing_summary_node",
-    });
+  if (hasSummarizationNode) {
+    return;
   }
+
+  /*
+   * A request can describe two independent workflows, for example:
+   *
+   * 1. Process each incoming support message.
+   * 2. Run a separate daily summary report.
+   *
+   * keepPrimaryWorkflowOnly() removes the secondary scheduled
+   * workflow because this generator currently returns one connected
+   * workflow. In that case, do not require the retained event-driven
+   * workflow to contain the summary node that belonged exclusively
+   * to the removed scheduled workflow.
+   */
+  const retainedTriggerIndexes =
+    findTriggerIndexes(nodes);
+
+  const retainedTrigger =
+    retainedTriggerIndexes.length === 1
+      ? nodes[
+          retainedTriggerIndexes[0]
+          ?? -1
+        ]
+      : undefined;
+
+  const scheduledSummaryWasSeparated =
+    isClearlyEventDriven(brief)
+    && isExplicitScheduledTrigger(
+      brief,
+    )
+    && retainedTrigger?.nodeKey
+      !== "scheduleTrigger";
+
+  if (scheduledSummaryWasSeparated) {
+    return;
+  }
+
+  issues.push({
+    path: "nodes",
+    message:
+      'The clarified output requests a summary. Include a "chainSummarization" node; a Set/Edit Fields node does not itself generate a natural-language summary.',
+    code:
+      "missing_summary_node",
+  });
 }
 
 function paymentActionsAreBlocked(
@@ -1774,6 +1847,28 @@ function buildRepairPrompt(
   previousOutput: string,
   issues: N8nNodeSelectionIssue[],
 ): string {
+  const hasMultipleTriggersIssue =
+    issues.some(
+      (issue) =>
+        issue.code
+        === "multiple_triggers",
+    );
+
+  const multipleTriggerInstructions =
+    hasMultipleTriggersIssue
+      ? [
+          "",
+          "MULTIPLE-TRIGGER REPAIR:",
+          "- This generator supports exactly one trigger in one generated workflow.",
+          "- Keep the primary workflow only.",
+          "- Prefer the first immediate or event-driven trigger unless the original request clearly makes the scheduled workflow the main goal.",
+          "- Remove every secondary trigger.",
+          "- Also remove all nodes that belong only to the removed secondary workflow.",
+          "- For a request combining an incoming-event workflow with a daily report, keep the incoming-event workflow and omit the separate daily-report workflow.",
+          "- Do not replace the omitted workflow with unrelated reporting, forwarding, logging, or summary nodes.",
+        ]
+      : [];
+
   return [
     buildN8nNodeSelectorUserPrompt({
       brief,
@@ -1799,6 +1894,7 @@ function buildRepairPrompt(
     'Use chainSummarization when the requested output is "a summary".',
     "Do not create a separate direct payment-scheduling action when payment actions are blocked.",
     'Use one safe action such as "Forward Invoice for Approval and Payment Scheduling".',
+    ...multipleTriggerInstructions,
   ].join("\n");
 }
 
@@ -1827,11 +1923,41 @@ async function callAndValidate(
   const parsed =
     parseSelectionJson(raw);
 
-  const selection =
+  const normalizedSelection =
     normalizeSelection(
       parsed,
       brief,
     );
+
+  const selection =
+    keepPrimaryWorkflowOnly(
+      normalizedSelection,
+    );
+
+  if (
+    selection.nodes.length
+    !== normalizedSelection.nodes.length
+  ) {
+    debugLog(
+      provider,
+      "Removed secondary triggered workflow:",
+      {
+        originalNodeCount:
+          normalizedSelection.nodes.length,
+        retainedNodeCount:
+          selection.nodes.length,
+        removedNodes:
+          normalizedSelection.nodes
+            .slice(
+              selection.nodes.length,
+            )
+            .map((node) => ({
+              nodeKey: node.nodeKey,
+              name: node.name,
+            })),
+      },
+    );
+  }
 
   debugLog(
     provider,
