@@ -41,7 +41,12 @@ import {
 } from "./workflow.schema";
 import { routerDecisionSchema } from "./router.schema";
 
-const requiredString = z.string().min(1, "Required string cannot be empty.");
+const requiredString = z
+  .string()
+  .min(
+    1,
+    "Required string cannot be empty.",
+  );
 
 export const compileModeSchema = z.enum([
   "demo",
@@ -72,20 +77,40 @@ export const pipelineStepSchema = z
     label: requiredString,
     description: requiredString,
     status: pipelineStepStatusSchema,
-    tool_name: requiredString.optional(),
-    output_summary: requiredString.optional(),
-    token_cost: z.number().nonnegative().optional(),
+    tool_name:
+      requiredString.optional(),
+    output_summary:
+      requiredString.optional(),
+    token_cost:
+      z.number()
+        .nonnegative()
+        .optional(),
   })
   .strict() satisfies z.ZodType<PipelineStep>;
 
 export const tokenUsageSchema = z
   .object({
     mode: compileModeSchema,
-    llm_calls_used: z.number().int().nonnegative(),
-    llm_calls_limit: z.number().int().nonnegative(),
-    estimated_input_tokens: z.number().int().nonnegative(),
-    rule_based_checks: z.number().int().nonnegative(),
-    skipped_ai_calls: z.number().int().nonnegative(),
+    llm_calls_used:
+      z.number()
+        .int()
+        .nonnegative(),
+    llm_calls_limit:
+      z.number()
+        .int()
+        .nonnegative(),
+    estimated_input_tokens:
+      z.number()
+        .int()
+        .nonnegative(),
+    rule_based_checks:
+      z.number()
+        .int()
+        .nonnegative(),
+    skipped_ai_calls:
+      z.number()
+        .int()
+        .nonnegative(),
   })
   .strict() satisfies z.ZodType<TokenUsage>;
 
@@ -117,11 +142,23 @@ export const agentTraceEventSchema = z
     actor: agentTraceActorSchema,
     action: requiredString,
     status: agentTraceStatusSchema,
-    tool_name: requiredString.optional(),
-    input_summary: requiredString.optional(),
-    output_summary: requiredString.optional(),
-    reason: requiredString.optional(),
-    metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+    tool_name:
+      requiredString.optional(),
+    input_summary:
+      requiredString.optional(),
+    output_summary:
+      requiredString.optional(),
+    reason:
+      requiredString.optional(),
+    metadata:
+      z.record(
+        z.string(),
+        z.union([
+          z.string(),
+          z.number(),
+          z.boolean(),
+        ]),
+      ).optional(),
   })
   .strict() satisfies z.ZodType<AgentTraceEvent>;
 
@@ -139,10 +176,13 @@ export const clarificationFieldSchema = z.enum([
 
 export const clarificationQuestionSchema = z
   .object({
-    field: clarificationFieldSchema,
+    field:
+      clarificationFieldSchema,
     question: requiredString,
-    why_it_matters: requiredString,
-    example_answer: requiredString.optional(),
+    why_it_matters:
+      requiredString,
+    example_answer:
+      requiredString.optional(),
   })
   .strict() satisfies z.ZodType<ClarificationQuestion>;
 
@@ -150,10 +190,18 @@ export const clarificationPlanSchema = z
   .object({
     needed: z.boolean(),
     reason: z.string(),
-    missing_fields: z.array(clarificationFieldSchema),
-    questions: z.array(clarificationQuestionSchema),
-    suggested_template: z.string(),
-    improved_prompt_starter: z.string(),
+    missing_fields:
+      z.array(
+        clarificationFieldSchema,
+      ),
+    questions:
+      z.array(
+        clarificationQuestionSchema,
+      ),
+    suggested_template:
+      z.string(),
+    improved_prompt_starter:
+      z.string(),
   })
   .strict() satisfies z.ZodType<ClarificationPlan>;
 
@@ -175,14 +223,20 @@ export const safetyCriticFindingTypeSchema = z.enum([
 export const safetyCriticFindingSchema = z
   .object({
     id: requiredString,
-    type: safetyCriticFindingTypeSchema,
-    severity: safetyCriticSeveritySchema,
+    type:
+      safetyCriticFindingTypeSchema,
+    severity:
+      safetyCriticSeveritySchema,
     title: requiredString,
     explanation: requiredString,
-    recommendation: requiredString,
-    related_step_ids: z.array(requiredString),
-    related_risk_ids: z.array(requiredString),
-    related_gate_ids: z.array(requiredString),
+    recommendation:
+      requiredString,
+    related_step_ids:
+      z.array(requiredString),
+    related_risk_ids:
+      z.array(requiredString),
+    related_gate_ids:
+      z.array(requiredString),
   })
   .strict() satisfies z.ZodType<SafetyCriticFinding>;
 
@@ -195,12 +249,20 @@ export const safetyCriticReviewSchema = z
       "not_safe_to_automate",
     ]),
     summary: requiredString,
-    findings: z.array(safetyCriticFindingSchema),
-    safe_to_automate: z.array(requiredString),
-    must_remain_draft_only: z.array(requiredString),
-    requires_human_approval: z.array(requiredString),
-    blocked_or_not_recommended: z.array(requiredString),
-    next_safe_action: requiredString,
+    findings:
+      z.array(
+        safetyCriticFindingSchema,
+      ),
+    safe_to_automate:
+      z.array(requiredString),
+    must_remain_draft_only:
+      z.array(requiredString),
+    requires_human_approval:
+      z.array(requiredString),
+    blocked_or_not_recommended:
+      z.array(requiredString),
+    next_safe_action:
+      requiredString,
   })
   .strict() satisfies z.ZodType<SafetyCriticReview>;
 
@@ -220,120 +282,185 @@ const agentOutputStatusSchema = z.enum([
 
 const agentOutputMetaSchema = z
   .object({
-    provider: agentOutputProviderSchema,
+    provider:
+      agentOutputProviderSchema,
     used_ai: z.boolean(),
     fallback_used: z.boolean(),
-    confidence: z.enum(["low", "medium", "high"]),
-    status: agentOutputStatusSchema,
+    confidence: z.enum([
+      "low",
+      "medium",
+      "high",
+    ]),
+    status:
+      agentOutputStatusSchema,
     reason: requiredString,
   })
   .strict();
 
-export const clarificationAgentOutputSchema = agentOutputMetaSchema
-  .extend({
-    rewritten_summary: requiredString,
-    questions: z.array(
-      z
-        .object({
-          field: clarificationFieldSchema,
-          question: requiredString,
-          why_it_matters: requiredString,
-          example_answer: requiredString,
-        })
-        .strict(),
-    ),
-    improved_prompt_starter: requiredString,
-  })
-  .strict() satisfies z.ZodType<ClarificationAgentOutput>;
+export const clarificationAgentOutputSchema =
+  agentOutputMetaSchema
+    .extend({
+      rewritten_summary:
+        requiredString,
+      questions: z.array(
+        z
+          .object({
+            field:
+              clarificationFieldSchema,
+            question:
+              requiredString,
+            why_it_matters:
+              requiredString,
+            example_answer:
+              requiredString,
+          })
+          .strict(),
+      ),
+      improved_prompt_starter:
+        requiredString,
+    })
+    .strict() satisfies z.ZodType<ClarificationAgentOutput>;
 
-export const blueprintArchitectOutputSchema = agentOutputMetaSchema
-  .extend({
-    workflow_name: requiredString,
-    summary: requiredString,
-    proposed_steps: z.array(
-      z
-        .object({
-          id: requiredString,
-          label: requiredString,
-          primitive: workflowPrimitiveSchema,
-          description: requiredString,
-          input: requiredString,
-          output: requiredString,
-          automation_policy: stepAutomationPolicySchema,
-          risk_level: riskLevelSchema,
-          approval_required: z.boolean(),
-        })
-        .strict(),
-    ),
-    proposed_human_approval_gates: z.array(
-      z
-        .object({
-          id: requiredString,
-          label: requiredString,
-          reason: requiredString,
-          applies_to_step_ids: z.array(requiredString),
-          required: z.boolean(),
-        })
-        .strict(),
-    ),
-    proposed_risks: z.array(
-      z
-        .object({
-          id: requiredString,
-          category: riskCategorySchema,
-          label: requiredString,
-          risk_level: riskLevelSchema,
-          reason: requiredString,
-          recommendation: requiredString,
-        })
-        .strict(),
-    ),
-    safe_to_automate: z.array(requiredString),
-    must_remain_draft_only: z.array(requiredString),
-    requires_human_approval: z.array(requiredString),
-    blocked_or_not_recommended: z.array(requiredString),
-    assumptions: z.array(requiredString),
-    open_questions: z.array(requiredString),
-    safer_alternative: requiredString,
-  })
-  .strict() satisfies z.ZodType<BlueprintArchitectOutput>;
+export const blueprintArchitectOutputSchema =
+  agentOutputMetaSchema
+    .extend({
+      workflow_name:
+        requiredString,
+      summary: requiredString,
+      proposed_steps: z.array(
+        z
+          .object({
+            id: requiredString,
+            label: requiredString,
+            primitive:
+              workflowPrimitiveSchema,
+            description:
+              requiredString,
+            input: requiredString,
+            output: requiredString,
+            automation_policy:
+              stepAutomationPolicySchema,
+            risk_level:
+              riskLevelSchema,
+            approval_required:
+              z.boolean(),
+          })
+          .strict(),
+      ),
+      proposed_human_approval_gates:
+        z.array(
+          z
+            .object({
+              id: requiredString,
+              label:
+                requiredString,
+              reason:
+                requiredString,
+              applies_to_step_ids:
+                z.array(
+                  requiredString,
+                ),
+              required:
+                z.boolean(),
+            })
+            .strict(),
+        ),
+      proposed_risks: z.array(
+        z
+          .object({
+            id: requiredString,
+            category:
+              riskCategorySchema,
+            label: requiredString,
+            risk_level:
+              riskLevelSchema,
+            reason:
+              requiredString,
+            recommendation:
+              requiredString,
+          })
+          .strict(),
+      ),
+      safe_to_automate:
+        z.array(requiredString),
+      must_remain_draft_only:
+        z.array(requiredString),
+      requires_human_approval:
+        z.array(requiredString),
+      blocked_or_not_recommended:
+        z.array(requiredString),
+      assumptions:
+        z.array(requiredString),
+      open_questions:
+        z.array(requiredString),
+      safer_alternative:
+        requiredString,
+    })
+    .strict() satisfies z.ZodType<BlueprintArchitectOutput>;
 
-export const safetyCriticAgentOutputSchema = agentOutputMetaSchema
-  .extend({
-    critic_summary: requiredString,
-    concerns: z.array(
-      z
-        .object({
-          id: requiredString,
-          type: safetyCriticFindingTypeSchema,
-          severity: safetyCriticSeveritySchema,
-          title: requiredString,
-          explanation: requiredString,
-          recommendation: requiredString,
-          related_step_ids: z.array(requiredString),
-          related_risk_ids: z.array(requiredString),
-          related_gate_ids: z.array(requiredString),
-        })
-        .strict(),
-    ),
-    recommended_human_gates: z.array(requiredString),
-    draft_only_warnings: z.array(requiredString),
-    blocked_or_not_recommended: z.array(requiredString),
-    safer_alternative: requiredString,
-    final_advice: requiredString,
-  })
-  .strict() satisfies z.ZodType<SafetyCriticAgentOutput>;
+export const safetyCriticAgentOutputSchema =
+  agentOutputMetaSchema
+    .extend({
+      critic_summary:
+        requiredString,
+      concerns: z.array(
+        z
+          .object({
+            id: requiredString,
+            type:
+              safetyCriticFindingTypeSchema,
+            severity:
+              safetyCriticSeveritySchema,
+            title:
+              requiredString,
+            explanation:
+              requiredString,
+            recommendation:
+              requiredString,
+            related_step_ids:
+              z.array(
+                requiredString,
+              ),
+            related_risk_ids:
+              z.array(
+                requiredString,
+              ),
+            related_gate_ids:
+              z.array(
+                requiredString,
+              ),
+          })
+          .strict(),
+      ),
+      recommended_human_gates:
+        z.array(requiredString),
+      draft_only_warnings:
+        z.array(requiredString),
+      blocked_or_not_recommended:
+        z.array(requiredString),
+      safer_alternative:
+        requiredString,
+      final_advice:
+        requiredString,
+    })
+    .strict() satisfies z.ZodType<SafetyCriticAgentOutput>;
 
 const agentProviderDebugAttemptSchema = z
   .object({
-    provider: agentOutputProviderSchema,
+    provider:
+      agentOutputProviderSchema,
     attempted: z.boolean(),
     success: z.boolean(),
-    error_summary: z.string().optional(),
-    raw_error_summary: z.string().optional(),
-    warning_summary: z.string().optional(),
-    raw_response: z.string().optional(),
-    parsed_response: z.unknown().optional(),
+    error_summary:
+      z.string().optional(),
+    raw_error_summary:
+      z.string().optional(),
+    warning_summary:
+      z.string().optional(),
+    raw_response:
+      z.string().optional(),
+    parsed_response:
+      z.unknown().optional(),
   })
   .strict();
 
@@ -344,50 +471,89 @@ const agentDebugInfoSchema = z
       "blueprint_architect_agent",
       "safety_critic_agent",
     ]),
-    agent_label: requiredString,
+    agent_label:
+      requiredString,
     mode: requiredString,
-    system_prompt: z.string(),
-    user_prompt: z.string(),
-    provider_attempts: z.array(agentProviderDebugAttemptSchema),
-    selected_provider: agentOutputProviderSchema,
+    system_prompt:
+      z.string(),
+    user_prompt:
+      z.string(),
+    provider_attempts:
+      z.array(
+        agentProviderDebugAttemptSchema,
+      ),
+    selected_provider:
+      agentOutputProviderSchema,
     used_ai: z.boolean(),
-    fallback_used: z.boolean(),
-    status: agentOutputStatusSchema,
-    llm_calls_made: z.number().int().nonnegative(),
-    final_output: z.unknown(),
+    fallback_used:
+      z.boolean(),
+    status:
+      agentOutputStatusSchema,
+    llm_calls_made:
+      z.number()
+        .int()
+        .nonnegative(),
+    final_output:
+      z.unknown(),
   })
   .strict() satisfies z.ZodType<AgentDebugInfo>;
 
 const agentDebugBundleSchema = z
   .object({
-    clarification_agent: agentDebugInfoSchema.optional(),
-    blueprint_architect_agent: agentDebugInfoSchema.optional(),
-    safety_critic_agent: agentDebugInfoSchema.optional(),
+    clarification_agent:
+      agentDebugInfoSchema.optional(),
+    blueprint_architect_agent:
+      agentDebugInfoSchema.optional(),
+    safety_critic_agent:
+      agentDebugInfoSchema.optional(),
   })
   .strict() satisfies z.ZodType<AgentDebugBundle>;
 
 export const compileJobSchema = z
   .object({
     id: requiredString,
-    status: compileJobStatusSchema,
+    status:
+      compileJobStatusSchema,
     mode: compileModeSchema,
-    created_at: requiredString,
-    updated_at: requiredString,
-    input: compileInputSchema,
-    steps: z.array(pipelineStepSchema),
-    signals: signalSummarySchema,
-    risks: riskSummarySchema,
-    readiness: automationReadinessScoreSchema,
-    router_decision: routerDecisionSchema.optional(),
-    clarification_plan: clarificationPlanSchema.optional(),
-    clarification_agent: clarificationAgentOutputSchema.optional(),
-    blueprint_architect_agent: blueprintArchitectOutputSchema.optional(),
-    safety_critic_agent: safetyCriticAgentOutputSchema.optional(),
-    agent_debug: agentDebugBundleSchema.optional(),
-    safety_critic: safetyCriticReviewSchema.optional(),
-    result: safeAutomationBlueprintSchema,
-    agent_trace: z.array(agentTraceEventSchema),
-    token_usage: tokenUsageSchema,
-    error: requiredString.optional(),
+    created_at:
+      requiredString,
+    updated_at:
+      requiredString,
+    input:
+      compileInputSchema,
+    steps:
+      z.array(
+        pipelineStepSchema,
+      ),
+    signals:
+      signalSummarySchema,
+    risks:
+      riskSummarySchema,
+    readiness:
+      automationReadinessScoreSchema,
+    router_decision:
+      routerDecisionSchema.optional(),
+    clarification_plan:
+      clarificationPlanSchema.optional(),
+    clarification_agent:
+      clarificationAgentOutputSchema.optional(),
+    blueprint_architect_agent:
+      blueprintArchitectOutputSchema.optional(),
+    safety_critic_agent:
+      safetyCriticAgentOutputSchema.optional(),
+    agent_debug:
+      agentDebugBundleSchema.optional(),
+    safety_critic:
+      safetyCriticReviewSchema.optional(),
+    result:
+      safeAutomationBlueprintSchema,
+    agent_trace:
+      z.array(
+        agentTraceEventSchema,
+      ),
+    token_usage:
+      tokenUsageSchema,
+    error:
+      requiredString.optional(),
   })
   .strict() satisfies z.ZodType<CompileJob>;

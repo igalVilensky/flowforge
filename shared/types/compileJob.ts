@@ -14,9 +14,19 @@ import type {
 
 export type CompileMode = "demo" | "rule_only" | "balanced" | "full";
 
-export type CompileJobStatus = "queued" | "running" | "needs_user" | "done" | "failed";
+export type CompileJobStatus =
+  | "queued"
+  | "running"
+  | "needs_user"
+  | "done"
+  | "failed";
 
-export type PipelineStepStatus = "queued" | "running" | "done" | "skipped" | "failed";
+export type PipelineStepStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "skipped"
+  | "failed";
 
 export type PipelineStep = {
   id: string;
@@ -47,12 +57,21 @@ export type CompileInput = {
   trimmed: string;
 };
 
+export type RouterRoute =
+  | "compile_blueprint"
+  | "needs_clarification"
+  | "suggest_safer_workflow"
+  | "assistant_only"
+  | "out_of_scope"
+  | "reject";
+
 export type RouterDecision = {
-  route: "compile_blueprint" | "needs_clarification" | "suggest_safer_workflow" | "assistant_only" | "reject";
+  route: RouterRoute;
   confidence: "low" | "medium" | "high";
   reason: string;
   safety_note: string;
   suggested_next_step: string;
+  user_message?: string;
   provider: "openai" | "groq" | "gemini" | "deterministic";
   used_ai: boolean;
   fallback_used: boolean;
@@ -85,7 +104,10 @@ export type ClarificationPlan = {
   improved_prompt_starter: string;
 };
 
-export type SafetyCriticSeverity = "info" | "warning" | "blocker";
+export type SafetyCriticSeverity =
+  | "info"
+  | "warning"
+  | "blocker";
 
 export type SafetyCriticFindingType =
   | "safe_to_automate"
@@ -109,10 +131,10 @@ export type SafetyCriticFinding = {
 
 export type SafetyCriticReview = {
   overall_status:
-  | "safe_internal_preview"
-  | "needs_human_approval"
-  | "needs_clarification"
-  | "not_safe_to_automate";
+    | "safe_internal_preview"
+    | "needs_human_approval"
+    | "needs_clarification"
+    | "not_safe_to_automate";
   summary: string;
   findings: SafetyCriticFinding[];
   safe_to_automate: string[];
@@ -155,39 +177,43 @@ export type CompileProgressStepStatus =
 
 export type CompileProgressEvent =
   | {
-    type: "step_started";
-    step_id: string;
-    label: string;
-    kind: "agent" | "deterministic" | "provider" | "validation";
-    message: string;
-    provider?: string;
-    timestamp: string;
-  }
+      type: "step_started";
+      step_id: string;
+      label: string;
+      kind:
+        | "agent"
+        | "deterministic"
+        | "provider"
+        | "validation";
+      message: string;
+      provider?: string;
+      timestamp: string;
+    }
   | {
-    type: "step_completed";
-    step_id: string;
-    label: string;
-    status: CompileProgressStepStatus;
-    message: string;
-    provider?: string;
-    timestamp: string;
-  }
+      type: "step_completed";
+      step_id: string;
+      label: string;
+      status: CompileProgressStepStatus;
+      message: string;
+      provider?: string;
+      timestamp: string;
+    }
   | {
-    type: "step_failed";
-    step_id: string;
-    label: string;
-    status: "failed" | "fallback_success";
-    message: string;
-    provider?: string;
-    timestamp: string;
-  }
+      type: "step_failed";
+      step_id: string;
+      label: string;
+      status: "failed" | "fallback_success";
+      message: string;
+      provider?: string;
+      timestamp: string;
+    }
   | {
-    type: "done";
-    job: CompileJob;
-    timestamp: string;
-  }
+      type: "done";
+      job: CompileJob;
+      timestamp: string;
+    }
   | {
-    type: "error";
-    message: string;
-    timestamp: string;
-  };
+      type: "error";
+      message: string;
+      timestamp: string;
+    };
