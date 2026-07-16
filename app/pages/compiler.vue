@@ -180,6 +180,11 @@ const n8nProvider = ref("");
 const n8nUsedAi = ref(false);
 const n8nFallbackUsed = ref(false);
 const n8nJsonCopied = ref(false);
+const showN8nModal = ref(false);
+const showN8nSuccess = ref(false);
+const showBlueprintSuccess = ref(false);
+const n8nLoadingStepIndex = ref(0);
+let n8nLoadingTimer: ReturnType<typeof setInterval> | null = null;
 const compileProgressEvents = ref<CompileProgressEvent[]>([]);
 const compileAgentStateMap = ref<Record<string, AgentUiCard>>({});
 
@@ -204,6 +209,16 @@ const examples = [
       "When a student asks about visa eligibility or payment problems, decide the answer, update their account, send the message automatically, and close the case.",
   },
 ];
+
+const n8nLoadingSteps = [
+  "Preparing the safe blueprint",
+  "Mapping workflow nodes and connections",
+  "Validating the inactive n8n draft",
+];
+
+const activeN8nLoadingStep = computed(
+  () => n8nLoadingSteps[n8nLoadingStepIndex.value] ?? n8nLoadingSteps[0],
+);
 
 const modes: Array<{ value: CompileMode; label: string; hint: string }> = [
   { value: "rule_only", label: "Rule", hint: "deterministic only" },
@@ -1775,7 +1790,84 @@ const n8nJsonFileName = computed(() => {
   return `${safeName || "flowforge-n8n-draft"}.json`;
 });
 
+function stopN8nLoadingCycle() {
+  if (n8nLoadingTimer) {
+    clearInterval(n8nLoadingTimer);
+    n8nLoadingTimer = null;
+  }
+}
+
+function startN8nLoadingCycle() {
+  stopN8nLoadingCycle();
+  n8nLoadingStepIndex.value = 0;
+  n8nLoadingTimer = setInterval(() => {
+    n8nLoadingStepIndex.value = (n8nLoadingStepIndex.value + 1) % n8nLoadingSteps.length;
+  }, 1500);
+}
+
+function triggerBlueprintSuccess() {
+  showBlueprintSuccess.value = false;
+  window.setTimeout(() => {
+    showBlueprintSuccess.value = true;
+    window.setTimeout(() => {
+      showBlueprintSuccess.value = false;
+    }, 1900);
+  }, 100);
+}
+
+function triggerN8nSuccess() {
+  showN8nSuccess.value = false;
+  window.setTimeout(() => {
+    showN8nSuccess.value = true;
+    window.setTimeout(() => {
+      showN8nSuccess.value = false;
+    }, 1800);
+  }, 80);
+}
+
+function openN8nModal() {
+  showN8nModal.value = true;
+}
+
+function closeN8nModal() {
+  if (n8nGeneratorState.value === "generating") return;
+  showN8nModal.value = false;
+  showN8nSuccess.value = false;
+}
+
+function handleN8nArtifactAction() {
+  if (n8nWorkflowDraft.value) {
+    openN8nModal();
+    return;
+  }
+
+  void generateN8nWorkflowDraft();
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && showN8nModal.value) {
+    closeN8nModal();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleGlobalKeydown);
+});
+
+onUnmounted(() => {
+  stopN8nLoadingCycle();
+  window.removeEventListener("keydown", handleGlobalKeydown);
+  document.body.style.overflow = "";
+});
+
+watch(showN8nModal, (isOpen) => {
+  document.body.style.overflow = isOpen ? "hidden" : "";
+});
+
 function resetN8nGeneratorState() {
+  stopN8nLoadingCycle();
+  showN8nModal.value = false;
+  showN8nSuccess.value = false;
   n8nGeneratorState.value = "idle";
   n8nGenerateError.value = "";
   n8nWorkflowDraft.value = null;
@@ -1902,9 +1994,12 @@ async function generateN8nWorkflowDraft() {
   if (!job.value || !canGenerateN8nJson.value) return;
 
   activePanel.value = "agents";
+  openN8nModal();
+  showN8nSuccess.value = false;
   n8nGeneratorState.value = "generating";
   n8nGenerateError.value = "";
   n8nJsonCopied.value = false;
+  startN8nLoadingCycle();
 
   try {
     const response = await $fetch<N8nGenerateResponse>("/api/n8n-generate", {
@@ -1921,11 +2016,14 @@ async function generateN8nWorkflowDraft() {
     n8nUsedAi.value = response.used_ai;
     n8nFallbackUsed.value = response.fallback_used;
     n8nGeneratorState.value = "ready";
+    triggerN8nSuccess();
   } catch (error) {
     n8nWorkflowDraft.value = null;
     n8nWarnings.value = [];
     n8nGenerateError.value = apiErrorMessage(error, "Could not generate n8n JSON draft.");
     n8nGeneratorState.value = "failed";
+  } finally {
+    stopN8nLoadingCycle();
   }
 }
 
@@ -2009,6 +2107,7 @@ function resetRun() {
   activeWorkflowStepIndex.value = null;
   runState.value = "idle";
   showAnswered.value = false;
+  showBlueprintSuccess.value = false;
   resetCompileProgressState();
   resetN8nGeneratorState();
 }
@@ -2209,6 +2308,10 @@ async function applyCompileJobResponse(response: CompileJob, input: string) {
   job.value = response;
   resetN8nGeneratorState();
   runState.value = response.safety_critic?.overall_status === "not_safe_to_automate" ? "blocked" : "ready";
+
+  if (runState.value === "ready") {
+    triggerBlueprintSuccess();
+  }
 }
 
 function compileProgressEventsFromBlock(block: string): CompileProgressEvent[] {
@@ -2626,7 +2729,14 @@ function isPrimaryDisabled() {
             </div>
           </section>
 
-          <section v-else class="blueprint-panel">
+          <section v-else class="blueprint-panel" :class="{ 'is-success': showBlueprintSuccess }">
+            <div v-if="showBlueprintSuccess" class="blueprint-success-sheen" aria-hidden="true" />
+            <Transition name="success-chip">
+              <span v-if="showBlueprintSuccess" class="blueprint-success-chip">
+                <Check :size="14" />
+                Final Guard passed · Blueprint ready
+              </span>
+            </Transition>
             <div class="blueprint-heading">
               <div>
                 <p class="eyebrow">Automation blueprint</p>
@@ -2678,93 +2788,37 @@ function isPrimaryDisabled() {
                 </div>
               </div>
 
-              <section class="n8n-json-draft refined-n8n-panel" aria-label="n8n JSON draft generator">
-                <div class="n8n-section-heading">
-                  <div class="n8n-heading-icon">
-                    <Workflow :size="19" />
-                  </div>
-                  <div class="n8n-heading-copy">
-                    <span class="n8n-section-kicker">Primary artifact</span>
-                    <h3>n8n JSON draft</h3>
-                    <p>
-                      Generate the importable workflow file directly from this blueprint. The draft stays inactive until it is reviewed and configured in n8n.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    class="n8n-generate-button"
-                    :disabled="!canGenerateN8nJson"
-                    @click="generateN8nWorkflowDraft"
-                  >
-                    <Loader2 v-if="n8nGeneratorState === 'generating'" class="spin" :size="17" />
-                    <Sparkles v-else :size="17" />
-                    <span>{{ n8nGeneratorState === "generating" ? "Generating draft" : n8nWorkflowDraft ? "Regenerate draft" : "Generate JSON draft" }}</span>
-                  </button>
+              <section class="n8n-artifact-launcher" aria-label="n8n JSON draft generator">
+                <div class="n8n-artifact-icon">
+                  <Workflow :size="21" />
                 </div>
 
-                <div class="n8n-safety-strip">
-                  <span class="n8n-safety-dot" />
-                  <div>
-                    <strong>Inactive by default</strong>
-                    <p>{{ n8nStaticSafetyWarning }}</p>
+                <div class="n8n-artifact-copy">
+                  <span class="n8n-section-kicker">Primary artifact</span>
+                  <h3>{{ n8nWorkflowDraft ? "n8n draft ready" : "n8n JSON draft" }}</h3>
+                  <p v-if="n8nWorkflowDraft">
+                    {{ n8nJsonFileName }} is ready to review, copy, or download. The workflow remains inactive by default.
+                  </p>
+                  <p v-else>
+                    Generate an inactive, importable workflow skeleton without pushing a large JSON panel into the page.
+                  </p>
+
+                  <div class="n8n-artifact-meta">
+                    <span><span class="n8n-safety-dot" /> Inactive by default</span>
+                    <span v-if="n8nGeneratorMeta">{{ n8nGeneratorMeta }}</span>
                   </div>
                 </div>
 
-                <div
-                  v-if="n8nGeneratorAgentCard"
-                  class="n8n-generation-status"
-                  :class="[`agent-${n8nGeneratorAgentCard.status}`, `agent-tone-${n8nGeneratorAgentCard.providerTone}`]"
+                <button
+                  type="button"
+                  class="n8n-generate-button n8n-launch-button"
+                  :disabled="!canGenerateN8nJson && !n8nWorkflowDraft"
+                  @click="handleN8nArtifactAction"
                 >
-                  <div class="n8n-status-icon">
-                    <Loader2 v-if="n8nGeneratorState === 'generating'" class="spin" :size="18" />
-                    <Check v-else-if="n8nGeneratorState === 'ready'" :size="18" />
-                    <span v-else class="agent-orb" />
-                  </div>
-                  <div>
-                    <strong>{{ n8nGeneratorAgentCard.statusLabel }}</strong>
-                    <p>{{ n8nGeneratorAgentCard.statusReason }}</p>
-                  </div>
-                  <span v-if="n8nGeneratorMeta" class="n8n-meta-pill">{{ n8nGeneratorMeta }}</span>
-                </div>
-
-                <div v-if="n8nGenerateError" class="n8n-message-panel tone-error">
-                  <strong>Generation failed</strong>
-                  <p>{{ n8nGenerateError }}</p>
-                </div>
-
-                <div v-if="displayedN8nWarnings.length" class="n8n-message-panel tone-warning">
-                  <strong>Configuration notes</strong>
-                  <ul>
-                    <li v-for="warning in displayedN8nWarnings" :key="warning">{{ warning }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="n8nWorkflowDraft" class="n8n-json-output refined-json-output">
-                  <div class="n8n-json-toolbar">
-                    <div class="n8n-file-meta">
-                      <span class="n8n-file-icon">{ }</span>
-                      <div>
-                        <strong>{{ n8nJsonFileName }}</strong>
-                        <span>Validated import draft</span>
-                      </div>
-                    </div>
-
-                    <div class="n8n-toolbar-actions">
-                      <button type="button" class="n8n-toolbar-button" @click="copyN8nWorkflowJson">
-                        <Check v-if="n8nJsonCopied" :size="15" />
-                        <Clipboard v-else :size="15" />
-                        {{ n8nJsonCopied ? "Copied" : "Copy JSON" }}
-                      </button>
-                      <button type="button" class="n8n-toolbar-button primary" @click="downloadN8nWorkflowJson">
-                        <Download :size="15" />
-                        Download
-                      </button>
-                    </div>
-                  </div>
-
-                  <pre>{{ n8nWorkflowJsonText }}</pre>
-                </div>
+                  <Sparkles v-if="!n8nWorkflowDraft" :size="17" />
+                  <Workflow v-else :size="17" />
+                  <span>{{ n8nWorkflowDraft ? "View JSON draft" : "Generate JSON draft" }}</span>
+                </button>
               </section>
 
               <section class="prompt-secondary-card" aria-label="Secondary n8n implementation prompt">
@@ -2979,6 +3033,144 @@ function isPrimaryDisabled() {
       </aside>
     </section>
 
+
+    <Transition name="n8n-modal">
+      <div
+        v-if="showN8nModal"
+        class="agent-modal-backdrop n8n-modal-backdrop"
+        @click.self="closeN8nModal"
+      >
+        <section
+          class="agent-modal n8n-artifact-modal"
+          :class="{ 'is-success': showN8nSuccess }"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="n8n-artifact-modal-title"
+        >
+          <div v-if="showN8nSuccess" class="n8n-success-sheen" aria-hidden="true" />
+
+          <header class="agent-modal-header n8n-modal-header">
+            <div class="n8n-modal-title-row">
+              <span class="n8n-modal-icon">
+                <Workflow :size="20" />
+              </span>
+              <div>
+                <p class="eyebrow">Implementation artifact</p>
+                <h2 id="n8n-artifact-modal-title">n8n JSON draft</h2>
+              </div>
+            </div>
+
+            <div class="n8n-modal-header-actions">
+              <Transition name="success-chip">
+                <span v-if="showN8nSuccess" class="n8n-success-chip">
+                  <Check :size="14" />
+                  Draft ready
+                </span>
+              </Transition>
+              <button
+                type="button"
+                class="modal-close"
+                aria-label="Close n8n draft"
+                :disabled="n8nGeneratorState === 'generating'"
+                @click="closeN8nModal"
+              >
+                <X :size="18" :stroke-width="2.4" />
+              </button>
+            </div>
+          </header>
+
+          <div class="n8n-modal-body">
+            <section v-if="n8nGeneratorState === 'generating'" class="n8n-modal-loading" aria-live="polite">
+              <div class="n8n-loading-mark">
+                <Loader2 class="spin" :size="28" />
+              </div>
+              <span class="n8n-section-kicker">Building workflow</span>
+              <h3>Generating your inactive n8n draft</h3>
+              <p>{{ activeN8nLoadingStep }}</p>
+
+              <div class="n8n-loading-progress" aria-hidden="true">
+                <span
+                  v-for="(_, index) in n8nLoadingSteps"
+                  :key="index"
+                  :class="{ active: index === n8nLoadingStepIndex }"
+                />
+              </div>
+
+              <div class="n8n-modal-safety-note">
+                <span class="n8n-safety-dot" />
+                Credentials stay as placeholders and production actions remain disabled.
+              </div>
+            </section>
+
+            <section v-else-if="n8nGeneratorState === 'failed'" class="n8n-modal-error">
+              <div class="n8n-error-mark">!</div>
+              <span class="n8n-section-kicker">Generation failed</span>
+              <h3>The draft could not be created</h3>
+              <p>{{ n8nGenerateError }}</p>
+              <button
+                type="button"
+                class="n8n-generate-button"
+                :disabled="!canGenerateN8nJson"
+                @click="generateN8nWorkflowDraft"
+              >
+                <Sparkles :size="17" />
+                Try again
+              </button>
+            </section>
+
+            <template v-else-if="n8nWorkflowDraft">
+              <div class="n8n-modal-summary">
+                <div class="n8n-file-meta">
+                  <span class="n8n-file-icon">{ }</span>
+                  <div>
+                    <strong>{{ n8nJsonFileName }}</strong>
+                    <span>Validated import draft · inactive</span>
+                  </div>
+                </div>
+                <span v-if="n8nGeneratorMeta" class="n8n-meta-pill">{{ n8nGeneratorMeta }}</span>
+              </div>
+
+              <div class="n8n-safety-strip n8n-modal-safety-strip">
+                <span class="n8n-safety-dot" />
+                <div>
+                  <strong>Review before importing</strong>
+                  <p>{{ n8nStaticSafetyWarning }}</p>
+                </div>
+              </div>
+
+              <div v-if="displayedN8nWarnings.length" class="n8n-message-panel tone-warning">
+                <strong>Configuration notes</strong>
+                <ul>
+                  <li v-for="warning in displayedN8nWarnings" :key="warning">{{ warning }}</li>
+                </ul>
+              </div>
+
+              <div class="n8n-json-output refined-json-output n8n-modal-json">
+                <pre>{{ n8nWorkflowJsonText }}</pre>
+              </div>
+            </template>
+          </div>
+
+          <footer v-if="n8nWorkflowDraft && n8nGeneratorState !== 'generating'" class="n8n-modal-footer">
+            <button type="button" class="n8n-toolbar-button" @click="generateN8nWorkflowDraft">
+              <Sparkles :size="15" />
+              Regenerate
+            </button>
+            <div class="n8n-modal-footer-primary">
+              <button type="button" class="n8n-toolbar-button" @click="copyN8nWorkflowJson">
+                <Check v-if="n8nJsonCopied" :size="15" />
+                <Clipboard v-else :size="15" />
+                {{ n8nJsonCopied ? "Copied" : "Copy JSON" }}
+              </button>
+              <button type="button" class="n8n-toolbar-button primary" @click="downloadN8nWorkflowJson">
+                <Download :size="15" />
+                Download JSON
+              </button>
+            </div>
+          </footer>
+        </section>
+      </div>
+    </Transition>
 
     <div v-if="activeWorkflowStep" class="agent-modal-backdrop" @click.self="closeWorkflowStepDetails">
       <section class="agent-modal step-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-step-modal-title">
@@ -6801,6 +6993,346 @@ The current endpoint returns the agent outcome and raw provider response when av
   }
 }
 
+
+/* ---------- n8n artifact modal ---------- */
+.n8n-artifact-launcher {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 18px;
+  border: 1px solid rgba(102, 227, 255, 0.2);
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(102, 227, 255, 0.06), transparent 52%),
+    rgba(255, 255, 255, 0.03);
+}
+
+.n8n-artifact-icon,
+.n8n-modal-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(102, 227, 255, 0.3);
+  border-radius: 13px;
+  background: rgba(102, 227, 255, 0.09);
+  color: #9decff;
+}
+
+.n8n-artifact-copy h3 {
+  margin: 3px 0 5px;
+  color: #eef3ff;
+  font-size: 17px;
+}
+
+.n8n-artifact-copy p {
+  margin: 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.n8n-artifact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 9px;
+  color: #7f8db8;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.n8n-artifact-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.n8n-launch-button {
+  white-space: nowrap;
+}
+
+.n8n-modal-backdrop {
+  z-index: 100;
+  background: rgba(2, 5, 12, 0.78);
+}
+
+.n8n-artifact-modal {
+  position: relative;
+  width: min(980px, calc(100vw - 32px));
+  max-height: min(850px, calc(100vh - 40px));
+  border-color: rgba(102, 227, 255, 0.24);
+  background:
+    linear-gradient(180deg, rgba(16, 24, 40, 0.98), rgba(8, 12, 22, 0.99));
+  transition: border-color 280ms ease, box-shadow 280ms ease;
+}
+
+.n8n-artifact-modal.is-success {
+  border-color: rgba(67, 224, 166, 0.52);
+  box-shadow:
+    0 30px 110px rgba(0, 0, 0, 0.58),
+    0 0 0 1px rgba(67, 224, 166, 0.08),
+    0 0 34px rgba(67, 224, 166, 0.1);
+}
+
+.n8n-success-sheen {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.n8n-success-sheen::before {
+  content: "";
+  position: absolute;
+  top: -35%;
+  bottom: -35%;
+  left: -28%;
+  width: 24%;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(135, 255, 211, 0.16), transparent);
+  animation: n8nSuccessSweep 760ms cubic-bezier(0.2, 0.75, 0.25, 1) forwards;
+}
+
+.n8n-modal-header {
+  position: relative;
+  z-index: 3;
+}
+
+.n8n-modal-title-row,
+.n8n-modal-header-actions,
+.n8n-modal-footer-primary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.n8n-success-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(67, 224, 166, 0.34);
+  border-radius: 999px;
+  background: rgba(67, 224, 166, 0.1);
+  color: #77edbf;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.n8n-modal-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.n8n-modal-loading,
+.n8n-modal-error {
+  display: flex;
+  min-height: 430px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 34px;
+  text-align: center;
+}
+
+.n8n-loading-mark,
+.n8n-error-mark {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(102, 227, 255, 0.3);
+  border-radius: 18px;
+  background: rgba(102, 227, 255, 0.08);
+  color: #9decff;
+}
+
+.n8n-error-mark {
+  border-color: rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.08);
+  color: #ff9a9a;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.n8n-modal-loading h3,
+.n8n-modal-error h3 {
+  margin: 7px 0 8px;
+  color: #eef3ff;
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+
+.n8n-modal-loading > p,
+.n8n-modal-error > p {
+  max-width: 590px;
+  margin: 0;
+  color: #9ba9d8;
+  line-height: 1.6;
+}
+
+.n8n-loading-progress {
+  display: flex;
+  gap: 7px;
+  margin-top: 24px;
+}
+
+.n8n-loading-progress span {
+  width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(145, 166, 255, 0.16);
+  transition: background 240ms ease, transform 240ms ease;
+}
+
+.n8n-loading-progress span.active {
+  transform: scaleX(1.08);
+  background: #66e3ff;
+}
+
+.n8n-modal-safety-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 25px;
+  color: #7f8db8;
+  font-size: 11px;
+}
+
+.n8n-modal-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 2px 2px 5px;
+}
+
+.n8n-modal-safety-strip {
+  margin: 0;
+}
+
+.n8n-modal-json {
+  display: flex;
+  min-height: 280px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+}
+
+.n8n-modal-json pre {
+  width: 100%;
+  margin: 0;
+}
+
+.n8n-modal-footer {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(145, 166, 255, 0.14);
+  background: rgba(7, 10, 18, 0.72);
+}
+
+.n8n-modal-enter-active,
+.n8n-modal-leave-active {
+  transition: opacity 180ms ease;
+}
+
+.n8n-modal-enter-active .n8n-artifact-modal,
+.n8n-modal-leave-active .n8n-artifact-modal {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+
+.n8n-modal-enter-from,
+.n8n-modal-leave-to {
+  opacity: 0;
+}
+
+.n8n-modal-enter-from .n8n-artifact-modal,
+.n8n-modal-leave-to .n8n-artifact-modal {
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+}
+
+.success-chip-enter-active,
+.success-chip-leave-active {
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.success-chip-enter-from,
+.success-chip-leave-to {
+  opacity: 0;
+  transform: translateY(-5px) scale(0.96);
+}
+
+@keyframes n8nSuccessSweep {
+  from { transform: translateX(0) skewX(-18deg); opacity: 0; }
+  20% { opacity: 1; }
+  to { transform: translateX(620%) skewX(-18deg); opacity: 0; }
+}
+
+@media (max-width: 760px) {
+  .n8n-artifact-launcher {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .n8n-launch-button {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .n8n-modal-header,
+  .n8n-modal-footer,
+  .n8n-modal-summary {
+    align-items: stretch;
+  }
+
+  .n8n-modal-header-actions {
+    align-self: flex-start;
+  }
+
+  .n8n-modal-footer {
+    flex-direction: column-reverse;
+  }
+
+  .n8n-modal-footer-primary,
+  .n8n-modal-footer-primary .n8n-toolbar-button,
+  .n8n-modal-footer > .n8n-toolbar-button {
+    width: 100%;
+  }
+
+  .n8n-modal-footer-primary {
+    flex-direction: column;
+  }
+
+  .n8n-modal-summary {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .n8n-success-sheen::before,
+  .n8n-modal-enter-active .n8n-artifact-modal,
+  .n8n-modal-leave-active .n8n-artifact-modal {
+    animation: none !important;
+    transition-duration: 1ms !important;
+  }
+}
+
 </style>
 
 <style scoped>
@@ -6918,6 +7450,439 @@ The current endpoint returns the agent outcome and raw provider response when av
 @media (max-width: 720px) {
   .out-of-scope-stage {
     padding: 24px;
+  }
+}
+
+/* ---------- n8n artifact modal ---------- */
+.n8n-artifact-launcher {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 18px;
+  border: 1px solid rgba(102, 227, 255, 0.2);
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(102, 227, 255, 0.06), transparent 52%),
+    rgba(255, 255, 255, 0.03);
+}
+
+.n8n-artifact-icon,
+.n8n-modal-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(102, 227, 255, 0.3);
+  border-radius: 13px;
+  background: rgba(102, 227, 255, 0.09);
+  color: #9decff;
+}
+
+.n8n-artifact-copy h3 {
+  margin: 3px 0 5px;
+  color: #eef3ff;
+  font-size: 17px;
+}
+
+.n8n-artifact-copy p {
+  margin: 0;
+  color: #9ba9d8;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.n8n-artifact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 9px;
+  color: #7f8db8;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.n8n-artifact-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.n8n-launch-button {
+  white-space: nowrap;
+}
+
+.n8n-modal-backdrop {
+  z-index: 100;
+  background: rgba(2, 5, 12, 0.78);
+}
+
+.n8n-artifact-modal {
+  position: relative;
+  width: min(980px, calc(100vw - 32px));
+  max-height: min(850px, calc(100vh - 40px));
+  border-color: rgba(102, 227, 255, 0.24);
+  background:
+    linear-gradient(180deg, rgba(16, 24, 40, 0.98), rgba(8, 12, 22, 0.99));
+  transition: border-color 280ms ease, box-shadow 280ms ease;
+}
+
+.n8n-artifact-modal.is-success {
+  border-color: rgba(67, 224, 166, 0.52);
+  box-shadow:
+    0 30px 110px rgba(0, 0, 0, 0.58),
+    0 0 0 1px rgba(67, 224, 166, 0.08),
+    0 0 34px rgba(67, 224, 166, 0.1);
+}
+
+.n8n-success-sheen {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.n8n-success-sheen::before {
+  content: "";
+  position: absolute;
+  top: -35%;
+  bottom: -35%;
+  left: -28%;
+  width: 24%;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(135, 255, 211, 0.16), transparent);
+  animation: n8nSuccessSweep 760ms cubic-bezier(0.2, 0.75, 0.25, 1) forwards;
+}
+
+.n8n-modal-header {
+  position: relative;
+  z-index: 3;
+}
+
+.n8n-modal-title-row,
+.n8n-modal-header-actions,
+.n8n-modal-footer-primary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.n8n-success-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(67, 224, 166, 0.34);
+  border-radius: 999px;
+  background: rgba(67, 224, 166, 0.1);
+  color: #77edbf;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.n8n-modal-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.n8n-modal-loading,
+.n8n-modal-error {
+  display: flex;
+  min-height: 430px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 34px;
+  text-align: center;
+}
+
+.n8n-loading-mark,
+.n8n-error-mark {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(102, 227, 255, 0.3);
+  border-radius: 18px;
+  background: rgba(102, 227, 255, 0.08);
+  color: #9decff;
+}
+
+.n8n-error-mark {
+  border-color: rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.08);
+  color: #ff9a9a;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.n8n-modal-loading h3,
+.n8n-modal-error h3 {
+  margin: 7px 0 8px;
+  color: #eef3ff;
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+
+.n8n-modal-loading > p,
+.n8n-modal-error > p {
+  max-width: 590px;
+  margin: 0;
+  color: #9ba9d8;
+  line-height: 1.6;
+}
+
+.n8n-loading-progress {
+  display: flex;
+  gap: 7px;
+  margin-top: 24px;
+}
+
+.n8n-loading-progress span {
+  width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(145, 166, 255, 0.16);
+  transition: background 240ms ease, transform 240ms ease;
+}
+
+.n8n-loading-progress span.active {
+  transform: scaleX(1.08);
+  background: #66e3ff;
+}
+
+.n8n-modal-safety-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 25px;
+  color: #7f8db8;
+  font-size: 11px;
+}
+
+.n8n-modal-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 2px 2px 5px;
+}
+
+.n8n-modal-safety-strip {
+  margin: 0;
+}
+
+.n8n-modal-json {
+  display: flex;
+  min-height: 280px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+}
+
+.n8n-modal-json pre {
+  width: 100%;
+  margin: 0;
+}
+
+.n8n-modal-footer {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(145, 166, 255, 0.14);
+  background: rgba(7, 10, 18, 0.72);
+}
+
+.n8n-modal-enter-active,
+.n8n-modal-leave-active {
+  transition: opacity 180ms ease;
+}
+
+.n8n-modal-enter-active .n8n-artifact-modal,
+.n8n-modal-leave-active .n8n-artifact-modal {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+
+.n8n-modal-enter-from,
+.n8n-modal-leave-to {
+  opacity: 0;
+}
+
+.n8n-modal-enter-from .n8n-artifact-modal,
+.n8n-modal-leave-to .n8n-artifact-modal {
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+}
+
+.success-chip-enter-active,
+.success-chip-leave-active {
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.success-chip-enter-from,
+.success-chip-leave-to {
+  opacity: 0;
+  transform: translateY(-5px) scale(0.96);
+}
+
+@keyframes n8nSuccessSweep {
+  from { transform: translateX(0) skewX(-18deg); opacity: 0; }
+  20% { opacity: 1; }
+  to { transform: translateX(620%) skewX(-18deg); opacity: 0; }
+}
+
+@media (max-width: 760px) {
+  .n8n-artifact-launcher {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .n8n-launch-button {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .n8n-modal-header,
+  .n8n-modal-footer,
+  .n8n-modal-summary {
+    align-items: stretch;
+  }
+
+  .n8n-modal-header-actions {
+    align-self: flex-start;
+  }
+
+  .n8n-modal-footer {
+    flex-direction: column-reverse;
+  }
+
+  .n8n-modal-footer-primary,
+  .n8n-modal-footer-primary .n8n-toolbar-button,
+  .n8n-modal-footer > .n8n-toolbar-button {
+    width: 100%;
+  }
+
+  .n8n-modal-footer-primary {
+    flex-direction: column;
+  }
+
+  .n8n-modal-summary {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .n8n-success-sheen::before,
+  .n8n-modal-enter-active .n8n-artifact-modal,
+  .n8n-modal-leave-active .n8n-artifact-modal {
+    animation: none !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+
+/* ---------- Blueprint completion success ---------- */
+.blueprint-panel {
+  position: relative;
+  overflow: hidden;
+  transition: border-color 280ms ease, box-shadow 280ms ease;
+}
+
+.blueprint-panel.is-success {
+  border-color: rgba(67, 224, 166, 0.44);
+  box-shadow:
+    0 0 0 1px rgba(67, 224, 166, 0.06),
+    0 0 32px rgba(67, 224, 166, 0.09);
+}
+
+.blueprint-success-sheen {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.blueprint-success-sheen::before {
+  content: "";
+  position: absolute;
+  top: -40%;
+  bottom: -40%;
+  left: -24%;
+  width: 18%;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(135, 255, 211, 0.13), transparent);
+  animation: n8nSuccessSweep 720ms cubic-bezier(0.2, 0.75, 0.25, 1) forwards;
+}
+
+.blueprint-success-chip {
+  position: absolute;
+  z-index: 6;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid rgba(67, 224, 166, 0.34);
+  border-radius: 999px;
+  background: rgba(8, 24, 22, 0.94);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
+  color: #77edbf;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+/* Keep every modal result section on the same content width. */
+.n8n-modal-body > *,
+.n8n-modal-body > template > * {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+.n8n-modal-summary,
+.n8n-modal-safety-strip,
+.n8n-modal-body .n8n-message-panel,
+.n8n-modal-json {
+  width: 100%;
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+  box-sizing: border-box;
+}
+
+.n8n-modal-json {
+  align-self: stretch;
+}
+
+@media (max-width: 640px) {
+  .blueprint-success-chip {
+    position: relative;
+    top: auto;
+    right: auto;
+    align-self: flex-start;
+    margin-bottom: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blueprint-success-sheen::before {
+    animation: none;
   }
 }
 </style>
