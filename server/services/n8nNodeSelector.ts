@@ -754,15 +754,69 @@ function findTriggerIndexes(
     );
 }
 
+function repairSecondaryTriggerAsSource(
+  node: SelectedN8nNode,
+  brief: CompactN8nGenerationInput,
+): SelectedN8nNode {
+  const context =
+    normalizeText(
+      [
+        brief.original_request,
+        brief.source,
+        brief.trigger_description,
+        node.name,
+        node.reason ?? "",
+      ].join(" "),
+    );
+
+  if (
+    context.includes("gmail")
+    && isKnownN8nNodeKey("gmail")
+  ) {
+    return {
+      ...node,
+      nodeKey: "gmail",
+      name:
+        node.name
+          .replace(/\bwebhook\b/gi, "")
+          .replace(/\breceiver\b/gi, "")
+          .trim()
+        || "Retrieve Gmail Messages",
+      reason:
+        "Retrieve messages from the explicitly requested Gmail source.",
+      branch: undefined,
+    };
+  }
+
+  return {
+    ...node,
+    nodeKey: "httpRequest",
+    name:
+      node.name
+        .replace(/\bwebhook\b/gi, "")
+        .replace(/\breceiver\b/gi, "")
+        .replace(/\btrigger\b/gi, "")
+        .trim()
+      || "Retrieve Source Items",
+    reason:
+      "Retrieve records from the user-configured source. Configure the concrete provider, endpoint, and credentials in n8n.",
+    branch: undefined,
+  };
+}
+
 /**
  * This generator currently builds one connected n8n workflow.
  *
- * If the model returns multiple independent triggers, preserve
- * the first workflow and remove the secondary trigger together
- * with every node after it.
+ * A later second trigger can represent a genuinely independent
+ * workflow and may be removed with the nodes that follow it.
+ * However, a second trigger immediately after the primary trigger
+ * is usually an LLM mistake where a trigger node was selected as a
+ * source or retrieval node. Repair that mistake instead of cutting
+ * the workflow down to only its first trigger.
  */
 function keepPrimaryWorkflowOnly(
   selection: N8nNodeSelection,
+  brief: CompactN8nGenerationInput,
 ): N8nNodeSelection {
   const triggerIndexes =
     findTriggerIndexes(
@@ -773,22 +827,63 @@ function keepPrimaryWorkflowOnly(
     return selection;
   }
 
+  const primaryTriggerIndex =
+    triggerIndexes[0];
   const secondaryTriggerIndex =
     triggerIndexes[1];
 
   if (
-    secondaryTriggerIndex
-    === undefined
+    primaryTriggerIndex === undefined
+    || secondaryTriggerIndex === undefined
   ) {
+    return selection;
+  }
+
+  const secondaryTrigger =
+    selection.nodes[
+      secondaryTriggerIndex
+    ];
+
+  if (!secondaryTrigger) {
+    return selection;
+  }
+
+  if (
+    secondaryTriggerIndex
+    === primaryTriggerIndex + 1
+  ) {
+    return {
+      ...selection,
+      nodes: selection.nodes.map(
+        (node, index) =>
+          index === secondaryTriggerIndex
+            ? repairSecondaryTriggerAsSource(
+                secondaryTrigger,
+                brief,
+              )
+            : node,
+      ),
+    };
+  }
+
+  const retainedNodes =
+    selection.nodes.slice(
+      0,
+      secondaryTriggerIndex,
+    );
+
+  /*
+   * Never normalize a multi-step workflow into a trigger-only
+   * workflow. Leave it unchanged so semantic validation can reject
+   * the multiple-trigger result and ask the model to repair it.
+   */
+  if (retainedNodes.length <= 1) {
     return selection;
   }
 
   return {
     ...selection,
-    nodes: selection.nodes.slice(
-      0,
-      secondaryTriggerIndex,
-    ),
+    nodes: retainedNodes,
   };
 }
 
@@ -1767,6 +1862,53 @@ function validateCurrentWorkflowTerminology(
   );
 }
 
+function requestedOperationCount(
+  brief: CompactN8nGenerationInput,
+): number {
+  const operationSignals = [
+    ...(brief.recommended_nodes ?? []),
+    ...(brief.internal_outputs ?? []),
+    ...(brief.extracted_fields ?? []),
+    brief.classification_target,
+  ]
+    .map(normalizeText)
+    .filter(Boolean);
+
+  return new Set(
+    operationSignals,
+  ).size;
+}
+
+function validateWorkflowDidNotCollapse(
+  input: {
+    brief:
+      CompactN8nGenerationInput;
+    nodes:
+      SelectedN8nNode[];
+    issues:
+      N8nNodeSelectionIssue[];
+  },
+): void {
+  const {
+    brief,
+    nodes,
+    issues,
+  } = input;
+
+  if (
+    requestedOperationCount(brief) >= 2
+    && nodes.length <= 1
+  ) {
+    issues.push({
+      path: "nodes",
+      message:
+        "The selected workflow collapsed to only a trigger even though the blueprint contains multiple requested operations.",
+      code:
+        "workflow_collapsed_after_trigger_cleanup",
+    });
+  }
+}
+
 function validateSelection(
   brief: CompactN8nGenerationInput,
   selection: N8nNodeSelection,
@@ -1785,6 +1927,12 @@ function validateSelection(
         "empty_selection",
     });
   }
+
+  validateWorkflowDidNotCollapse({
+    brief,
+    nodes: selection.nodes,
+    issues,
+  });
 
   validateTriggerSemantics({
     brief,
@@ -1932,9 +2080,44 @@ async function callAndValidate(
   const selection =
     keepPrimaryWorkflowOnly(
       normalizedSelection,
+      brief,
+    );
+
+  const normalizedTriggerIndexes =
+    findTriggerIndexes(
+      normalizedSelection.nodes,
+    );
+  const selectedTriggerIndexes =
+    findTriggerIndexes(
+      selection.nodes,
     );
 
   if (
+    normalizedTriggerIndexes.length > 1
+    && selectedTriggerIndexes.length === 1
+    && selection.nodes.length
+      === normalizedSelection.nodes.length
+  ) {
+    const repairedIndex =
+      normalizedTriggerIndexes[1];
+
+    debugLog(
+      provider,
+      "Repaired secondary trigger as source node:",
+      repairedIndex === undefined
+        ? undefined
+        : {
+            original:
+              normalizedSelection.nodes[
+                repairedIndex
+              ],
+            repaired:
+              selection.nodes[
+                repairedIndex
+              ],
+          },
+    );
+  } else if (
     selection.nodes.length
     !== normalizedSelection.nodes.length
   ) {
