@@ -20,7 +20,7 @@ import type {
 } from "../../shared/types/clarificationSession";
 
 type PanelView = "context" | "agents" | "details" | "trace";
-type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "failed";
+type RunState = "idle" | "clarifying" | "compiling" | "ready" | "blocked" | "out_of_scope" | "failed";
 type N8nGeneratorState = "idle" | "generating" | "ready" | "failed";
 
 type FlowStepLike = {
@@ -258,9 +258,15 @@ const answeredCount = computed(() => clarificationAnswers.value.length);
 const currentQuestionNumber = computed(() => answeredCount.value + 1);
 const clarificationProgressLabel = computed(() => `Question ${currentQuestionNumber.value} · stops when ready`);
 const safetyStatus = computed(() => job.value?.safety_critic?.overall_status ?? null);
+const isOutOfScope = computed(
+  () =>
+    runState.value === "out_of_scope"
+    || job.value?.router_decision?.route === "out_of_scope",
+);
 const isOrchestrating = computed(() => runState.value === "compiling");
 const mainStatus = computed(() => {
   if (runState.value === "failed") return "Failed";
+  if (runState.value === "out_of_scope") return "Outside scope";
   if (isOrchestrating.value) return "Compiling";
   if (hasClarification.value) return "Clarifying";
   if (!job.value) return "Ready";
@@ -275,6 +281,7 @@ const mainStatus = computed(() => {
 
 const mainStatusTone = computed(() => {
   if (runState.value === "failed") return "danger";
+  if (runState.value === "out_of_scope") return "neutral";
   if (isOrchestrating.value) return "active";
   if (hasClarification.value) return "active";
   if (safetyStatus.value === "not_safe_to_automate") return "danger";
@@ -283,28 +290,55 @@ const mainStatusTone = computed(() => {
   return "neutral";
 });
 
-const agentRail = computed(() => [
-  {
-    label: "Input",
-    state: hasInput.value ? "done" : "active",
-  },
-  {
-    label: "Clarifier",
-    state: hasClarification.value ? "active" : clarificationAnswers.value.length > 0 ? "done" : "idle",
-  },
-  {
-    label: "Compiler",
-    state: job.value ? "done" : isOrchestrating.value ? "active" : "idle",
-  },
-  {
-    label: "Safety",
-    state: job.value?.safety_critic ? "done" : currentCompileStep.value?.id.includes("safety") ? "active" : "idle",
-  },
-  {
-    label: "Blueprint",
-    state: job.value?.result ? "active" : "idle",
-  },
-]);
+const agentRail = computed(() => {
+  if (isOutOfScope.value) {
+    return [
+      {
+        label: "Input",
+        state: "done",
+      },
+      {
+        label: "Clarifier",
+        state: "idle",
+      },
+      {
+        label: "Compiler",
+        state: "idle",
+      },
+      {
+        label: "Safety",
+        state: "idle",
+      },
+      {
+        label: "Blueprint",
+        state: "idle",
+      },
+    ];
+  }
+
+  return [
+    {
+      label: "Input",
+      state: hasInput.value ? "done" : "active",
+    },
+    {
+      label: "Clarifier",
+      state: hasClarification.value ? "active" : clarificationAnswers.value.length > 0 ? "done" : "idle",
+    },
+    {
+      label: "Compiler",
+      state: job.value ? "done" : isOrchestrating.value ? "active" : "idle",
+    },
+    {
+      label: "Safety",
+      state: job.value?.safety_critic ? "done" : currentCompileStep.value?.id.includes("safety") ? "active" : "idle",
+    },
+    {
+      label: "Blueprint",
+      state: job.value?.result ? "active" : "idle",
+    },
+  ];
+});
 
 function defaultAgentUiCard(definition: CompileStepDefinition): AgentUiCard {
   return {
@@ -505,6 +539,107 @@ const agentCards = computed<AgentCard[]>(() => {
       providerTone: guidedClarifierTone(),
       debugId: "guided_clarifier",
   };
+
+  if (isOutOfScope.value) {
+    const skippedReason =
+      "Skipped because the Router Agent classified this request as outside FlowForge scope.";
+
+    return [
+      guidedClarifierCard,
+      {
+        id: "router",
+        label: "Router",
+        status: "done",
+        summary:
+          job.value?.router_decision?.reason
+          || "The request was classified as outside workflow automation scope.",
+        provider:
+          job.value?.router_decision?.provider
+          || "standby",
+        statusLabel:
+          routerStatusLabel(),
+        statusReason:
+          routerStatusReason(),
+        providerTone:
+          routerProviderTone(),
+      },
+      {
+        id: "clarification_planner",
+        label: "Clarification Planner",
+        status: "skipped",
+        summary: skippedReason,
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason: skippedReason,
+        providerTone: "skipped",
+      },
+      {
+        id: "clarification_agent",
+        label: "Compile Clarifier",
+        status: "skipped",
+        summary: skippedReason,
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason: skippedReason,
+        providerTone: "skipped",
+        debugId: "clarification_agent",
+      },
+      {
+        id: "blueprint_architect_agent",
+        label: "Blueprint Architect",
+        status: "skipped",
+        summary: skippedReason,
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason: skippedReason,
+        providerTone: "skipped",
+        debugId: "blueprint_architect_agent",
+      },
+      {
+        id: "deterministic_blueprint",
+        label: "Deterministic Blueprint",
+        status: "skipped",
+        summary: skippedReason,
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason: skippedReason,
+        providerTone: "skipped",
+      },
+      {
+        id: "safety_critic_deterministic",
+        label: "Safety Review",
+        status: "skipped",
+        summary: skippedReason,
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason: skippedReason,
+        providerTone: "skipped",
+      },
+      {
+        id: "safety_critic_agent",
+        label: "Safety Critic",
+        status: "skipped",
+        summary: skippedReason,
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason: skippedReason,
+        providerTone: "skipped",
+        debugId: "safety_critic_agent",
+      },
+      {
+        id: "final_guard",
+        label: "Final Guard",
+        status: "skipped",
+        summary:
+          "No workflow result needed final safety validation because compilation stopped at the router.",
+        provider: "standby",
+        statusLabel: "Skipped",
+        statusReason:
+          "The pipeline stopped before blueprint generation.",
+        providerTone: "skipped",
+      },
+    ];
+  }
 
   if (isOrchestrating.value && !job.value) {
     const cards = [guidedClarifierCard, ...compileProgressAgentCards.value];
@@ -911,6 +1046,21 @@ function guidedClarifierStatusReason() {
 }
 
 function finalGuardCard(): AgentCard {
+  if (isOutOfScope.value) {
+    return {
+      id: "final_guard",
+      label: "Final Guard",
+      status: "skipped",
+      summary:
+        "Compilation stopped at the Router Agent because the request is outside FlowForge scope.",
+      provider: "standby",
+      statusLabel: "Skipped",
+      statusReason:
+        "No workflow blueprint was produced.",
+      providerTone: "skipped",
+    };
+  }
+
   const finalStatus = safetyStatus.value;
   const hasJob = Boolean(job.value);
   const needsDetail = job.value?.status === "failed" || finalStatus === "needs_clarification";
@@ -990,6 +1140,40 @@ const providerFailureItems = computed(() => {
 });
 
 const observabilityCards = computed<ObservabilityCard[]>(() => {
+  if (isOutOfScope.value && job.value) {
+    return [
+      {
+        label: "Router outcome",
+        value: "Outside scope",
+        note:
+          job.value.router_decision?.reason
+          || "The request is unrelated to workflow automation design.",
+        tone: "neutral",
+      },
+      {
+        label: "Router provider",
+        value:
+          providerDisplayName(
+            job.value.router_decision?.provider,
+          ),
+        note:
+          `${job.value.router_decision?.confidence ?? "unknown"} confidence · pipeline stopped after routing.`,
+        tone:
+          job.value.router_decision?.used_ai
+            ? "success"
+            : "neutral",
+      },
+      {
+        label: "LLM attempts used",
+        value:
+          `${job.value.token_usage?.llm_calls_used ?? 0}/${job.value.token_usage?.llm_calls_limit ?? 0}`,
+        note:
+          "Only routing was allowed to run. Blueprint and n8n generation were skipped.",
+        tone: "neutral",
+      },
+    ];
+  }
+
   if (!job.value) {
     return [
       {
@@ -1063,6 +1247,41 @@ const observabilityCards = computed<ObservabilityCard[]>(() => {
 const knownFactItems = computed<DetailItem[]>(() => {
   const items: DetailItem[] = [];
   const facts = clarificationSession.value?.known_facts;
+
+  if (isOutOfScope.value && job.value) {
+    addFact(
+      items,
+      "Router route",
+      job.value.router_decision?.route,
+    );
+    addFact(
+      items,
+      "Router reason",
+      compactText(
+        job.value.router_decision?.reason,
+        220,
+      ),
+    );
+    addFact(
+      items,
+      "Confidence",
+      job.value.router_decision?.confidence,
+    );
+    addFact(
+      items,
+      "Provider",
+      providerDisplayName(
+        job.value.router_decision?.provider,
+      ),
+    );
+    addFact(
+      items,
+      "Pipeline",
+      "Stopped after semantic routing",
+    );
+
+    return items;
+  }
 
   if (facts?.workflow_goal) addFact(items, "Goal", facts.workflow_goal);
   if (facts?.task_type) addFact(items, "Task", facts.task_type);
@@ -1422,7 +1641,7 @@ function safetyFindingDescriptions(safety: unknown, acceptedTypes: string[]) {
 
 
 const n8nImplementationPrompt = computed(() => {
-  if (!job.value) return "";
+  if (!job.value || isOutOfScope.value) return "";
 
   const result = job.value.result;
   const safety = job.value.safety_critic;
@@ -1523,6 +1742,7 @@ const displayedN8nWarnings = computed(() => {
 const canGenerateN8nJson = computed(() => {
   return Boolean(
     job.value
+    && !isOutOfScope.value
     && n8nImplementationPrompt.value
     && n8nGeneratorState.value !== "generating"
     && safetyStatus.value !== "not_safe_to_automate"
@@ -1732,6 +1952,7 @@ function downloadN8nWorkflowJson() {
 }
 
 const resultTitle = computed(() => {
+  if (isOutOfScope.value) return "Outside FlowForge scope";
   if (hasClarification.value) return "Clarifier is asking for one detail";
   if (!job.value) return "Describe an automation";
   if (safetyStatus.value === "not_safe_to_automate") return "Do not automate this";
@@ -1741,6 +1962,11 @@ const resultTitle = computed(() => {
 });
 
 const resultSubtitle = computed(() => {
+  if (isOutOfScope.value) {
+    return job.value?.router_decision?.user_message
+      || "FlowForge only designs workflow automations and agentic processes.";
+  }
+
   if (hasClarification.value) {
     return clarificationSession.value?.current_summary || "FlowForge is collecting the next useful detail.";
   }
@@ -1867,11 +2093,9 @@ async function startGuidedCompile() {
   const originalInput = trimmedInput.value;
   resetRun();
 
-  try {
-    await startClarificationForInput(originalInput);
-  } catch (error) {
-    setFriendlyError(error, "Could not start guided clarification.");
-  }
+  // The Router Agent is the single semantic entry point. It decides whether
+  // this is a valid automation request, needs clarification, or is out of scope.
+  await compilePrompt(originalInput);
 }
 
 async function continueClarification() {
@@ -1968,6 +2192,14 @@ async function compileDirectly() {
 }
 
 async function applyCompileJobResponse(response: CompileJob, input: string) {
+  if (response.router_decision?.route === "out_of_scope") {
+    job.value = response;
+    resetN8nGeneratorState();
+    runState.value = "out_of_scope";
+    activePanel.value = "context";
+    return;
+  }
+
   if (compileResultNeedsClarification(response)) {
     job.value = null;
     await startClarificationForInput(input);
@@ -2114,6 +2346,7 @@ function copyBlueprint() {
 }
 
 function actionLabel() {
+  if (runState.value === "out_of_scope") return "Edit request";
   if (hasClarification.value) return "Continue";
   if (job.value) return "Copy blueprint";
   if (isBusy.value) return "Working";
@@ -2121,6 +2354,11 @@ function actionLabel() {
 }
 
 function primaryAction() {
+  if (runState.value === "out_of_scope") {
+    backToInput();
+    return;
+  }
+
   if (job.value) {
     copyBlueprint();
     return;
@@ -2269,6 +2507,32 @@ function isPrimaryDisabled() {
           <p>{{ errorMessage }}</p>
           <button type="button" class="ghost-button" @click="backToInput">Back to input</button>
         </div>
+
+        <section v-else-if="runState === 'out_of_scope'" class="out-of-scope-stage">
+          <div class="out-of-scope-icon" aria-hidden="true">
+            <Workflow :size="26" />
+          </div>
+
+          <div class="out-of-scope-copy">
+            <p class="eyebrow">Outside FlowForge scope</p>
+            <h1>FlowForge designs workflow automations</h1>
+            <p>
+              {{ job?.router_decision?.user_message
+                || "This request does not appear to describe a workflow, automation, integration, or operational process." }}
+            </p>
+          </div>
+
+          <div class="out-of-scope-example">
+            <span>Try describing</span>
+            <strong>What starts the process, what should happen, and the expected result.</strong>
+            <p>Example: Every morning, collect new application emails, extract candidate details, classify priority, and create an internal review task.</p>
+          </div>
+
+          <button type="button" class="primary-action out-of-scope-edit" @click="backToInput">
+            Edit request
+            <span>→</span>
+          </button>
+        </section>
 
         <div v-else-if="!job && !hasClarification" class="input-stage">
           <div class="input-header">
@@ -2652,7 +2916,7 @@ function isPrimaryDisabled() {
               </article>
             </div>
 
-            <template v-if="job">
+            <template v-if="job && !isOutOfScope">
               <div class="side-title compact-title">
                 <h2>Safety details</h2>
                 <span>{{ job.risks?.risk_level || "unknown" }}</span>
@@ -2867,7 +3131,7 @@ The current endpoint returns the agent outcome and raw provider response when av
           Edit input
         </button>
         <button v-if="!job && !hasClarification" type="button" class="ghost-button" :disabled="!hasInput || isBusy" @click="startGuidedCompile">
-          Clarify first
+          Guided compile
         </button>
       </div>
 
@@ -2876,8 +3140,9 @@ The current endpoint returns the agent outcome and raw provider response when av
         <span v-if="clarificationRateLimitMessage">{{ clarificationRateLimitMessage }}</span>
         <span v-else-if="errorMessage">{{ errorMessage }}</span>
         <span v-else-if="hasClarification">Answer the current question. Previous answers stay in Context.</span>
+        <span v-else-if="runState === 'out_of_scope'">Describe a workflow or process you want FlowForge to design.</span>
         <span v-else-if="job">Blueprint is ready. Details are optional.</span>
-        <span v-else>Start guided compile or use a preset.</span>
+        <span v-else>Start the semantic router or use a preset.</span>
       </div>
 
       <button
@@ -6570,5 +6835,89 @@ The current endpoint returns the agent outcome and raw provider response when av
 .n8n-safety-dot {
   align-self: center;
   margin-top: 0;
+}
+
+
+.out-of-scope-stage {
+  display: grid;
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 34px;
+  gap: 22px;
+  align-content: start;
+  border: 1px solid #263247;
+  border-radius: 18px;
+  background: #0f1623;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+}
+
+.out-of-scope-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid rgba(124, 111, 242, 0.42);
+  border-radius: 15px;
+  background: rgba(124, 111, 242, 0.12);
+  color: #9185ff;
+}
+
+.out-of-scope-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.out-of-scope-copy h1 {
+  margin: 0;
+  color: #f4f7ff;
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.08;
+}
+
+.out-of-scope-copy > p:last-child {
+  max-width: 64ch;
+  margin: 0;
+  color: #aeb9ce;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.out-of-scope-example {
+  display: grid;
+  gap: 7px;
+  padding: 18px;
+  border: 1px solid #263247;
+  border-radius: 14px;
+  background: #131c2b;
+}
+
+.out-of-scope-example span {
+  color: #9185ff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.out-of-scope-example strong {
+  color: #e8edfa;
+  font-size: 14px;
+}
+
+.out-of-scope-example p {
+  margin: 0;
+  color: #8f9bb0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.out-of-scope-edit {
+  width: fit-content;
+}
+
+@media (max-width: 720px) {
+  .out-of-scope-stage {
+    padding: 24px;
+  }
 }
 </style>

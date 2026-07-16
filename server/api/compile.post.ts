@@ -85,6 +85,259 @@ function routerCompletionStatus(decision: {
   return "deterministic_success";
 }
 
+
+function buildOutOfScopeJob(input: {
+  rawInput: string;
+  semanticInput: string;
+  mode: CompileMode;
+  signals: ReturnType<typeof scanSignals>;
+  risks: ReturnType<typeof scanRisks>;
+  readiness: ReturnType<typeof scoreReadiness>;
+  routerResult: Awaited<ReturnType<typeof routeCompileRequest>>;
+}): CompileJob {
+  const {
+    rawInput,
+    semanticInput,
+    mode,
+    signals,
+    risks,
+    readiness,
+    routerResult,
+  } = input;
+
+  const now = new Date().toISOString();
+  const jobId = `compile_${Date.now()}`;
+
+  const skippedSteps: PipelineStep[] = [
+    {
+      id: "initialize_compile_job",
+      label: "Initialize Compile Job",
+      description:
+        "Create a local compile job from the submitted request.",
+      status: "done",
+      tool_name: "previewCompiler",
+      output_summary:
+        "Compile state created without external execution.",
+    },
+    {
+      id: "router",
+      label: "Router",
+      description:
+        "Classify whether the request belongs to workflow automation design.",
+      status: "done",
+      tool_name: "routerAgent",
+      output_summary:
+        routerResult.decision.reason,
+      token_cost:
+        routerResult.llm_calls_made,
+    },
+    {
+      id: "clarification_planner",
+      label: "Clarification Planner",
+      description:
+        "Check whether workflow details are missing.",
+      status: "skipped",
+      tool_name: "clarificationPlanner",
+      output_summary:
+        "Skipped because the Router Agent classified the request as outside FlowForge scope.",
+    },
+    {
+      id: "clarification_agent",
+      label: "Clarification Agent",
+      description:
+        "Prepare workflow clarification questions.",
+      status: "skipped",
+      tool_name: "clarificationAgent",
+      output_summary:
+        "Skipped because this is not a workflow automation request.",
+    },
+    {
+      id: "blueprint_architect_agent",
+      label: "Blueprint Architect Agent",
+      description:
+        "Design a structured workflow blueprint.",
+      status: "skipped",
+      tool_name: "blueprintArchitectAgent",
+      output_summary:
+        "Skipped because this is not a workflow automation request.",
+    },
+    {
+      id: "dynamic_blueprint_preview",
+      label: "Dynamic Blueprint Preview",
+      description:
+        "Build the workflow preview.",
+      status: "skipped",
+      tool_name: "blueprintBuilder",
+      output_summary:
+        "No workflow blueprint was generated.",
+    },
+    {
+      id: "safety_critic_review",
+      label: "Safety Critic Review",
+      description:
+        "Review workflow safety boundaries.",
+      status: "skipped",
+      tool_name: "safetyCritic",
+      output_summary:
+        "Skipped because no workflow blueprint was generated.",
+    },
+    {
+      id: "safety_critic_agent",
+      label: "Safety Critic Agent",
+      description:
+        "Critique the proposed workflow.",
+      status: "skipped",
+      tool_name: "safetyCriticAgent",
+      output_summary:
+        "Skipped because no workflow blueprint was generated.",
+    },
+  ];
+
+  return {
+    id: jobId,
+    status: "done",
+    mode,
+    created_at: now,
+    updated_at: now,
+    input: {
+      raw: rawInput,
+      trimmed: semanticInput,
+    },
+    steps: skippedSteps,
+    signals,
+    risks,
+    readiness,
+    router_decision:
+      routerResult.decision,
+    result: {
+      id: `${jobId}_out_of_scope`,
+      workflow_name:
+        "Outside FlowForge scope",
+      summary:
+        routerResult.decision.user_message
+        ?? "FlowForge is designed to create workflow automations and agentic processes.",
+      automation_boundary:
+        "assistant_only",
+      trigger: {
+        type: "unknown",
+        description:
+          "No workflow trigger was identified because the request is outside FlowForge scope.",
+      },
+      steps: [],
+      safe_to_automate: [],
+      needs_human_approval: [],
+      not_recommended: [],
+      not_safe_to_automate: [],
+      risks: [],
+      human_approval_gates: [],
+      test_cases: [],
+      assumptions: [],
+      open_questions: [],
+    },
+    agent_trace: [
+      {
+        id: "trace_initialize",
+        timestamp: now,
+        actor: "compiler_agent",
+        action:
+          "Created compile job",
+        status: "completed",
+        output_summary:
+          "Compile state created.",
+        metadata: {
+          provider_calls:
+            routerResult.llm_calls_made,
+          external_execution: false,
+        },
+      },
+      ...routerResult.attempts.map(
+        (attempt, index) => ({
+          id:
+            `trace_router_${attempt.provider}_${index}`,
+          timestamp: now,
+          actor:
+            attempt.provider
+            === "deterministic"
+              ? ("system" as const)
+              : ("llm" as const),
+          action:
+            `Router attempt: ${attempt.provider}`,
+          status:
+            attempt.success
+              ? ("completed" as const)
+              : attempt.attempted
+                ? ("failed" as const)
+                : ("skipped" as const),
+          reason:
+            attempt.skipped_reason
+            || attempt.error_summary,
+          metadata: {
+            validation_failed:
+              attempt.validation_failed,
+          },
+        }),
+      ),
+      {
+        id:
+          "trace_router_decision",
+        timestamp: now,
+        actor:
+          "compiler_agent",
+        action:
+          "Router classified request as outside FlowForge scope",
+        status: "completed",
+        output_summary:
+          routerResult.decision.reason,
+        metadata: {
+          used_ai:
+            routerResult.decision.used_ai,
+          fallback_used:
+            routerResult.decision.fallback_used,
+          confidence:
+            routerResult.decision.confidence,
+        },
+      },
+      {
+        id:
+          "trace_pipeline_stopped",
+        timestamp: now,
+        actor: "system",
+        action:
+          "Stopped workflow compilation pipeline",
+        status: "completed",
+        output_summary:
+          "Clarification, blueprint generation, safety review, and n8n generation were skipped.",
+        metadata: {
+          out_of_scope: true,
+          external_execution: false,
+        },
+      },
+    ],
+    token_usage: {
+      mode,
+      llm_calls_used:
+        routerResult.llm_calls_made,
+      llm_calls_limit:
+        llmCallLimits[mode],
+      estimated_input_tokens:
+        Math.max(
+          1,
+          Math.ceil(
+            semanticInput.length / 4,
+          ),
+        ),
+      rule_based_checks: 3,
+      skipped_ai_calls:
+        routerResult.attempts.filter(
+          (attempt) =>
+            attempt.provider
+              !== "deterministic"
+            && !attempt.attempted,
+        ).length,
+    },
+  };
+}
+
 export async function runCompilePipeline(input: {
   rawInput: string;
   mode: CompileMode;
@@ -120,6 +373,58 @@ export async function runCompilePipeline(input: {
       ? `Router used ${routerResult.decision.provider}.`
       : routerResult.decision.reason,
   });
+
+  if (
+    routerResult.decision.route
+    === "out_of_scope"
+  ) {
+    const outOfScopeJob =
+      buildOutOfScopeJob({
+        rawInput,
+        semanticInput,
+        mode,
+        signals,
+        risks,
+        readiness,
+        routerResult,
+      });
+
+    const validation =
+      safeValidateCompileJob(
+        outOfScopeJob,
+      );
+
+    if (!validation.success) {
+      console.error(
+        "[compile out-of-scope validation] Failed",
+        {
+          issues:
+            validation.issues,
+          routerProvider:
+            routerResult
+              .decision
+              .provider,
+        },
+      );
+
+      throw createError({
+        statusCode: 500,
+        statusMessage:
+          "Out-of-scope compile result failed schema validation.",
+        data: {
+          issues:
+            validation.issues,
+        },
+      });
+    }
+
+    await emitProgress(emit, {
+      type: "done",
+      job: validation.data,
+    });
+
+    return validation.data;
+  }
 
   await emitProgress(emit, {
     type: "step_started",
