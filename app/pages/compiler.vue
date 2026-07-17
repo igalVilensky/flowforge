@@ -6,6 +6,16 @@ import {
   Clipboard,
   Download,
   Loader2,
+  BrainCircuit,
+  Route,
+  MessageCircleQuestion,
+  ScanSearch,
+  Blocks,
+  FileCheck2,
+  Bot,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldX,
   Sparkles,
   Workflow,
   X,
@@ -105,6 +115,29 @@ type CompileStepDefinition = {
   waitingStatus: string;
   debugId?: keyof NonNullable<CompileJob["agent_debug"]>;
 };
+
+type AgentVisualTone = "violet" | "cyan" | "blue" | "green" | "amber" | "red";
+
+function agentVisualMeta(agentId?: string | null) {
+  const meta: Record<string, { icon: unknown; tone: AgentVisualTone; activity: string }> = {
+    guided_clarifier: { icon: MessageCircleQuestion, tone: "violet", activity: "Clarifier is identifying the one detail needed to continue." },
+    router: { icon: Route, tone: "cyan", activity: "Router is classifying the request and selecting the safest path." },
+    clarification_planner: { icon: ScanSearch, tone: "violet", activity: "Clarification Planner is checking whether essential information is missing." },
+    clarification_agent: { icon: MessageCircleQuestion, tone: "violet", activity: "Compile Clarifier is refining the request into an actionable workflow." },
+    blueprint_architect_agent: { icon: Blocks, tone: "blue", activity: "Blueprint Architect is arranging the workflow steps and boundaries." },
+    deterministic_blueprint: { icon: Workflow, tone: "cyan", activity: "Deterministic Blueprint is assembling the validated workflow structure." },
+    safety_critic_deterministic: { icon: ShieldCheck, tone: "amber", activity: "Safety Review is checking execution boundaries and approval requirements." },
+    safety_critic_agent: { icon: ShieldAlert, tone: "amber", activity: "Safety Critic is reviewing sensitive actions, risks, and human gates." },
+    final_guard: { icon: FileCheck2, tone: "green", activity: "Final Guard is validating the result before the blueprint is released." },
+    n8n_generator: { icon: Bot, tone: "green", activity: "n8n Generator is creating and validating the inactive workflow draft." },
+  };
+
+  return meta[agentId || ""] || {
+    icon: BrainCircuit,
+    tone: "cyan" as AgentVisualTone,
+    activity: "FlowForge is preparing the next compiler action.",
+  };
+}
 
 const compileStepDefinitions: CompileStepDefinition[] = [
   {
@@ -453,6 +486,21 @@ const recentCompileEvents = computed(() =>
     .filter((event) => event.type === "step_started" || event.type === "step_completed" || event.type === "step_failed")
     .slice(-4),
 );
+
+const latestSettledCompileEvent = computed(() =>
+  [...compileProgressEvents.value]
+    .reverse()
+    .find((event) => event.type === "step_completed" || event.type === "step_failed") ?? null,
+);
+
+const activeCompilerVisual = computed(() => {
+  if (runState.value === "clarifying") {
+    return { id: "guided_clarifier", ...agentVisualMeta("guided_clarifier") };
+  }
+
+  const id = currentCompileStep.value?.id || "router";
+  return { id, ...agentVisualMeta(id) };
+});
 
 const currentProcessStatus = computed(() => {
   const current = currentCompileStep.value;
@@ -1860,9 +1908,12 @@ onUnmounted(() => {
   document.body.style.overflow = "";
 });
 
-watch(showN8nModal, (isOpen) => {
-  document.body.style.overflow = isOpen ? "hidden" : "";
-});
+watch(
+  [showN8nModal, activeWorkflowStep, activeAgentDetailsId],
+  ([isN8nOpen, workflowStep, agentId]) => {
+    document.body.style.overflow = isN8nOpen || Boolean(workflowStep) || Boolean(agentId) ? "hidden" : "";
+  },
+);
 
 function resetN8nGeneratorState() {
   stopN8nLoadingCycle();
@@ -2076,6 +2127,30 @@ const resultSubtitle = computed(() => {
   return job.value.safety_critic?.summary
     || job.value.result?.summary
     || "Non-executing preview generated with safety boundaries.";
+});
+
+const blueprintStatusMeta = computed(() => {
+  if (safetyStatus.value === "not_safe_to_automate") {
+    return {
+      label: "Automation blocked",
+      tone: "danger",
+      icon: ShieldX,
+    };
+  }
+
+  if (safetyStatus.value === "needs_human_approval") {
+    return {
+      label: "Human approval required",
+      tone: "warning",
+      icon: ShieldAlert,
+    };
+  }
+
+  return {
+    label: "Safe internal preview",
+    tone: "success",
+    icon: ShieldCheck,
+  };
 });
 
 const nextSafeAction = computed(() => {
@@ -2519,9 +2594,8 @@ function isPrimaryDisabled() {
             :class="{ open: showModeMenu }"
             @click="showModeMenu = !showModeMenu"
           >
-            <span class="mode-menu-kicker">Mode</span>
+            <span class="mode-menu-label">Mode</span>
             <strong>{{ selectedMode.label }}</strong>
-            <small>{{ selectedMode.hint }}</small>
             <span class="mode-chevron">⌄</span>
           </button>
 
@@ -2543,65 +2617,59 @@ function isPrimaryDisabled() {
     </header>
 
     <section class="console-grid">
-      <aside class="agent-rail" aria-label="FlowForge agent stages">
-        <div
-          v-for="agent in agentRail"
-          :key="agent.label"
-          class="rail-item"
-          :class="`rail-${agent.state}`"
-        >
-          <span class="rail-dot" />
-          <span>{{ agent.label }}</span>
-        </div>
-      </aside>
-
-      <section class="workspace-panel">
+      <section class="workspace-column">
         <div v-if="isBusy" class="unified-loading-stage" aria-live="polite">
-          <section class="unified-loading-panel">
-            <div class="unified-loading-main">
-              <div class="unified-loading-icon">
-                <Loader2 class="spin" :size="24" />
+          <section class="live-activity-panel">
+            <div class="live-activity-visual" aria-hidden="true">
+              <div class="activity-core" :class="`tone-${activeCompilerVisual.tone}`">
+                <component :is="activeCompilerVisual.icon" :size="32" :stroke-width="1.9" />
+                <span class="activity-core-glow" />
+              </div>
+              <span class="activity-orbit orbit-one" />
+              <span class="activity-orbit orbit-two" />
+              <span class="activity-orbit orbit-three" />
+              <span class="activity-scan" />
+            </div>
+
+            <div class="live-activity-copy">
+              <div class="live-activity-topline">
+                <span class="live-status-dot" />
+                <span>{{ runState === "clarifying" ? "FlowForge is clarifying" : "FlowForge is working" }}</span>
               </div>
 
-              <div class="unified-loading-copy">
-                <div class="unified-loading-kicker">
-                  <span>{{ runState === "clarifying" ? "Guided Clarifier" : "Multi-agent compiler" }}</span>
-                  <span class="unified-loading-state">Working</span>
+              <Transition name="activity-text" mode="out-in">
+                <div :key="unifiedLoadingStep" class="live-activity-message">
+                  <h1>{{ unifiedLoadingStep }}</h1>
+                  <p>{{ currentProcessStatus.message || activeCompilerVisual.activity || unifiedLoadingMessage }}</p>
+                  <span class="live-agent-activity">{{ activeCompilerVisual.activity }}</span>
                 </div>
-                <h1>{{ unifiedLoadingTitle }}</h1>
-                <p>{{ unifiedLoadingMessage }}</p>
+              </Transition>
+
+              <div class="live-activity-progress">
+                <span class="activity-progress-track">
+                  <span class="activity-progress-runner" />
+                </span>
+                <span>{{ runState === "clarifying" ? "Reviewing the request" : "Building and checking the workflow" }}</span>
               </div>
-            </div>
 
-            <div class="unified-current-step">
-              <span class="unified-step-dot" />
-              <div>
-                <span>Current activity</span>
-                <strong>{{ unifiedLoadingStep }}</strong>
-              </div>
+              <Transition name="activity-text" mode="out-in">
+                <div
+                  v-if="runState === 'compiling' && latestSettledCompileEvent"
+                  :key="progressEventLabel(latestSettledCompileEvent)"
+                  class="live-activity-previous"
+                >
+                  <Check :size="14" />
+                  <span>
+                    {{ progressEventLabel(latestSettledCompileEvent) }} ·
+                    {{ progressEventMessage(latestSettledCompileEvent) }}
+                  </span>
+                </div>
+                <div v-else class="live-activity-previous is-muted">
+                  <Loader2 class="spin" :size="14" />
+                  <span>Preparing the first compiler action</span>
+                </div>
+              </Transition>
             </div>
-
-            <div v-if="runState === 'compiling'" class="unified-progress-list">
-              <article
-                v-for="(event, index) in recentCompileEvents"
-                :key="`${index}-${progressEventLabel(event)}`"
-                class="unified-progress-item"
-                :class="`state-${progressEventState(event)}`"
-              >
-                <span class="recent-event-dot" />
-                <strong>{{ progressEventLabel(event) }}</strong>
-                <span>{{ progressEventMessage(event) }}</span>
-              </article>
-              <article v-if="recentCompileEvents.length === 0" class="unified-progress-item state-running">
-                <span class="recent-event-dot" />
-                <strong>Compiler</strong>
-                <span>Opening stream</span>
-              </article>
-            </div>
-
-            <p v-else class="unified-loading-note">
-              Clarification is part of the same compile flow. Your request and previous answers remain saved.
-            </p>
           </section>
         </div>
 
@@ -2638,6 +2706,7 @@ function isPrimaryDisabled() {
         </section>
 
         <div v-else-if="!job && !hasClarification" class="input-stage">
+          <section class="input-stage-card">
           <div class="input-header">
             <p class="eyebrow">Automation request</p>
             <h1>What do you want FlowForge to plan?</h1>
@@ -2667,6 +2736,7 @@ function isPrimaryDisabled() {
           <p class="input-note">
             FlowForge will clarify vague requests first. Clear requests compile into a safe, non-executing workflow preview.
           </p>
+          </section>
         </div>
 
         <div v-else-if="hasClarification && currentQuestion" class="clarify-stage">
@@ -2712,11 +2782,6 @@ function isPrimaryDisabled() {
         </div>
 
         <div v-else-if="job" class="result-stage">
-          <div class="stage-kicker">
-            <span>{{ safetyStatus || "compiled" }}</span>
-            <span>non-executing preview</span>
-          </div>
-
           <section v-if="safetyStatus === 'not_safe_to_automate'" class="blocked-panel">
             <div class="blocked-icon">!</div>
             <div>
@@ -2742,6 +2807,16 @@ function isPrimaryDisabled() {
                 <p class="eyebrow">Automation blueprint</p>
                 <h1>{{ resultTitle }}</h1>
                 <p>{{ resultSubtitle }}</p>
+              </div>
+
+              <div class="blueprint-status-badge" :class="`tone-${blueprintStatusMeta.tone}`">
+                <span class="blueprint-status-icon">
+                  <component :is="blueprintStatusMeta.icon" :size="19" />
+                </span>
+                <div>
+                  <span>Safety state</span>
+                  <strong>{{ blueprintStatusMeta.label }}</strong>
+                </div>
               </div>
             </div>
 
@@ -2778,16 +2853,6 @@ function isPrimaryDisabled() {
             </div>
 
             <section v-if="job" class="handoff-card">
-              <div class="handoff-head primary-handoff-head">
-                <div>
-                  <p class="eyebrow">Implementation handoff</p>
-                  <h2>Generate the n8n workflow draft</h2>
-                  <p>
-                    Create an inactive, importable workflow skeleton from the compiled blueprint. Connections are generated; credentials and production configuration remain manual.
-                  </p>
-                </div>
-              </div>
-
               <section class="n8n-artifact-launcher" aria-label="n8n JSON draft generator">
                 <div class="n8n-artifact-icon">
                   <Workflow :size="21" />
@@ -2918,36 +2983,35 @@ function isPrimaryDisabled() {
               <span>{{ agentCards.filter((agent) => agent.status === "done").length }}/{{ agentCards.length }}</span>
             </div>
 
-            <div class="agent-card-list">
-              <article
+            <div class="agent-card-list agent-command-grid">
+              <button
                 v-for="agent in agentCards"
                 :key="agent.id"
-                class="agent-card"
-                :class="[`agent-${agent.status}`, `agent-tone-${agent.providerTone}`]"
+                type="button"
+                class="agent-card agent-command-tile"
+                :class="[`agent-${agent.status}`, `agent-tone-${agent.providerTone}`, `agent-visual-${agentVisualMeta(agent.id).tone}`]"
+                :aria-label="`Open details for ${agent.label}`"
+                @click="openAgentDetails(agent.id)"
               >
-                <div class="agent-row-main">
-                  <span class="agent-orb" />
-                  <div class="agent-row-copy">
-                    <strong>{{ agent.label }}</strong>
-                    <small>{{ cardStatusText(agent.status) }}</small>
-                  </div>
-                </div>
+                <span class="agent-tile-topline">
+                  <span class="agent-tile-icon" :class="`tone-${agentVisualMeta(agent.id).tone}`">
+                    <component :is="agentVisualMeta(agent.id).icon" :size="17" :stroke-width="2" />
+                  </span>
+                  <span class="agent-tile-status">{{ cardStatusText(agent.status) }}</span>
+                  <ChevronRight class="agent-tile-chevron" :size="17" :stroke-width="2.4" />
+                </span>
 
-                <div class="agent-row-meta">
-                  <span :class="`agent-provider-pill tone-${agent.providerTone}`">{{ agent.statusLabel }}</span>
-                  <button
-                    type="button"
-                    class="agent-details-button"
-                    @click="openAgentDetails(agent.id)"
-                  >
-                    Details
-                  </button>
-                </div>
+                <strong class="agent-tile-name">{{ agent.label }}</strong>
 
-                <div v-if="agent.provider && agent.provider !== 'standby'" class="agent-provider-chip">
-                  {{ providerDisplayName(agent.provider) }}
-                </div>
-              </article>
+                <span class="agent-tile-footer">
+                  <span :class="`agent-provider-pill tone-${agent.providerTone}`">
+                    {{ agent.statusLabel }}
+                  </span>
+                  <span v-if="agent.provider && agent.provider !== 'standby'" class="agent-tile-provider">
+                    {{ providerDisplayName(agent.provider) }}
+                  </span>
+                </span>
+              </button>
             </div>
           </section>
 
@@ -3034,9 +3098,10 @@ function isPrimaryDisabled() {
     </section>
 
 
-    <Transition name="n8n-modal">
-      <div
-        v-if="showN8nModal"
+    <Teleport to="body">
+      <Transition name="n8n-modal">
+        <div
+          v-if="showN8nModal"
         class="agent-modal-backdrop n8n-modal-backdrop"
         @click.self="closeN8nModal"
       >
@@ -3080,25 +3145,43 @@ function isPrimaryDisabled() {
           </header>
 
           <div class="n8n-modal-body">
-            <section v-if="n8nGeneratorState === 'generating'" class="n8n-modal-loading" aria-live="polite">
-              <div class="n8n-loading-mark">
-                <Loader2 class="spin" :size="28" />
+            <section v-if="n8nGeneratorState === 'generating'" class="n8n-modal-loading matched-n8n-loading" aria-live="polite">
+              <div class="n8n-activity-visual" aria-hidden="true">
+                <span class="n8n-activity-orbit orbit-one" />
+                <span class="n8n-activity-orbit orbit-two" />
+                <span class="n8n-activity-scan" />
+                <span class="n8n-activity-core">
+                  <Workflow :size="30" :stroke-width="1.8" />
+                </span>
               </div>
-              <span class="n8n-section-kicker">Building workflow</span>
-              <h3>Generating your inactive n8n draft</h3>
-              <p>{{ activeN8nLoadingStep }}</p>
 
-              <div class="n8n-loading-progress" aria-hidden="true">
+              <div class="n8n-loading-copy">
+                <span class="n8n-section-kicker">n8n Generator · working</span>
+                <h3>Building your inactive workflow draft</h3>
+                <p class="n8n-live-step">
+                  {{ activeN8nLoadingStep }}
+                </p>
+              </div>
+
+              <div class="n8n-loading-track" aria-hidden="true">
+                <span class="n8n-loading-runner" />
+              </div>
+
+              <div class="n8n-loading-checklist" aria-hidden="true">
                 <span
-                  v-for="(_, index) in n8nLoadingSteps"
-                  :key="index"
-                  :class="{ active: index === n8nLoadingStepIndex }"
-                />
+                  v-for="(step, index) in n8nLoadingSteps"
+                  :key="step"
+                  :class="{ active: index === n8nLoadingStepIndex, complete: index < n8nLoadingStepIndex }"
+                >
+                  <Check v-if="index < n8nLoadingStepIndex" :size="12" />
+                  <span v-else class="n8n-check-dot" />
+                  {{ step }}
+                </span>
               </div>
 
-              <div class="n8n-modal-safety-note">
+              <div class="n8n-modal-safety-note matched-safety-note">
                 <span class="n8n-safety-dot" />
-                Credentials stay as placeholders and production actions remain disabled.
+                Credentials remain placeholders and every production action stays disabled.
               </div>
             </section>
 
@@ -3168,11 +3251,13 @@ function isPrimaryDisabled() {
               </button>
             </div>
           </footer>
-        </section>
-      </div>
-    </Transition>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
 
-    <div v-if="activeWorkflowStep" class="agent-modal-backdrop" @click.self="closeWorkflowStepDetails">
+    <Teleport to="body">
+      <div v-if="activeWorkflowStep" class="agent-modal-backdrop" @click.self="closeWorkflowStepDetails">
       <section class="agent-modal step-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-step-modal-title">
         <header class="agent-modal-header">
           <div>
@@ -3228,10 +3313,12 @@ function isPrimaryDisabled() {
             </details>
           </article>
         </div>
-      </section>
-    </div>
+        </section>
+      </div>
+    </Teleport>
 
-    <div v-if="activeAgentDetailsId" class="agent-modal-backdrop" @click.self="closeAgentDetails">
+    <Teleport to="body">
+      <div v-if="activeAgentDetailsId" class="agent-modal-backdrop" @click.self="closeAgentDetails">
       <section class="agent-modal" role="dialog" aria-modal="true">
         <header class="agent-modal-header">
           <div>
@@ -3314,8 +3401,9 @@ The current endpoint returns the agent outcome and raw provider response when av
             <pre v-else>No provider attempts were returned for this agent.</pre>
           </article>
         </div>
-      </section>
-    </div>
+        </section>
+      </div>
+    </Teleport>
 
     <footer class="action-bar">
       <div class="action-left">
@@ -3805,8 +3893,7 @@ The current endpoint returns the agent outcome and raw provider response when av
   margin-bottom: 14px;
 }
 
-.eyebrow,
-.stage-kicker {
+.eyebrow {
   color: #7d8cff;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -4209,12 +4296,6 @@ The current endpoint returns the agent outcome and raw provider response when av
 .orchestration-live strong {
   color: #dbe4ff;
   font-weight: 600;
-}
-
-.stage-kicker {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 14px;
 }
 
 .question-card {
@@ -7883,6 +7964,1800 @@ The current endpoint returns the agent outcome and raw provider response when av
 @media (prefers-reduced-motion: reduce) {
   .blueprint-success-sheen::before {
     animation: none;
+  }
+}
+</style>
+
+<style scoped>
+/* ---------- Full-width compiler layout + viewport modal layer ---------- */
+
+.console-shell {
+  width: 100%;
+  padding-inline: 14px;
+}
+
+.console-grid {
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  grid-template-columns:
+    clamp(145px, 10vw, 190px)
+    minmax(0, 1fr)
+    clamp(310px, 22vw, 390px);
+  gap: 16px;
+}
+
+.agent-rail,
+.side-panel {
+  min-width: 0;
+}
+
+.workspace-panel {
+  min-width: 0;
+  width: 100%;
+}
+
+/* Teleported dialogs live directly under body and always beat page chrome. */
+.agent-modal-backdrop {
+  position: fixed !important;
+  z-index: 2147483000 !important;
+  inset: 0 !important;
+  width: 100vw;
+  min-height: 100dvh;
+  padding: 16px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  isolation: isolate;
+  place-items: center;
+}
+
+.agent-modal-backdrop::before {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  background: rgba(2, 5, 12, 0.8);
+  backdrop-filter: blur(16px);
+}
+
+.agent-modal,
+.n8n-artifact-modal {
+  position: relative;
+  z-index: 1;
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+}
+
+.n8n-modal-backdrop {
+  z-index: 2147483100 !important;
+  background: transparent;
+}
+
+@media (min-width: 1700px) {
+  .console-shell {
+    padding-inline: 18px;
+  }
+
+  .console-grid {
+    grid-template-columns: 190px minmax(0, 1fr) 390px;
+    gap: 18px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .console-grid {
+    grid-template-columns: 135px minmax(0, 1fr) 300px;
+    gap: 12px;
+  }
+}
+
+@media (max-width: 980px) {
+  .console-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-rail,
+  .side-panel {
+    position: static;
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .console-shell {
+    padding-inline: 10px;
+  }
+
+  .agent-modal-backdrop {
+    padding: 8px;
+    place-items: start center;
+  }
+
+  .agent-modal,
+  .n8n-artifact-modal {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    border-radius: 18px;
+  }
+}
+</style>
+
+
+<style scoped>
+/* ---------- Final three-column alignment correction ---------- */
+
+.console-grid {
+  align-items: start !important;
+}
+
+/* The center column is only a grid column now, not another visual card. */
+.workspace-column {
+  min-width: 0;
+  width: 100%;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
+  align-self: start !important;
+}
+
+/* All three columns share the exact same natural top edge. */
+.agent-rail,
+.workspace-column,
+.side-panel {
+  align-self: start !important;
+  margin-top: 0 !important;
+  transform: none !important;
+}
+
+.agent-rail,
+.side-panel {
+  top: 60px;
+}
+
+/* The actual center card owns its own visual surface. */
+.workspace-column > .result-stage,
+.workspace-column > .input-stage,
+.workspace-column > .clarify-stage,
+.workspace-column > .unified-loading-stage,
+.workspace-column > .error-panel,
+.workspace-column > .out-of-scope-stage {
+  width: 100%;
+  margin: 0;
+}
+
+@media (max-width: 980px) {
+  .workspace-column {
+    order: 2;
+  }
+
+  .agent-rail,
+  .side-panel {
+    position: static;
+    top: auto;
+  }
+}
+</style>
+
+
+<style scoped>
+/* ---------- Unified top alignment + command-station agent tiles ---------- */
+
+/*
+  The side columns previously remained sticky with independent top offsets.
+  Keeping them in normal grid flow guarantees that all three columns begin on
+  the exact same row. The panel itself still owns its internal scrolling.
+*/
+.console-grid {
+  align-items: start !important;
+  padding-top: 0 !important;
+}
+
+.console-grid > .agent-rail,
+.console-grid > .workspace-column,
+.console-grid > .side-panel {
+  align-self: start !important;
+  margin: 0 !important;
+  inset-block-start: auto !important;
+  top: auto !important;
+  translate: none !important;
+  transform: none !important;
+}
+
+.console-grid > .agent-rail,
+.console-grid > .side-panel {
+  position: relative !important;
+}
+
+.workspace-column,
+.workspace-column > :first-child,
+.side-panel,
+.agent-rail {
+  margin-top: 0 !important;
+}
+
+/* Two-up spacecraft-style agent console. */
+.agent-command-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-command-tile {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 118px;
+  padding: 12px;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(145, 166, 255, 0.16);
+  border-radius: 15px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
+    rgba(8, 13, 24, 0.92);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 10px 24px rgba(0, 0, 0, 0.16);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+}
+
+.agent-command-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(120deg, transparent 20%, rgba(255, 255, 255, 0.09), transparent 72%);
+  transform: translateX(-110%);
+}
+
+.agent-command-tile:hover,
+.agent-command-tile:focus-visible {
+  z-index: 2;
+  transform: translateY(-2px);
+  border-color: rgba(102, 227, 255, 0.46);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 14px 34px rgba(0, 0, 0, 0.28),
+    0 0 24px rgba(102, 227, 255, 0.08);
+  outline: none;
+}
+
+.agent-tile-topline,
+.agent-tile-footer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-tile-status {
+  color: #8290bc;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.agent-tile-chevron {
+  flex: 0 0 auto;
+  color: #7181b4;
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.agent-command-tile:hover .agent-tile-chevron,
+.agent-command-tile:focus-visible .agent-tile-chevron {
+  color: #9decff;
+  transform: translateX(2px);
+}
+
+.agent-tile-name {
+  position: relative;
+  z-index: 1;
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: #f0f4ff;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.25;
+  white-space: normal;
+  text-overflow: initial;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-tile-footer {
+  align-items: flex-end;
+}
+
+.agent-tile-footer .agent-provider-pill {
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: 7px;
+  overflow: hidden;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tile-provider {
+  min-width: 0;
+  overflow: hidden;
+  color: #7f8db9;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Whole-tile state lighting replaces the small status orb. */
+.agent-command-tile.agent-active {
+  border-color: rgba(102, 227, 255, 0.72);
+  background:
+    radial-gradient(circle at 85% 12%, rgba(102, 227, 255, 0.2), transparent 54%),
+    linear-gradient(145deg, rgba(102, 227, 255, 0.12), rgba(9, 24, 36, 0.88));
+  box-shadow:
+    inset 0 0 0 1px rgba(102, 227, 255, 0.08),
+    0 0 24px rgba(102, 227, 255, 0.18);
+  animation: agentTileLive 1.45s ease-in-out infinite;
+}
+
+.agent-command-tile.agent-active::before {
+  opacity: 1;
+  animation: agentTileScan 1.8s ease-in-out infinite;
+}
+
+.agent-command-tile.agent-tone-ai.agent-done {
+  border-color: rgba(67, 224, 166, 0.48);
+  background:
+    radial-gradient(circle at 85% 10%, rgba(67, 224, 166, 0.14), transparent 52%),
+    rgba(22, 63, 57, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(67, 224, 166, 0.045);
+}
+
+.agent-command-tile.agent-tone-fallback.agent-done,
+.agent-command-tile.agent-skipped {
+  border-color: rgba(255, 209, 102, 0.44);
+  background:
+    radial-gradient(circle at 85% 10%, rgba(255, 209, 102, 0.13), transparent 52%),
+    rgba(63, 50, 22, 0.3);
+}
+
+.agent-command-tile.agent-tone-deterministic.agent-done {
+  border-color: rgba(102, 227, 255, 0.4);
+  background:
+    radial-gradient(circle at 85% 10%, rgba(102, 227, 255, 0.12), transparent 52%),
+    rgba(19, 48, 66, 0.34);
+}
+
+.agent-command-tile.agent-tone-failed,
+.agent-command-tile.agent-needs_detail {
+  border-color: rgba(255, 107, 107, 0.52);
+  background:
+    radial-gradient(circle at 85% 10%, rgba(255, 107, 107, 0.14), transparent 52%),
+    rgba(68, 25, 32, 0.34);
+}
+
+.agent-command-tile.agent-tone-skipped,
+.agent-command-tile.agent-idle {
+  opacity: 0.62;
+}
+
+@keyframes agentTileLive {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 1px rgba(102, 227, 255, 0.08),
+      0 0 16px rgba(102, 227, 255, 0.12);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 1px rgba(102, 227, 255, 0.17),
+      0 0 32px rgba(102, 227, 255, 0.3);
+  }
+}
+
+@keyframes agentTileScan {
+  0% { transform: translateX(-120%); }
+  55%, 100% { transform: translateX(120%); }
+}
+
+/* More compact, near-square n8n-like workflow nodes. */
+.flow-map {
+  --connector-gap: 34px;
+}
+
+.flow-node {
+  flex-basis: 178px;
+  width: 178px;
+  min-width: 178px;
+  max-width: 178px;
+}
+
+.flow-node .node-body {
+  min-height: 132px;
+  padding: 13px;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  row-gap: 14px;
+  border-radius: 14px;
+}
+
+.flow-node .node-title {
+  align-self: end;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+@media (max-width: 1320px) {
+  .agent-command-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-command-tile {
+    min-height: 94px;
+  }
+}
+
+@media (max-width: 980px) {
+  .agent-command-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .agent-command-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-node {
+    flex-basis: 156px;
+    width: 156px;
+    min-width: 156px;
+    max-width: 156px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-command-tile.agent-active,
+  .agent-command-tile.agent-active::before {
+    animation: none;
+  }
+}
+</style>
+
+<style scoped>
+/* ---------- Blueprint nodes, initial input surface, and agent-thinking state ---------- */
+
+.input-stage-card,
+.agent-thinking-panel {
+  width: 100%;
+  border: 1px solid rgba(145, 166, 255, 0.16);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+    rgba(8, 12, 22, 0.82);
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.24);
+}
+
+.input-stage-card {
+  min-height: calc(100vh - 168px);
+  padding: 22px;
+}
+
+.agent-thinking-panel {
+  display: grid;
+  gap: 18px;
+  min-height: calc(100vh - 168px);
+  padding: 24px;
+  overflow: hidden;
+  position: relative;
+}
+
+.agent-thinking-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 80% 0%, rgba(102, 227, 255, 0.12), transparent 34rem);
+}
+
+.agent-thinking-header,
+.agent-thinking-current,
+.agent-thinking-feed,
+.agent-thinking-panel > .unified-loading-note {
+  position: relative;
+  z-index: 1;
+}
+
+.agent-thinking-header {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.agent-thinking-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 1px solid rgba(102, 227, 255, 0.36);
+  border-radius: 16px;
+  background: rgba(102, 227, 255, 0.09);
+  color: #9decff;
+}
+
+.agent-thinking-pulse {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #43e0a6;
+  box-shadow: 0 0 0 5px rgba(67, 224, 166, 0.09), 0 0 18px rgba(67, 224, 166, 0.65);
+  animation: agentPulse 1.25s ease-in-out infinite;
+}
+
+.agent-thinking-heading h1 {
+  margin: 0;
+  color: #f4f7fb;
+  font-size: clamp(1.45rem, 2vw, 2rem);
+  letter-spacing: -0.025em;
+}
+
+.agent-thinking-heading p {
+  max-width: 720px;
+  margin: 8px 0 0;
+  color: #9ba9d8;
+  line-height: 1.65;
+}
+
+.agent-thinking-current {
+  padding: 16px 18px;
+  border: 1px solid rgba(102, 227, 255, 0.24);
+  border-radius: 16px;
+  background: rgba(102, 227, 255, 0.055);
+}
+
+.agent-thinking-current-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #7d8cff;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.thinking-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #66e3ff;
+  box-shadow: 0 0 16px rgba(102, 227, 255, 0.75);
+  animation: agentPulse 1.2s ease-in-out infinite;
+}
+
+.agent-thinking-current strong {
+  display: block;
+  margin-top: 7px;
+  color: #eef3ff;
+  font-size: 1.02rem;
+}
+
+.agent-thinking-current p {
+  margin: 5px 0 0;
+  color: #9ba9d8;
+  font-size: 0.88rem;
+}
+
+.agent-thinking-feed {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-thinking-event {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 11px;
+  min-height: 78px;
+  padding: 13px;
+  border: 1px solid rgba(145, 166, 255, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.thinking-event-index {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: rgba(125, 140, 255, 0.12);
+  color: #aebaff;
+  font-family: "Roboto Mono", monospace;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.agent-thinking-event strong,
+.agent-thinking-event span:last-child { display: block; }
+.agent-thinking-event strong { color: #eef3ff; font-size: 12px; }
+.agent-thinking-event span:last-child { margin-top: 5px; color: #8f9dcc; font-size: 11px; line-height: 1.4; }
+.agent-thinking-event.state-running { border-color: rgba(102, 227, 255, 0.38); background: rgba(102, 227, 255, 0.055); }
+.agent-thinking-event.state-ai_success { border-color: rgba(67, 224, 166, 0.3); }
+.agent-thinking-event.state-fallback_success { border-color: rgba(255, 209, 102, 0.32); }
+.agent-thinking-event.state-failed { border-color: rgba(255, 107, 107, 0.36); }
+
+.blueprint-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.blueprint-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-width: 210px;
+  padding: 10px 12px;
+  border: 1px solid rgba(145, 166, 255, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.blueprint-status-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+}
+
+.blueprint-status-badge span:not(.blueprint-status-icon),
+.blueprint-status-badge strong { display: block; }
+.blueprint-status-badge span:not(.blueprint-status-icon) { color: #8390b9; font-size: 9px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; }
+.blueprint-status-badge strong { margin-top: 3px; color: #edf2ff; font-size: 11px; }
+.blueprint-status-badge.tone-success { border-color: rgba(67, 224, 166, 0.28); }
+.blueprint-status-badge.tone-success .blueprint-status-icon { background: rgba(67, 224, 166, 0.12); color: #43e0a6; }
+.blueprint-status-badge.tone-warning { border-color: rgba(255, 209, 102, 0.3); }
+.blueprint-status-badge.tone-warning .blueprint-status-icon { background: rgba(255, 209, 102, 0.11); color: #ffd166; }
+.blueprint-status-badge.tone-danger { border-color: rgba(255, 107, 107, 0.3); }
+.blueprint-status-badge.tone-danger .blueprint-status-icon { background: rgba(255, 107, 107, 0.11); color: #ff7e7e; }
+
+.flow-map {
+  --connector-gap: 30px;
+}
+
+.flow-node {
+  flex-basis: 168px !important;
+  width: 168px !important;
+  min-width: 168px !important;
+  max-width: 168px !important;
+}
+
+.flow-node .node-body {
+  display: grid;
+  grid-template-columns: 1fr 18px;
+  grid-template-rows: 28px minmax(56px, 1fr);
+  align-items: stretch;
+  min-height: 132px;
+}
+
+.flow-node .node-index {
+  display: grid !important;
+  place-items: center !important;
+  align-self: start;
+  justify-self: start;
+  padding: 0 !important;
+  line-height: 1 !important;
+  text-align: center !important;
+}
+
+.flow-node .node-title {
+  align-self: center !important;
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  line-height: 1.35;
+  text-align: left;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.flow-node:not(:last-child)::after {
+  width: 52px !important;
+  opacity: 0.95;
+  background: linear-gradient(90deg, transparent, rgba(102, 227, 255, 0.25), #66e3ff, rgba(67, 224, 166, 0.8), transparent) !important;
+  background-size: 220% 100% !important;
+  animation: connectorEnergy 2.2s linear infinite !important;
+  filter: drop-shadow(0 0 5px rgba(102, 227, 255, 0.85));
+}
+
+.flow-node:not(:last-child)::before {
+  border-color: rgba(102, 227, 255, 0.34) !important;
+  box-shadow: 0 0 12px rgba(102, 227, 255, 0.22);
+}
+
+@keyframes connectorEnergy {
+  from { background-position: 220% 0; }
+  to { background-position: -20% 0; }
+}
+
+@media (max-width: 900px) {
+  .agent-thinking-feed { grid-template-columns: 1fr; }
+  .blueprint-heading { flex-direction: column; }
+  .blueprint-status-badge { min-width: 0; width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-thinking-pulse,
+  .thinking-live-dot,
+  .flow-node:not(:last-child)::after { animation: none !important; }
+}
+</style>
+
+<style scoped>
+/* ---------- Focused live compiler activity ---------- */
+.live-activity-panel {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.28fr);
+  align-items: center;
+  gap: clamp(28px, 5vw, 72px);
+  width: 100%;
+  min-height: calc(100vh - 168px);
+  padding: clamp(32px, 5vw, 72px);
+  overflow: hidden;
+  border: 1px solid rgba(145, 166, 255, 0.16);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 24% 48%, rgba(102, 227, 255, 0.12), transparent 24rem),
+    radial-gradient(circle at 84% 18%, rgba(125, 140, 255, 0.1), transparent 28rem),
+    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.022)),
+    rgba(8, 12, 22, 0.84);
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.24);
+}
+
+.live-activity-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(102, 227, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(102, 227, 255, 0.035) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(circle at 28% 50%, #000 0%, transparent 68%);
+}
+
+.live-activity-visual,
+.live-activity-copy {
+  position: relative;
+  z-index: 1;
+}
+
+.live-activity-visual {
+  display: grid;
+  place-items: center;
+  width: min(27vw, 280px);
+  aspect-ratio: 1;
+  justify-self: center;
+}
+
+.activity-core {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  border: 1px solid rgba(102, 227, 255, 0.52);
+  border-radius: 28px;
+  background: linear-gradient(145deg, rgba(102, 227, 255, 0.15), rgba(125, 140, 255, 0.1));
+  color: #b8f3ff;
+  box-shadow:
+    0 0 0 12px rgba(102, 227, 255, 0.035),
+    0 0 48px rgba(102, 227, 255, 0.2),
+    inset 0 1px 0 rgba(255,255,255,0.1);
+  animation: activityCoreFloat 2.8s ease-in-out infinite;
+}
+
+.activity-core-glow {
+  position: absolute;
+  inset: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(102, 227, 255, 0.32);
+  animation: activityCorePulse 1.8s ease-in-out infinite;
+}
+
+.activity-orbit {
+  position: absolute;
+  inset: 12%;
+  border: 1px solid rgba(102, 227, 255, 0.16);
+  border-radius: 50%;
+}
+
+.activity-orbit::after {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #66e3ff;
+  box-shadow: 0 0 18px rgba(102, 227, 255, 0.88);
+}
+
+.orbit-one { animation: activityOrbit 4.2s linear infinite; }
+.orbit-two { inset: 24%; animation: activityOrbitReverse 3.2s linear infinite; border-color: rgba(67, 224, 166, 0.18); }
+.orbit-two::after { background: #43e0a6; box-shadow: 0 0 18px rgba(67, 224, 166, 0.82); }
+.orbit-three { inset: 5%; animation: activityOrbit 6.5s linear infinite; border-style: dashed; opacity: 0.6; }
+.orbit-three::after { width: 6px; height: 6px; top: -3px; background: #9b8cff; box-shadow: 0 0 16px rgba(155, 140, 255, 0.85); }
+
+.activity-scan {
+  position: absolute;
+  width: 76%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(102, 227, 255, 0.9), transparent);
+  filter: drop-shadow(0 0 8px rgba(102, 227, 255, 0.7));
+  animation: activityScan 2.4s ease-in-out infinite;
+}
+
+.live-activity-copy {
+  max-width: 720px;
+}
+
+.live-activity-topline {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #9decff;
+  font-size: 0.76rem;
+  font-weight: 850;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.live-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #43e0a6;
+  box-shadow: 0 0 0 5px rgba(67, 224, 166, 0.08), 0 0 16px rgba(67, 224, 166, 0.72);
+  animation: agentPulse 1.25s ease-in-out infinite;
+}
+
+.live-activity-message {
+  min-height: 126px;
+  padding-top: 18px;
+}
+
+.live-activity-message h1 {
+  margin: 0;
+  color: #f4f7fb;
+  font-size: clamp(1.65rem, 3vw, 2.65rem);
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+}
+
+.live-activity-message p {
+  max-width: 650px;
+  margin: 14px 0 0;
+  color: #9ba9d8;
+  font-size: 0.98rem;
+  line-height: 1.7;
+}
+
+.live-activity-progress {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) auto;
+  align-items: center;
+  gap: 14px;
+  color: #7f8db9;
+  font-size: 0.78rem;
+}
+
+.activity-progress-track {
+  position: relative;
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(145, 166, 255, 0.13);
+}
+
+.activity-progress-runner {
+  position: absolute;
+  inset: 0 auto 0 -32%;
+  width: 32%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, #66e3ff, #43e0a6, transparent);
+  box-shadow: 0 0 14px rgba(102, 227, 255, 0.55);
+  animation: activityProgress 1.8s ease-in-out infinite;
+}
+
+.live-activity-previous {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px;
+  color: #86e9c2;
+  font-size: 0.8rem;
+}
+
+.live-activity-previous.is-muted { color: #7f8db9; }
+
+.activity-text-enter-active,
+.activity-text-leave-active {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.activity-text-enter-from { opacity: 0; transform: translateY(8px); }
+.activity-text-leave-to { opacity: 0; transform: translateY(-6px); }
+
+@keyframes activityCoreFloat {
+  0%, 100% { transform: translateY(-3px); }
+  50% { transform: translateY(5px); }
+}
+@keyframes activityCorePulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+@keyframes activityOrbit { to { transform: rotate(360deg); } }
+@keyframes activityOrbitReverse { to { transform: rotate(-360deg); } }
+@keyframes activityScan {
+  0%, 100% { transform: translateY(-72px); opacity: 0; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { transform: translateY(72px); opacity: 0; }
+}
+@keyframes activityProgress {
+  0% { left: -32%; }
+  100% { left: 100%; }
+}
+
+@media (max-width: 900px) {
+  .live-activity-panel {
+    grid-template-columns: 1fr;
+    align-content: center;
+    text-align: center;
+  }
+  .live-activity-visual { width: min(58vw, 230px); }
+  .live-activity-copy { justify-self: center; }
+  .live-activity-topline,
+  .live-activity-previous { justify-content: center; }
+  .live-activity-progress { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-core,
+  .activity-core-glow,
+  .activity-orbit,
+  .activity-scan,
+  .activity-progress-runner,
+  .live-status-dot {
+    animation: none !important;
+  }
+}
+</style>
+
+<style scoped>
+/* ---------- Loading alignment and initial-surface color correction ---------- */
+
+/*
+  The legacy loader rule constrained the center state to 760px and added 28px
+  around it. That padding made the loading card begin lower than both side
+  columns and also forced unnecessary scrolling. Every center state now starts
+  directly on the grid's shared top line.
+*/
+.workspace-column > .unified-loading-stage {
+  display: block !important;
+  align-self: start !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.workspace-column > .unified-loading-stage > .live-activity-panel {
+  width: 100% !important;
+  margin: 0 !important;
+  align-self: start !important;
+}
+
+/* Keep the prompt-entry state on the same grid line with no hidden offset. */
+.workspace-column > .input-stage {
+  align-self: start !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/*
+  Use exactly the same surface recipe as the left and right application panels
+  so the initial prompt card looks native to this page rather than like a
+  separate component.
+*/
+.input-stage-card {
+  border-color: rgba(145, 166, 255, 0.16) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+    rgba(8, 12, 22, 0.82) !important;
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.24) !important;
+}
+
+/* Remove the slightly brighter nested surface that made the input state feel
+   disconnected from the surrounding console panels. */
+.input-stage-card .process-input {
+  background:
+    linear-gradient(180deg, rgba(10, 15, 28, 0.9), rgba(7, 11, 20, 0.94)) !important;
+  border-color: rgba(145, 166, 255, 0.18) !important;
+}
+
+/* Explicit shared top baseline for all desktop columns and their first visual
+   child. This protects alignment from older scoped rules above this block. */
+@media (min-width: 981px) {
+  .console-grid {
+    align-items: start !important;
+  }
+
+  .console-grid > .agent-rail,
+  .console-grid > .workspace-column,
+  .console-grid > .side-panel,
+  .workspace-column > :first-child {
+    align-self: start !important;
+    margin-top: 0 !important;
+    top: auto !important;
+    transform: none !important;
+  }
+}
+</style>
+
+<style scoped>
+/* ---------- Agent identity, shared hover language, and node energy ---------- */
+.agent-tile-topline {
+  display: grid !important;
+  grid-template-columns: 28px minmax(0, 1fr) 17px;
+}
+
+.agent-tile-icon {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid rgba(145, 166, 255, 0.2);
+  border-radius: 9px;
+  background: rgba(125, 140, 255, 0.08);
+  color: #aebaff;
+}
+.agent-tile-icon.tone-cyan { color: #66e3ff; background: rgba(102,227,255,.1); border-color: rgba(102,227,255,.28); }
+.agent-tile-icon.tone-blue { color: #8fa2ff; background: rgba(125,140,255,.12); border-color: rgba(125,140,255,.3); }
+.agent-tile-icon.tone-violet { color: #b397ff; background: rgba(179,151,255,.11); border-color: rgba(179,151,255,.28); }
+.agent-tile-icon.tone-green { color: #43e0a6; background: rgba(67,224,166,.1); border-color: rgba(67,224,166,.28); }
+.agent-tile-icon.tone-amber { color: #ffd166; background: rgba(255,209,102,.1); border-color: rgba(255,209,102,.3); }
+.agent-tile-icon.tone-red { color: #ff7e7e; background: rgba(255,107,107,.1); border-color: rgba(255,107,107,.3); }
+
+.agent-command-tile:hover,
+.agent-command-tile:focus-visible {
+  border-color: rgba(102, 227, 255, 0.82) !important;
+  background:
+    radial-gradient(circle at 80% 10%, rgba(102, 227, 255, 0.18), transparent 54%),
+    linear-gradient(145deg, rgba(102, 227, 255, 0.1), rgba(8, 13, 24, 0.96)) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(102, 227, 255, 0.13),
+    0 16px 38px rgba(0, 0, 0, 0.32),
+    0 0 28px rgba(102, 227, 255, 0.2) !important;
+}
+.agent-command-tile:hover::before,
+.agent-command-tile:focus-visible::before {
+  opacity: 1;
+  animation: agentTileHoverScan 900ms ease-out both;
+}
+@keyframes agentTileHoverScan {
+  from { transform: translateX(-115%); }
+  to { transform: translateX(115%); }
+}
+
+.activity-core.tone-cyan { color: #66e3ff; border-color: rgba(102,227,255,.5); }
+.activity-core.tone-blue { color: #91a3ff; border-color: rgba(125,140,255,.5); }
+.activity-core.tone-violet { color: #b397ff; border-color: rgba(179,151,255,.5); }
+.activity-core.tone-green { color: #43e0a6; border-color: rgba(67,224,166,.5); }
+.activity-core.tone-amber { color: #ffd166; border-color: rgba(255,209,102,.5); }
+.activity-core.tone-red { color: #ff7e7e; border-color: rgba(255,107,107,.5); }
+.live-agent-activity {
+  display: block;
+  margin-top: 10px;
+  color: #91a0ca;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.flow-node {
+  overflow: visible !important;
+}
+.flow-node .node-body {
+  position: relative;
+  overflow: hidden;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease, transform 180ms ease;
+}
+.flow-node .node-body::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: -35% auto -35% -55%;
+  width: 42%;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent, rgba(102,227,255,.2), rgba(255,255,255,.22), transparent);
+  transform: skewX(-16deg);
+  animation: nodeEnergySweep 6.4s ease-in-out infinite;
+  animation-delay: calc(var(--flow-index) * 320ms);
+}
+.flow-node .node-body > * { position: relative; z-index: 1; }
+.flow-node {
+  animation: nodeEnergyGlow 6.4s ease-in-out infinite;
+  animation-delay: calc(var(--flow-index) * 320ms);
+}
+@keyframes nodeEnergySweep {
+  0%, 54%, 100% { left: -55%; opacity: 0; }
+  58% { opacity: .9; }
+  74% { left: 118%; opacity: .65; }
+  78% { opacity: 0; }
+}
+@keyframes nodeEnergyGlow {
+  0%, 54%, 82%, 100% { filter: none; }
+  64% { filter: drop-shadow(0 0 12px rgba(102,227,255,.42)); }
+}
+.flow-node:hover .node-body,
+.flow-node:focus-visible .node-body {
+  transform: translateY(-2px);
+  border-color: rgba(102,227,255,.88) !important;
+  background:
+    radial-gradient(circle at 82% 10%, rgba(102,227,255,.2), transparent 52%),
+    rgba(13, 25, 39, .98) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(102,227,255,.15),
+    0 14px 34px rgba(0,0,0,.3),
+    0 0 28px rgba(102,227,255,.22) !important;
+}
+.flow-node:hover .node-body::before,
+.flow-node:focus-visible .node-body::before {
+  animation: nodeHoverSweep 850ms ease-out both !important;
+  opacity: 1;
+}
+@keyframes nodeHoverSweep {
+  from { left: -55%; opacity: 0; }
+  25% { opacity: 1; }
+  to { left: 118%; opacity: 0; }
+}
+
+/* The artifact card already explains and launches generation; remove spacing once the repeated heading is gone. */
+.handoff-card { padding-top: 0 !important; }
+.handoff-card > .n8n-artifact-launcher:first-child { margin-top: 0 !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-node,
+  .flow-node .node-body::before,
+  .agent-command-tile::before { animation: none !important; }
+}
+
+
+/* ---------- Synchronized blueprint flow refinement ----------
+   Keep the sequential whole-card pulse and connector movement, but remove the
+   autonomous internal light ray. The ray is reserved for direct hover/focus. */
+.flow-node .node-body::before {
+  opacity: 0 !important;
+  animation: none !important;
+}
+
+.flow-node:hover .node-body::before,
+.flow-node:focus-visible .node-body::before {
+  opacity: 1 !important;
+  animation: nodeHoverSweep 850ms ease-out both !important;
+}
+
+/* A single ordered pulse travels across the node cards. */
+.flow-node {
+  animation: synchronizedNodePulse 6.2s ease-in-out infinite !important;
+  animation-delay: calc(var(--flow-index) * 420ms) !important;
+}
+
+@keyframes synchronizedNodePulse {
+  0%, 50%, 76%, 100% {
+    filter: none;
+  }
+  58% {
+    filter:
+      drop-shadow(0 0 7px rgba(102, 227, 255, 0.28))
+      drop-shadow(0 0 15px rgba(102, 227, 255, 0.16));
+  }
+  64% {
+    filter:
+      drop-shadow(0 0 11px rgba(102, 227, 255, 0.5))
+      drop-shadow(0 0 24px rgba(67, 224, 166, 0.22));
+  }
+  70% {
+    filter: drop-shadow(0 0 7px rgba(102, 227, 255, 0.24));
+  }
+}
+
+/* Restore and emphasize the directional energy travelling between nodes. */
+.flow-node:not(:last-child)::after {
+  opacity: 1 !important;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(102, 227, 255, 0.1) 22%,
+      rgba(102, 227, 255, 0.96) 46%,
+      rgba(67, 224, 166, 0.92) 54%,
+      rgba(102, 227, 255, 0.14) 76%,
+      transparent 100%
+    ) !important;
+  background-size: 240% 100% !important;
+  animation: synchronizedConnectorFlow 2.35s linear infinite !important;
+  filter: drop-shadow(0 0 6px rgba(102, 227, 255, 0.72));
+}
+
+@keyframes synchronizedConnectorFlow {
+  from { background-position: 220% 0; }
+  to { background-position: -20% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-node,
+  .flow-node:not(:last-child)::after {
+    animation: none !important;
+  }
+}
+
+</style>
+
+<style scoped>
+/* ---------- Final input-surface and n8n cable corrections ---------- */
+
+/* Match the initial center card to the exact application-panel surface. */
+.input-stage-card {
+  border: 1px solid rgba(145, 166, 255, 0.16) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+    rgba(8, 12, 22, 0.82) !important;
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.24) !important;
+}
+
+/* Keep the field darker, but inside the same blue-black palette. */
+.input-stage-card .process-input {
+  background:
+    linear-gradient(180deg, rgba(7, 11, 21, 0.96), rgba(6, 10, 19, 0.98)) !important;
+  border-color: rgba(145, 166, 255, 0.18) !important;
+}
+
+/* Stable cable underlay between cards. */
+.flow-node:not(:last-child)::before {
+  content: "" !important;
+  position: absolute !important;
+  z-index: 0 !important;
+  top: 50% !important;
+  left: 100% !important;
+  width: var(--connector-gap) !important;
+  height: 3px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: rgba(102, 227, 255, 0.2) !important;
+  box-shadow:
+    0 0 0 1px rgba(102, 227, 255, 0.05),
+    0 0 10px rgba(102, 227, 255, 0.2) !important;
+  transform: translateY(-50%) !important;
+}
+
+/* Visible n8n-style packet travelling from one node to the next. */
+.flow-node:not(:last-child)::after {
+  content: "" !important;
+  position: absolute !important;
+  z-index: 2 !important;
+  top: 50% !important;
+  left: 100% !important;
+  width: var(--connector-gap) !important;
+  height: 4px !important;
+  border-radius: 999px !important;
+  opacity: 1 !important;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent 30%,
+      rgba(102, 227, 255, 0.35) 38%,
+      #b9f6ff 47%,
+      #66e3ff 52%,
+      #43e0a6 58%,
+      rgba(67, 224, 166, 0.2) 68%,
+      transparent 78%,
+      transparent 100%
+    ) !important;
+  background-size: 300% 100% !important;
+  filter:
+    drop-shadow(0 0 4px rgba(185, 246, 255, 0.95))
+    drop-shadow(0 0 9px rgba(102, 227, 255, 0.7)) !important;
+  transform: translateY(-50%) !important;
+  animation: n8nCablePacket 1.65s linear infinite !important;
+  pointer-events: none !important;
+}
+
+@keyframes n8nCablePacket {
+  from { background-position: 150% 0; }
+  to { background-position: -150% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-node:not(:last-child)::after {
+    animation: none !important;
+    background-position: 50% 0 !important;
+  }
+}
+</style>
+
+
+<style scoped>
+/* ---------- Smooth blueprint flow + unified header controls ---------- */
+
+/* Use one continuous, overlapping wave instead of stepped node flashes. */
+.flow-node {
+  animation: smoothNodeFlow 3.4s cubic-bezier(.45, 0, .55, 1) infinite !important;
+  animation-delay: calc(var(--flow-index) * 115ms) !important;
+  will-change: filter, transform;
+}
+
+@keyframes smoothNodeFlow {
+  0%, 100% {
+    filter: none;
+    transform: translateY(0);
+  }
+  28% {
+    filter: drop-shadow(0 0 4px rgba(102, 227, 255, .12));
+  }
+  42% {
+    filter:
+      drop-shadow(0 0 8px rgba(102, 227, 255, .34))
+      drop-shadow(0 0 16px rgba(67, 224, 166, .12));
+    transform: translateY(-1px);
+  }
+  58% {
+    filter: drop-shadow(0 0 5px rgba(102, 227, 255, .18));
+    transform: translateY(0);
+  }
+}
+
+/* Keep the connector constantly alive with a fast, soft n8n-style packet. */
+.flow-node:not(:last-child)::after {
+  animation: smoothCableFlow 1.05s linear infinite !important;
+  background-size: 360% 100% !important;
+  opacity: .92 !important;
+  filter:
+    drop-shadow(0 0 3px rgba(185, 246, 255, .78))
+    drop-shadow(0 0 7px rgba(102, 227, 255, .5)) !important;
+}
+
+@keyframes smoothCableFlow {
+  from { background-position: 165% 0; }
+  to { background-position: -165% 0; }
+}
+
+/* Keep the internal ray only for intentional hover/focus. */
+.flow-node .node-body::before {
+  animation: none !important;
+  opacity: 0 !important;
+}
+.flow-node:hover .node-body::before,
+.flow-node:focus-visible .node-body::before {
+  animation: nodeHoverSweep 700ms ease-out both !important;
+  opacity: 1 !important;
+}
+
+/* One visual system for all top-right controls. */
+.app-header-right {
+  gap: 8px !important;
+}
+
+.app-header .studio-link,
+.app-header .status-pill,
+.app-header .mode-menu-trigger {
+  height: 36px !important;
+  min-height: 36px !important;
+  border: 1px solid #263247 !important;
+  border-radius: 8px !important;
+  background: #131c2b !important;
+  box-shadow: none !important;
+  color: #f4f7fb !important;
+}
+
+.app-header .studio-link {
+  padding: 0 11px !important;
+  font-size: .84rem !important;
+}
+
+.app-header .status-pill {
+  min-width: auto !important;
+  padding: 0 11px !important;
+  justify-content: center !important;
+  font-size: .82rem !important;
+}
+
+.app-header .mode-menu-wrap {
+  width: auto !important;
+  min-width: 116px;
+}
+
+.app-header .mode-menu-trigger {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  width: 100% !important;
+  padding: 0 10px !important;
+  text-align: left !important;
+}
+
+.mode-menu-label {
+  color: #7f8ba1;
+  font-size: .72rem;
+  font-weight: 700;
+}
+
+.app-header .mode-menu-trigger strong {
+  margin: 0 !important;
+  color: #f4f7fb !important;
+  font-size: .84rem !important;
+  line-height: 1 !important;
+}
+
+.app-header .mode-menu-trigger small,
+.app-header .mode-menu-kicker {
+  display: none !important;
+}
+
+.app-header .mode-chevron {
+  margin-left: auto;
+  color: #7f8ba1 !important;
+  font-size: 14px !important;
+}
+
+.app-header .studio-link:hover,
+.app-header .mode-menu-trigger:hover,
+.app-header .mode-menu-trigger.open {
+  border-color: #3a4963 !important;
+  background: #182235 !important;
+}
+
+/* Status keeps its semantic color without becoming a mismatched pill. */
+.app-header .status-pill.tone-success { color: #6ce7b2 !important; }
+.app-header .status-pill.tone-warning { color: #ffd166 !important; }
+.app-header .status-pill.tone-danger { color: #ff8b96 !important; }
+.app-header .status-pill.tone-active { color: #77e8ff !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-node,
+  .flow-node:not(:last-child)::after {
+    animation: none !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .mode-menu-label { display: none; }
+  .app-header .mode-menu-wrap { min-width: 82px; }
+}
+</style>
+
+<style scoped>
+/* ---------- Exact shared panel surface + compiler-matched n8n modal ---------- */
+
+/* The initial center state now uses the literal side-panel surface values. */
+.input-stage-card {
+  border: 1px solid #263247 !important;
+  background: #0f1623 !important;
+  box-shadow: none !important;
+}
+
+.input-stage-card::before,
+.input-stage-card::after {
+  display: none !important;
+}
+
+.input-stage-card .process-input {
+  border-color: #263247 !important;
+  background: #090d16 !important;
+}
+
+.input-stage-card .process-input:focus {
+  border-color: rgba(102, 227, 255, 0.72) !important;
+  box-shadow: 0 0 0 3px rgba(102, 227, 255, 0.1) !important;
+}
+
+/* Make the artifact dialog use the same shell as the compiler dialogs. */
+.n8n-modal-backdrop {
+  background: rgba(2, 5, 12, 0.82) !important;
+  backdrop-filter: blur(14px) !important;
+}
+
+.n8n-artifact-modal {
+  width: min(820px, 100%) !important;
+  border: 1px solid #36445d !important;
+  border-radius: 18px !important;
+  background: linear-gradient(180deg, #141e2e 0%, #0f1623 100%) !important;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(102, 227, 255, 0.05) !important;
+}
+
+.n8n-modal-header,
+.n8n-modal-footer {
+  border-color: #263247 !important;
+  background: rgba(15, 22, 35, 0.92) !important;
+}
+
+.n8n-modal-icon {
+  border: 1px solid rgba(102, 227, 255, 0.24) !important;
+  background: rgba(102, 227, 255, 0.09) !important;
+  color: #66e3ff !important;
+}
+
+.matched-n8n-loading {
+  min-height: 500px;
+  padding: 48px 42px !important;
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 34%, rgba(102, 227, 255, 0.08), transparent 34%),
+    transparent !important;
+}
+
+.n8n-activity-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 132px;
+  height: 132px;
+  margin-bottom: 28px;
+}
+
+.n8n-activity-core {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border: 1px solid rgba(102, 227, 255, 0.52);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255,255,255,.11), transparent 42%),
+    rgba(7, 17, 29, 0.96);
+  color: #66e3ff;
+  box-shadow:
+    inset 0 0 24px rgba(102, 227, 255, 0.08),
+    0 0 26px rgba(102, 227, 255, 0.2);
+  animation: n8nCoreBreathe 2.2s ease-in-out infinite;
+}
+
+.n8n-activity-orbit {
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(145, 166, 255, 0.2);
+  border-radius: 50%;
+}
+
+.n8n-activity-orbit::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #43e0a6;
+  box-shadow: 0 0 16px rgba(67, 224, 166, 0.9);
+}
+
+.n8n-activity-orbit.orbit-one { animation: n8nOrbit 2.1s linear infinite; }
+.n8n-activity-orbit.orbit-two {
+  inset: 20px;
+  border-style: dashed;
+  border-color: rgba(102, 227, 255, 0.18);
+  animation: n8nOrbitReverse 3.1s linear infinite;
+}
+.n8n-activity-orbit.orbit-two::after {
+  width: 6px;
+  height: 6px;
+  background: #8fa2ff;
+  box-shadow: 0 0 14px rgba(143, 162, 255, 0.8);
+}
+
+.n8n-activity-scan {
+  position: absolute;
+  z-index: 3;
+  width: 104px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(102,227,255,.85), transparent);
+  box-shadow: 0 0 12px rgba(102,227,255,.55);
+  animation: n8nScan 1.65s ease-in-out infinite;
+}
+
+.n8n-loading-copy { max-width: 540px; }
+.n8n-loading-copy h3 {
+  margin: 9px 0 0 !important;
+  color: #f4f7fb !important;
+  font-size: 1.55rem !important;
+  line-height: 1.3;
+}
+.n8n-live-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 24px;
+  margin: 16px 0 0 !important;
+  color: #a7b1c2 !important;
+  font-size: .92rem !important;
+}
+.n8n-live-step svg { color: #66e3ff; }
+
+.n8n-loading-track {
+  position: relative;
+  width: min(380px, 82%);
+  height: 4px;
+  margin-top: 28px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #263247;
+}
+.n8n-loading-runner {
+  position: absolute;
+  inset: 0 auto 0 -35%;
+  width: 35%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, #66e3ff, #43e0a6, transparent);
+  box-shadow: 0 0 12px rgba(102,227,255,.55);
+  animation: n8nTrackRun 1.15s linear infinite;
+}
+
+.n8n-loading-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  max-width: 620px;
+  margin-top: 20px;
+}
+.n8n-loading-checklist > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #263247;
+  border-radius: 8px;
+  background: rgba(9, 13, 22, 0.62);
+  padding: 6px 9px;
+  color: #6f7b8e;
+  font-size: .75rem;
+}
+.n8n-loading-checklist > span.active {
+  border-color: rgba(102,227,255,.34);
+  color: #c8f6ff;
+  background: rgba(102,227,255,.08);
+}
+.n8n-loading-checklist > span.complete { color: #73eab5; }
+.n8n-check-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+.matched-safety-note {
+  margin-top: 24px !important;
+  border: 1px solid rgba(67,224,166,.18) !important;
+  border-radius: 10px !important;
+  background: rgba(67,224,166,.055) !important;
+  color: #91a0b5 !important;
+}
+
+@keyframes n8nOrbit { to { transform: rotate(360deg); } }
+@keyframes n8nOrbitReverse { to { transform: rotate(-360deg); } }
+@keyframes n8nCoreBreathe {
+  0%,100% { transform: scale(1); box-shadow: inset 0 0 24px rgba(102,227,255,.08), 0 0 22px rgba(102,227,255,.16); }
+  50% { transform: scale(1.035); box-shadow: inset 0 0 30px rgba(102,227,255,.12), 0 0 34px rgba(102,227,255,.27); }
+}
+@keyframes n8nScan {
+  0%,100% { transform: translateY(-42px); opacity: .15; }
+  50% { transform: translateY(42px); opacity: 1; }
+}
+@keyframes n8nTrackRun { to { left: 105%; } }
+
+@media (max-width: 640px) {
+  .matched-n8n-loading { min-height: 430px; padding: 36px 20px !important; }
+  .n8n-loading-copy h3 { font-size: 1.3rem !important; }
+  .n8n-loading-checklist { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .n8n-activity-core,
+  .n8n-activity-orbit,
+  .n8n-activity-scan,
+  .n8n-loading-runner { animation: none !important; }
+}
+</style>
+
+
+<style scoped>
+/* ---------- Final two-column compiler layout ---------- */
+
+/* The left status rail was redundant with the richer Agents inspector. */
+.console-grid {
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 23vw, 400px) !important;
+  align-items: start !important;
+  gap: 16px !important;
+}
+
+.console-grid > .workspace-column {
+  grid-column: 1 !important;
+  min-width: 0;
+  width: 100%;
+}
+
+.console-grid > .side-panel {
+  grid-column: 2 !important;
+  min-width: 0;
+  width: 100%;
+}
+
+/* Remove any space or sizing left behind by historical three-column rules. */
+.agent-rail {
+  display: none !important;
+}
+
+@media (max-width: 980px) {
+  .console-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .console-grid > .workspace-column,
+  .console-grid > .side-panel {
+    grid-column: 1 !important;
+  }
+
+  .console-grid > .workspace-column {
+    order: 1 !important;
+  }
+
+  .console-grid > .side-panel {
+    order: 2 !important;
   }
 }
 </style>
