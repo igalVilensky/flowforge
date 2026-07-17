@@ -1,1068 +1,894 @@
 <script setup lang="ts">
-useHead({
-  title: "FlowForge | AI Automation Safety Compiler",
-  meta: [
-    {
-      name: "description",
-      content:
-        "FlowForge is a non-executing safety and observability layer for AI automation prototypes.",
-    },
-  ],
-});
+import {
+  ArrowRight,
+  Blocks,
+  Bot,
+  Braces,
+  Check,
+  Compass,
+  FileJson2,
+  Route,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Workflow,
+} from "lucide-vue-next";
 
-const compilerPasses = [
-  {
-    label: "Input",
-    title: "Describe the automation idea",
-    copy: "Start with a rough process, a risky workflow, or a clear internal task.",
-  },
-  {
-    label: "Clarify",
-    title: "Resolve missing details",
-    copy: "FlowForge asks one contextual question at a time when the request is too vague.",
-  },
-  {
-    label: "Blueprint",
-    title: "Compile a safe preview",
-    copy: "Agents produce a structured, non-executing workflow with visible boundaries.",
-  },
-  {
-    label: "Safety",
-    title: "Review gates and blocked actions",
-    copy: "The Safety Critic checks approval needs, risk, and what must stay disabled.",
-  },
-  {
-    label: "Handoff",
-    title: "Prepare implementation guidance",
-    copy: "Generate an n8n builder prompt or experimental JSON draft with constraints intact.",
-  },
-];
-
-const agentStack = [
-  {
-    name: "Guided Clarifier",
-    status: "asks",
-    copy: "Turns vague automation ideas into answerable, compile-ready context.",
-  },
-  {
-    name: "Router",
-    status: "routes",
-    copy: "Chooses the compile path and explains whether AI or rules handled the decision.",
-  },
-  {
-    name: "Compile Clarifier",
-    status: "checks",
-    copy: "Flags missing compile-time details before a blueprint becomes misleading.",
-  },
-  {
-    name: "Blueprint Architect",
-    status: "plans",
-    copy: "Shapes the workflow preview, step roles, and execution boundaries.",
-  },
-  {
-    name: "Safety Critic",
-    status: "guards",
-    copy: "Reviews human gates, blocked actions, risk outcome, and the next safe move.",
-  },
-];
-
-const featureCards = [
-  {
-    title: "Guided clarification",
-    copy: "Messy requests become focused inputs through one-question-at-a-time clarification.",
-  },
-  {
-    title: "Agent blueprinting",
-    copy: "Routing, clarification, blueprint, and safety agents expose how the compiler got there.",
-  },
-  {
-    title: "Safety critic",
-    copy: "Human gates, blocked actions, risk status, and next safe action are first-class outputs.",
-  },
-  {
-    title: "Run observability",
-    copy: "Agent status, fallback visibility, provider attempts, trace/debug, and LLM call tracking stay visible.",
-  },
-  {
-    title: "n8n handoff",
-    copy: "FlowForge creates an implementation prompt and optional draft JSON with approval constraints and disabled side effects.",
-  },
-];
-
-const safetyOutcomes = [
-  {
-    label: "Safe internal preview",
-    tone: "safe",
-    copy: "Internal summaries, labels, extraction, and review queues can be previewed safely.",
-  },
-  {
-    label: "Needs human approval",
-    tone: "approval",
-    copy: "External messages, account updates, sensitive decisions, and production writes require a person.",
-  },
-  {
-    label: "Needs clarification",
-    tone: "clarify",
-    copy: "FlowForge pauses when the request lacks a trigger, source, owner, output, or boundary.",
-  },
-  {
-    label: "Not safe to automate",
-    tone: "blocked",
-    copy: "High-stakes advice, destructive actions, auto-sending, payments, and unsafe decisions are blocked.",
-  },
-];
-
-const observabilityItems = [
-  "Agent status explanations",
-  "Fallback visibility",
-  "Provider attempts",
-  "Trace/debug evidence",
-  "LLM call tracking",
-  "Run summary",
-];
-
-const handoffRules = [
-  "Use test credentials or mocked data first.",
-  "Keep production writes disabled by default.",
-  "Require human approval for external or sensitive actions.",
-  "Treat n8n JSON as a draft template, not an execution-ready workflow.",
+const compilerStages = [
+  { label: "Route", icon: Route, tone: "cyan" },
+  { label: "Clarify", icon: Search, tone: "violet" },
+  { label: "Design", icon: Blocks, tone: "blue" },
+  { label: "Review", icon: ShieldCheck, tone: "green" },
 ];
 </script>
 
 <template>
-  <main class="home-console">
-    <header class="topbar">
-      <NuxtLink to="/" class="brandline" aria-label="FlowForge home">
-        <span class="brand-mark">FF</span>
-        <span class="brand-path">FlowForge</span>
-      </NuxtLink>
+  <main class="index-page">
+    <div class="ambient-grid" aria-hidden="true" />
+    <div class="ambient-glow glow-one" aria-hidden="true" />
+    <div class="ambient-glow glow-two" aria-hidden="true" />
 
-      <div class="topbar-status">
-        <span class="status-pill tone-active">
-          <span class="pulse-dot" />
-          Non-executing compiler
+    <header class="topbar">
+      <div class="brand-group">
+        <div class="brand-mark">FF</div>
+        <div class="brand-copy">
+          <strong>FlowForge</strong>
+          <span>AI Agents & Automations · Final Project</span>
+        </div>
+      </div>
+
+      <div class="topbar-meta">
+        <span class="meta-chip">
+          <span class="meta-dot" />
+          Prototype · non-executing by design
         </span>
-        <NuxtLink to="/compiler" class="topbar-link">Open compiler</NuxtLink>
       </div>
     </header>
 
-    <section class="hero-section" aria-labelledby="home-hero-title">
+    <section class="hero-shell">
       <div class="hero-copy">
-        <p class="eyebrow">AI automation safety compiler</p>
-        <h1 id="home-hero-title">Turn automation ideas into safe blueprints.</h1>
-        <p class="hero-lede">
-          FlowForge is a non-executing safety and observability layer for AI
-          automation prototypes. Describe an idea, clarify the risky parts, and
-          get a human-gated blueprint with traceable agent work and an n8n
-          implementation handoff.
+        <div class="eyebrow">
+          <Sparkles :size="14" />
+          Discover, design, and export automation workflows
+        </div>
+
+        <h1>
+          From idea to
+          <span>importable n8n workflow draft.</span>
+        </h1>
+
+        <p class="hero-summary">
+          Compile your own automation request through a transparent, safety-reviewed
+          multi-agent pipeline—or let Automation Studio research the web and suggest
+          a practical use case first.
         </p>
+
+        <div class="value-line" aria-label="FlowForge process">
+          <span>Use case</span>
+          <ArrowRight :size="14" />
+          <span>Clarify and review</span>
+          <ArrowRight :size="14" />
+          <span>Workflow blueprint</span>
+          <ArrowRight :size="14" />
+          <span>n8n JSON skeleton</span>
+        </div>
 
         <div class="hero-actions">
-          <NuxtLink to="/compiler" class="primary-action">Launch compiler console</NuxtLink>
-          <NuxtLink to="/compiler" class="secondary-action">Start safe blueprint</NuxtLink>
+          <NuxtLink to="/compiler" class="primary-action">
+            <Workflow :size="18" />
+            Open Compiler
+            <ArrowRight :size="16" />
+          </NuxtLink>
+
+          <NuxtLink to="/automation-studio" class="secondary-action">
+            <Compass :size="18" />
+            Explore Automation Studio
+          </NuxtLink>
         </div>
 
-        <div class="hero-metrics" aria-label="FlowForge safety posture">
-          <div>
-            <span>Execution</span>
-            <strong>0 production side effects</strong>
-          </div>
-          <div>
-            <span>Boundary</span>
-            <strong>Human gates visible</strong>
-          </div>
-          <div>
-            <span>Trust</span>
-            <strong>Agent trace exposed</strong>
-          </div>
+        <div class="capability-row">
+          <span><Check :size="14" /> Compiler: request → reviewed n8n draft</span>
+          <span><Check :size="14" /> Studio: web research → suggested use case</span>
         </div>
       </div>
 
-      <aside class="compiler-card" aria-label="Compiler pass preview">
-        <div class="card-header">
+      <div class="hero-visual" aria-label="FlowForge system overview">
+        <div class="visual-header">
           <div>
-            <p class="eyebrow">Compiler pass</p>
-            <h2>Input to handoff</h2>
+            <span class="visual-kicker">Live system preview</span>
+            <strong>Multi-agent workflow compiler</strong>
           </div>
-          <span class="mini-pill">safe preview</span>
+          <span class="system-state">
+            <span />
+            Observable
+          </span>
         </div>
 
-        <ol class="pass-list">
-          <li v-for="(item, index) in compilerPasses" :key="item.label" class="pass-item">
-            <span class="pass-index">{{ index + 1 }}</span>
+        <div class="compiler-map">
+          <div class="input-node mini-node">
+            <span class="node-icon"><Braces :size="18" /></span>
             <div>
-              <span>{{ item.label }}</span>
-              <strong>{{ item.title }}</strong>
-              <p>{{ item.copy }}</p>
+              <small>Input</small>
+              <strong>Automation request</strong>
             </div>
-          </li>
-        </ol>
-      </aside>
-    </section>
-
-    <section class="content-section pipeline-section" aria-labelledby="pipeline-title">
-      <div class="section-heading">
-        <p class="eyebrow">How FlowForge works</p>
-        <h2 id="pipeline-title">A compiler pipeline, not an auto-run button.</h2>
-        <p>
-          FlowForge routes an automation idea through clarification, agent
-          planning, safety review, observability, and handoff while keeping
-          production tools disconnected.
-        </p>
-      </div>
-
-      <div class="pipeline-map" aria-label="FlowForge pipeline">
-        <article v-for="(item, index) in compilerPasses" :key="item.label" class="pipeline-node">
-          <span>{{ item.label }}</span>
-          <strong>{{ item.title }}</strong>
-          <small>{{ index === compilerPasses.length - 1 ? "builder prompt" : "non-executing pass" }}</small>
-        </article>
-      </div>
-    </section>
-
-    <section class="content-section" aria-labelledby="features-title">
-      <div class="section-heading compact">
-        <p class="eyebrow">Compiler capabilities</p>
-        <h2 id="features-title">What the console makes visible</h2>
-      </div>
-
-      <div class="feature-grid">
-        <article v-for="feature in featureCards" :key="feature.title" class="feature-card">
-          <span class="feature-dot" />
-          <h3>{{ feature.title }}</h3>
-          <p>{{ feature.copy }}</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="content-section split-section" aria-labelledby="agents-title">
-      <div class="section-heading sticky-heading">
-        <p class="eyebrow">Agent stack</p>
-        <h2 id="agents-title">Each agent explains its work.</h2>
-        <p>
-          The compiler page shows which agent ran, which provider or fallback
-          path was used, and why the current status is safe, gated, unclear, or
-          blocked.
-        </p>
-      </div>
-
-      <div class="agent-stack" aria-label="FlowForge agents">
-        <article v-for="agent in agentStack" :key="agent.name" class="agent-row">
-          <span class="agent-orb" />
-          <div>
-            <strong>{{ agent.name }}</strong>
-            <p>{{ agent.copy }}</p>
           </div>
-          <span class="agent-status">{{ agent.status }}</span>
-        </article>
+
+          <div class="agent-track">
+            <div class="track-line" aria-hidden="true">
+              <span class="track-pulse" />
+            </div>
+
+            <div
+              v-for="(stage, index) in compilerStages"
+              :key="stage.label"
+              class="agent-stage"
+              :class="`tone-${stage.tone}`"
+              :style="{ '--delay': `${index * 0.5}s` }"
+            >
+              <span class="stage-icon">
+                <component :is="stage.icon" :size="19" />
+              </span>
+              <small>Agent {{ index + 1 }}</small>
+              <strong>{{ stage.label }}</strong>
+            </div>
+          </div>
+
+          <div class="output-stack">
+            <div class="output-node blueprint-node">
+              <span class="node-icon"><Workflow :size="19" /></span>
+              <div>
+                <small>Structured output</small>
+                <strong>Safety-reviewed blueprint</strong>
+              </div>
+              <ShieldCheck :size="18" class="output-check" />
+            </div>
+
+            <div class="output-node json-node">
+              <span class="node-icon"><FileJson2 :size="19" /></span>
+              <div>
+                <small>Implementation artifact</small>
+                <strong>Inactive n8n JSON draft</strong>
+              </div>
+              <span class="manual-badge">manual review</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="visual-footer">
+          <span><Bot :size="15" /> AI agents</span>
+          <span><ShieldCheck :size="15" /> Safety critic</span>
+          <span><FileJson2 :size="15" /> Schema validation</span>
+          <span><Blocks :size="15" /> Inspectable nodes</span>
+        </div>
       </div>
-    </section>
-
-    <section class="content-section" aria-labelledby="safety-title">
-      <div class="section-heading compact">
-        <p class="eyebrow">Safety boundaries</p>
-        <h2 id="safety-title">Four outcomes keep the prototype honest.</h2>
-      </div>
-
-      <div class="outcome-grid">
-        <article
-          v-for="outcome in safetyOutcomes"
-          :key="outcome.label"
-          class="outcome-card"
-          :class="`tone-${outcome.tone}`"
-        >
-          <span class="outcome-light" />
-          <h3>{{ outcome.label }}</h3>
-          <p>{{ outcome.copy }}</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="content-section observability-section" aria-labelledby="observability-title">
-      <div class="section-heading">
-        <p class="eyebrow">Observability and trust</p>
-        <h2 id="observability-title">Debuggable by design.</h2>
-        <p>
-          FlowForge does not hide provider behavior behind a single answer. It
-          exposes the run path so a human can inspect the blueprint before
-          anyone builds or connects real services.
-        </p>
-      </div>
-
-      <div class="observability-grid">
-        <article v-for="item in observabilityItems" :key="item" class="observability-card">
-          <span>{{ item }}</span>
-          <strong>visible</strong>
-        </article>
-      </div>
-    </section>
-
-    <section class="handoff-section" aria-labelledby="handoff-title">
-      <div>
-        <p class="eyebrow">Implementation handoff</p>
-        <h2 id="handoff-title">From safe blueprint to n8n handoff.</h2>
-        <p>
-          The compiler can prepare a concrete implementation prompt for a human
-          builder, plus an experimental draft JSON export when configured. It
-          carries forward approval constraints and blocked actions, but
-          FlowForge still does not execute workflows or connect production
-          tools.
-        </p>
-      </div>
-
-      <ul class="handoff-list">
-        <li v-for="rule in handoffRules" :key="rule">{{ rule }}</li>
-      </ul>
-
-      <NuxtLink to="/compiler" class="primary-action handoff-action">Open compiler</NuxtLink>
     </section>
   </main>
 </template>
 
 <style scoped>
-:global(html),
-:global(body) {
-  min-height: 100%;
-  background:
-    radial-gradient(circle at top left, rgba(89, 111, 255, 0.18), transparent 32rem),
-    radial-gradient(circle at bottom right, rgba(22, 190, 180, 0.12), transparent 28rem),
-    #070a12;
-  color: #eef3ff;
-}
-
-.home-console {
-  position: relative;
-  min-height: 100vh;
-  padding: 76px 16px 88px;
-  overflow: hidden;
+:global(*) {
   box-sizing: border-box;
-  color: #eef3ff;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
 }
 
-.home-console::before {
-  content: "";
-  position: fixed;
-  inset: 44px 0 0;
-  pointer-events: none;
+:global(html),
+:global(body),
+:global(#__nuxt) {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+:global(body) {
+  overflow: hidden;
+  background: #070b12;
+  color: #f4f7fb;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.index-page {
+  position: relative;
+  isolation: isolate;
+  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 58px minmax(0, 1fr);
+  background:
+    radial-gradient(circle at 76% 35%, rgba(72, 177, 255, 0.08), transparent 28%),
+    radial-gradient(circle at 18% 78%, rgba(124, 111, 242, 0.08), transparent 30%),
+    #070b12;
+}
+
+.ambient-grid {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  opacity: 0.2;
   background-image:
-    linear-gradient(rgba(145, 166, 255, 0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(145, 166, 255, 0.045) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.68), transparent 74%);
+    linear-gradient(rgba(96, 125, 160, 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(96, 125, 160, 0.12) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, transparent, black 18%, black 78%, transparent);
+}
+
+.ambient-glow {
+  position: absolute;
+  z-index: -2;
+  width: 440px;
+  height: 440px;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+.glow-one {
+  top: -180px;
+  right: 9%;
+  background: #48b1ff;
+}
+
+.glow-two {
+  bottom: -220px;
+  left: 5%;
+  background: #7c6ff2;
 }
 
 .topbar {
-  position: fixed;
-  z-index: 40;
-  inset: 0 0 auto 0;
-  height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 0 16px;
-  border-bottom: 1px solid rgba(145, 166, 255, 0.18);
-  background: rgba(7, 10, 18, 0.86);
-  backdrop-filter: blur(18px);
+  gap: 20px;
+  padding: 0 28px;
+  border-bottom: 1px solid #263247;
+  background: rgba(12, 18, 29, 0.9);
+  backdrop-filter: blur(16px);
 }
 
-.brandline,
-.topbar-status,
+.brand-group,
+.brand-copy,
+.topbar-meta,
+.meta-chip,
+.eyebrow,
 .hero-actions,
-.hero-metrics,
-.card-header {
+.capability-row,
+.value-line,
+.visual-header,
+.system-state,
+.mini-node,
+.output-node,
+.visual-footer span {
   display: flex;
   align-items: center;
 }
 
-.brandline {
-  gap: 10px;
-  color: inherit;
-  text-decoration: none;
+.brand-group {
+  gap: 12px;
 }
 
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid rgba(129, 150, 255, 0.4);
+  width: 34px;
+  height: 34px;
+  border: 1px solid #3b4b66;
   border-radius: 9px;
-  background: linear-gradient(135deg, rgba(82, 104, 255, 0.24), rgba(18, 210, 191, 0.16));
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  background: linear-gradient(145deg, rgba(124, 111, 242, 0.22), rgba(72, 177, 255, 0.08));
+  box-shadow: inset 0 0 18px rgba(145, 133, 255, 0.08);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
 }
 
-.brand-path {
-  font-size: 13px;
-  color: #c7d2ff;
+.brand-copy {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 1px;
 }
 
-.topbar-status {
-  gap: 10px;
+.brand-copy strong {
+  font-size: 0.92rem;
 }
 
-.status-pill,
-.topbar-link,
-.mini-pill,
-.secondary-action,
-.primary-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(145, 166, 255, 0.22);
-  color: #dfe6ff;
-  background: rgba(255, 255, 255, 0.045);
-  text-decoration: none;
-  white-space: nowrap;
+.brand-copy span {
+  color: #6f7b8e;
+  font-size: 0.72rem;
+  font-weight: 650;
 }
 
-.status-pill {
+.meta-chip {
   gap: 7px;
-  min-width: 166px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #2a3850;
+  border-radius: 8px;
+  background: #111a29;
+  color: #a7b1c2;
+  font-size: 0.76rem;
+  font-weight: 700;
 }
 
-.pulse-dot {
+.meta-dot {
   width: 7px;
   height: 7px;
-  border-radius: 999px;
-  background: #66e3ff;
-  box-shadow: 0 0 16px rgba(102, 227, 255, 0.8);
+  border-radius: 50%;
+  background: #3ddc97;
+  box-shadow: 0 0 12px rgba(61, 220, 151, 0.65);
 }
 
-.topbar-link {
-  min-height: 30px;
-  padding: 0 12px;
-  border-color: rgba(102, 227, 255, 0.32);
-  border-radius: 11px;
-  color: #66e3ff;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.topbar-link:hover,
-.primary-action:hover,
-.secondary-action:hover {
-  border-color: rgba(102, 227, 255, 0.62);
-  background: rgba(102, 227, 255, 0.13);
-}
-
-.hero-section,
-.content-section,
-.handoff-section {
-  position: relative;
-  z-index: 1;
-  width: min(1180px, 100%);
+.hero-shell {
+  width: min(1480px, 100%);
+  min-height: 0;
   margin: 0 auto;
-}
-
-.hero-section {
+  padding: clamp(18px, 2.6vh, 30px) clamp(28px, 5vw, 70px) clamp(16px, 2.4vh, 26px);
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.72fr);
-  gap: 18px;
-  align-items: stretch;
+  grid-template-columns: minmax(420px, 0.86fr) minmax(570px, 1.14fr);
+  align-items: center;
+  gap: clamp(28px, 4vw, 60px);
 }
 
 .hero-copy {
-  display: flex;
-  min-height: 600px;
-  flex-direction: column;
-  justify-content: center;
-  padding: 52px 0;
+  min-width: 0;
 }
 
 .eyebrow {
-  margin: 0 0 10px;
-  color: #7d8cff;
+  width: fit-content;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #8ecfff;
+  font-size: 0.76rem;
+  font-weight: 850;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
-  font-weight: 800;
-  font-size: 11px;
 }
 
-.hero-copy h1,
-.section-heading h2,
-.handoff-section h2 {
+.eyebrow svg {
+  color: #9185ff;
+}
+
+h1 {
+  max-width: 720px;
   margin: 0;
-  color: #f4f7ff;
-  letter-spacing: 0;
-  line-height: 0.98;
+  color: #f7f9fc;
+  font-size: clamp(2.3rem, 3.9vw, 4.35rem);
+  line-height: 1.01;
+  letter-spacing: -0.055em;
 }
 
-.hero-copy h1 {
-  max-width: 780px;
-  font-size: clamp(48px, 8vw, 86px);
+h1 span {
+  display: block;
+  margin-top: 6px;
+  background: linear-gradient(92deg, #a79fff 0%, #73c7ff 54%, #62e4b0 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
-.hero-lede {
-  max-width: 760px;
-  margin: 20px 0 0;
-  color: #aab7e8;
-  font-size: clamp(17px, 2vw, 20px);
+.hero-summary {
+  max-width: 650px;
+  margin: 16px 0 0;
+  color: #a7b1c2;
+  font-size: clamp(0.94rem, 1.05vw, 1.06rem);
   line-height: 1.55;
+}
+
+.value-line {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  color: #6f7b8e;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.value-line span {
+  padding: 5px 8px;
+  border: 1px solid #263247;
+  border-radius: 6px;
+  background: rgba(18, 27, 42, 0.8);
+  color: #a7b1c2;
+}
+
+.value-line svg {
+  color: #465773;
 }
 
 .hero-actions {
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 28px;
+  gap: 11px;
+  margin-top: 20px;
 }
 
 .primary-action,
 .secondary-action {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
   min-height: 46px;
-  padding: 0 16px;
-  border-radius: 14px;
-  font-weight: 950;
+  border-radius: 9px;
+  padding: 0 18px;
+  color: #f4f7fb;
+  font-size: 0.9rem;
+  font-weight: 760;
+  text-decoration: none;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .primary-action {
-  border-color: rgba(102, 227, 255, 0.42);
-  background:
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.24), transparent 7rem),
-    linear-gradient(135deg, #66e3ff, #8c7dff);
-  color: #07101c;
-  box-shadow: 0 14px 42px rgba(102, 227, 255, 0.18);
+  border: 1px solid rgba(145, 133, 255, 0.72);
+  background: linear-gradient(135deg, #7567e8, #5e75dd);
+  box-shadow: 0 12px 34px rgba(82, 72, 192, 0.24);
 }
 
-.primary-action:hover {
-  color: #07101c;
+.secondary-action {
+  border: 1px solid #31415a;
+  background: #111a29;
 }
 
-.hero-metrics {
+.primary-action::before,
+.secondary-action::before {
+  content: "";
+  position: absolute;
+  inset: -80% -35%;
+  background: linear-gradient(110deg, transparent 43%, rgba(255, 255, 255, 0.16) 50%, transparent 57%);
+  transform: translateX(-65%);
+  transition: transform 0.65s ease;
+}
+
+.primary-action:hover,
+.secondary-action:hover {
+  transform: translateY(-2px);
+  border-color: #6684ad;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.25), 0 0 24px rgba(72, 177, 255, 0.09);
+}
+
+.primary-action:hover::before,
+.secondary-action:hover::before {
+  transform: translateX(65%);
+}
+
+.capability-row {
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 26px;
+  gap: 14px 18px;
+  margin-top: 16px;
+  color: #7f8ba0;
+  font-size: 0.78rem;
+  font-weight: 650;
 }
 
-.hero-metrics div {
-  min-width: 176px;
-  padding: 12px 14px;
-  border: 1px solid rgba(145, 166, 255, 0.14);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.035);
+.capability-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.hero-metrics span,
-.pass-item span,
-.pipeline-node span,
-.observability-card span {
-  display: block;
-  color: #7d8cff;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+.capability-row svg {
+  color: #3ddc97;
 }
 
-.hero-metrics strong {
-  display: block;
-  margin-top: 4px;
-  color: #e9efff;
-  font-size: 13px;
-}
-
-.compiler-card,
-.feature-card,
-.outcome-card,
-.observability-card,
-.handoff-section {
-  border: 1px solid rgba(145, 166, 255, 0.16);
+.hero-visual {
+  position: relative;
+  min-width: 0;
+  border: 1px solid #2b3a51;
+  border-radius: 18px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
-    rgba(8, 12, 22, 0.82);
-  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.24);
-}
-
-.compiler-card {
-  align-self: center;
-  border-radius: 24px;
-  padding: 18px;
+    linear-gradient(180deg, rgba(21, 31, 48, 0.96), rgba(12, 18, 29, 0.98)),
+    #0f1623;
+  box-shadow:
+    0 34px 100px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.025),
+    0 0 0 1px rgba(72, 177, 255, 0.025);
   overflow: hidden;
 }
 
-.card-header {
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.card-header h2 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.mini-pill {
-  min-height: 28px;
-  padding: 0 10px;
-  border-color: rgba(67, 224, 166, 0.26);
-  border-radius: 999px;
-  color: #43e0a6;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.pass-list {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.pass-item {
-  position: relative;
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
-  gap: 12px;
-  padding: 13px;
-  border: 1px solid rgba(145, 166, 255, 0.13);
-  border-radius: 17px;
-  background:
-    radial-gradient(circle at top right, rgba(102, 227, 255, 0.07), transparent 9rem),
-    rgba(6, 10, 20, 0.68);
-}
-
-.pass-item:not(:last-child)::after {
+.hero-visual::before {
   content: "";
   position: absolute;
-  left: 31px;
-  bottom: -11px;
-  width: 2px;
-  height: 11px;
-  background: linear-gradient(to bottom, rgba(102, 227, 255, 0.78), transparent);
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(105, 134, 170, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(105, 134, 170, 0.045) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: linear-gradient(to bottom, black, transparent 88%);
 }
 
-.pass-index {
+.visual-header {
+  position: relative;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #263247;
+  background: rgba(12, 18, 29, 0.72);
+}
+
+.visual-header > div {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.visual-kicker {
+  color: #6f7b8e;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.visual-header strong {
+  font-size: 0.91rem;
+}
+
+.system-state {
+  gap: 7px;
+  color: #7edcb2;
+  font-size: 0.73rem;
+  font-weight: 800;
+}
+
+.system-state span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3ddc97;
+  box-shadow: 0 0 13px rgba(61, 220, 151, 0.74);
+  animation: statePulse 1.8s ease-in-out infinite;
+}
+
+.compiler-map {
+  position: relative;
+  padding: clamp(20px, 3vh, 34px) 22px 24px;
+}
+
+.mini-node,
+.output-node {
+  position: relative;
+  gap: 11px;
+  border: 1px solid #30415b;
+  border-radius: 10px;
+  background: rgba(17, 26, 41, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
+}
+
+.mini-node {
+  width: min(250px, 54%);
+  min-height: 58px;
+  padding: 10px 12px;
+}
+
+.node-icon,
+.stage-icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 13px;
-  background: linear-gradient(135deg, #66e3ff, #8c7dff);
-  color: #07101c;
-  font-weight: 950;
+  flex: 0 0 auto;
+  border-radius: 8px;
 }
 
-.pass-item strong {
-  display: block;
-  margin-top: 3px;
-  color: #eef3ff;
-  font-size: 14px;
+.node-icon {
+  width: 36px;
+  height: 36px;
+  background: rgba(124, 111, 242, 0.13);
+  color: #a79fff;
 }
 
-.pass-item p {
-  margin: 5px 0 0;
-  color: #9ba9d8;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.content-section {
-  padding: 64px 0 0;
-}
-
-.section-heading {
-  max-width: 740px;
-}
-
-.section-heading.compact {
-  max-width: none;
-}
-
-.section-heading h2,
-.handoff-section h2 {
-  font-size: clamp(30px, 5vw, 54px);
-}
-
-.section-heading p,
-.handoff-section p {
-  margin: 14px 0 0;
-  color: #9ba9d8;
-  font-size: 16px;
-  line-height: 1.55;
-}
-
-.pipeline-map {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 28px 34px;
-  margin-top: 24px;
-  padding: 8px 0;
-}
-
-.pipeline-node {
-  position: relative;
-  flex: 1 1 190px;
-  min-width: 180px;
-  padding: 15px;
-  border: 1px solid rgba(145, 166, 255, 0.15);
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(102, 227, 255, 0.07), transparent 10rem),
-    rgba(6, 10, 20, 0.78);
-}
-
-.pipeline-node:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 100%;
-  width: 34px;
-  height: 2px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(102, 227, 255, 0.7), rgba(140, 125, 255, 0.2));
-}
-
-.pipeline-node strong {
-  display: block;
-  min-height: 42px;
-  margin: 9px 0 12px;
-  color: #eef3ff;
-  font-size: 17px;
-  line-height: 1.2;
-}
-
-.pipeline-node small {
-  color: #66e3ff;
-  font-size: 12px;
-}
-
-.feature-grid,
-.outcome-grid,
-.observability-grid {
-  display: grid;
-  gap: 12px;
-  margin-top: 22px;
-}
-
-.feature-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
-.feature-card,
-.outcome-card,
-.observability-card {
+.mini-node div,
+.output-node div {
   min-width: 0;
-  border-radius: 20px;
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.feature-card {
-  min-height: 194px;
+.mini-node small,
+.output-node small,
+.agent-stage small {
+  color: #6f7b8e;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-.feature-dot {
-  display: block;
-  width: 11px;
-  height: 11px;
-  margin-bottom: 18px;
-  border-radius: 999px;
-  background: #66e3ff;
-  box-shadow: 0 0 18px rgba(102, 227, 255, 0.75);
+.mini-node strong,
+.output-node strong {
+  font-size: 0.78rem;
 }
 
-.feature-card h3,
-.outcome-card h3 {
-  margin: 0;
-  color: #eef3ff;
-  font-size: 17px;
-  line-height: 1.22;
-}
-
-.feature-card p,
-.outcome-card p {
-  margin: 10px 0 0;
-  color: #9ba9d8;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.split-section {
+.agent-track {
+  position: relative;
   display: grid;
-  grid-template-columns: 0.75fr 1fr;
-  gap: 24px;
-  align-items: start;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 25px 0;
 }
 
-.sticky-heading {
-  position: sticky;
-  top: 72px;
+.track-line {
+  position: absolute;
+  z-index: 0;
+  top: 35px;
+  left: 8%;
+  right: 8%;
+  height: 2px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: #28374d;
+  box-shadow: 0 0 12px rgba(72, 177, 255, 0.08);
 }
 
-.agent-stack {
+.track-pulse {
+  position: absolute;
+  top: -1px;
+  left: -28%;
+  width: 28%;
+  height: 4px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, #73c7ff 42%, #6ce1b0 70%, transparent);
+  filter: drop-shadow(0 0 7px rgba(72, 177, 255, 0.8));
+  animation: trackFlow 2.5s linear infinite;
+}
+
+.agent-stage {
+  --stage-color: #73c7ff;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  min-height: 102px;
+  padding: 12px 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  border: 1px solid #2e3e56;
+  border-radius: 11px;
+  background: rgba(15, 23, 36, 0.97);
+  text-align: center;
+  animation: stageGlow 2.5s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+.agent-stage.tone-violet { --stage-color: #9d93ff; }
+.agent-stage.tone-blue { --stage-color: #73c7ff; }
+.agent-stage.tone-green { --stage-color: #56dda4; }
+
+.stage-icon {
+  width: 38px;
+  height: 38px;
+  margin-bottom: 2px;
+  border: 1px solid color-mix(in srgb, var(--stage-color) 34%, transparent);
+  background: color-mix(in srgb, var(--stage-color) 12%, transparent);
+  color: var(--stage-color);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--stage-color) 10%, transparent);
+}
+
+.agent-stage strong {
+  color: #eaf0f8;
+  font-size: 0.76rem;
+}
+
+.output-stack {
   display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
 
-.agent-row {
+.output-node {
+  min-width: 0;
+  min-height: 66px;
+  padding: 11px 12px;
+}
+
+.output-node.blueprint-node {
+  border-color: rgba(61, 220, 151, 0.34);
+  background: linear-gradient(145deg, rgba(61, 220, 151, 0.08), rgba(17, 26, 41, 0.96) 48%);
+}
+
+.output-node.blueprint-node .node-icon {
+  background: rgba(61, 220, 151, 0.12);
+  color: #62e4b0;
+}
+
+.output-check {
+  margin-left: auto;
+  color: #56dda4;
+}
+
+.json-node .node-icon {
+  background: rgba(72, 177, 255, 0.11);
+  color: #73c7ff;
+}
+
+.manual-badge {
+  margin-left: auto;
+  padding: 4px 7px;
+  border: 1px solid rgba(244, 184, 96, 0.28);
+  border-radius: 6px;
+  background: rgba(244, 184, 96, 0.08);
+  color: #e8ae5d;
+  font-size: 0.58rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.visual-footer {
+  position: relative;
   display: grid;
-  grid-template-columns: 15px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  padding: 15px;
-  border: 1px solid rgba(145, 166, 255, 0.13);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.035);
-}
-
-.agent-orb {
-  width: 11px;
-  height: 11px;
-  margin-top: 5px;
-  border-radius: 999px;
-  background: #43e0a6;
-  box-shadow: 0 0 15px rgba(67, 224, 166, 0.62);
-}
-
-.agent-row strong {
-  color: #eef3ff;
-}
-
-.agent-row p {
-  margin: 5px 0 0;
-  color: #9ba9d8;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.agent-status {
-  padding: 5px 8px;
-  border: 1px solid rgba(102, 227, 255, 0.22);
-  border-radius: 999px;
-  color: #9decff;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.outcome-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid #263247;
+  background: rgba(10, 15, 25, 0.72);
 }
 
-.outcome-card {
-  min-height: 176px;
+.visual-footer span {
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  color: #7f8ba0;
+  font-size: 0.65rem;
+  font-weight: 720;
+  white-space: nowrap;
 }
 
-.outcome-light {
-  display: block;
-  width: 34px;
-  height: 34px;
-  margin-bottom: 16px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #66e3ff, #8c7dff);
+.visual-footer span + span {
+  border-left: 1px solid #263247;
 }
 
-.outcome-card.tone-safe {
-  border-color: rgba(67, 224, 166, 0.24);
-  background: rgba(67, 224, 166, 0.055);
+.visual-footer svg {
+  color: #7291b5;
 }
 
-.outcome-card.tone-safe .outcome-light {
-  background: linear-gradient(135deg, #43e0a6, #66e3ff);
+@keyframes trackFlow {
+  from { transform: translateX(0); }
+  to { transform: translateX(460%); }
 }
 
-.outcome-card.tone-approval {
-  border-color: rgba(255, 209, 102, 0.26);
-  background: rgba(255, 209, 102, 0.055);
+@keyframes stageGlow {
+  0%, 58%, 100% {
+    border-color: #2e3e56;
+    box-shadow: none;
+    transform: translateY(0);
+  }
+  12%, 26% {
+    border-color: color-mix(in srgb, var(--stage-color) 68%, #2e3e56);
+    box-shadow: 0 0 22px color-mix(in srgb, var(--stage-color) 16%, transparent), inset 0 0 18px color-mix(in srgb, var(--stage-color) 5%, transparent);
+    transform: translateY(-2px);
+  }
 }
 
-.outcome-card.tone-approval .outcome-light {
-  background: linear-gradient(135deg, #ffd166, #8c7dff);
+@keyframes statePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.38; }
 }
 
-.outcome-card.tone-clarify {
-  border-color: rgba(140, 125, 255, 0.28);
-  background: rgba(140, 125, 255, 0.06);
+@media (max-width: 1050px) {
+  .hero-shell {
+    grid-template-columns: 0.82fr 1.18fr;
+    gap: 28px;
+    padding-inline: 28px;
+  }
+
+  h1 {
+    font-size: clamp(2.3rem, 5vw, 4.2rem);
+  }
+
+  .hero-summary {
+    font-size: 0.96rem;
+  }
+
+  .capability-row {
+    gap: 8px 12px;
+  }
 }
 
-.outcome-card.tone-blocked {
-  border-color: rgba(255, 107, 107, 0.26);
-  background: rgba(255, 107, 107, 0.055);
-}
+@media (max-width: 820px) {
+  :global(body) {
+    overflow: auto;
+  }
 
-.outcome-card.tone-blocked .outcome-light {
-  background: linear-gradient(135deg, #ff6b6b, #ffd166);
-}
+  .index-page {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
 
-.observability-section {
-  display: grid;
-  grid-template-columns: 0.8fr 1fr;
-  gap: 24px;
-  align-items: start;
-}
-
-.observability-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 0;
-}
-
-.observability-card {
-  min-height: 112px;
-}
-
-.observability-card strong {
-  display: block;
-  margin-top: 10px;
-  color: #e9efff;
-  font-size: 20px;
-  font-weight: 950;
-}
-
-.handoff-section {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.64fr) auto;
-  gap: 20px;
-  align-items: center;
-  margin-top: 70px;
-  padding: 22px;
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top right, rgba(102, 227, 255, 0.08), transparent 18rem),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
-    rgba(8, 12, 22, 0.82);
-}
-
-.handoff-list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.handoff-list li {
-  padding: 10px 12px;
-  border: 1px solid rgba(145, 166, 255, 0.13);
-  border-radius: 14px;
-  color: #cbd6ff;
-  background: rgba(255, 255, 255, 0.035);
-  font-size: 13px;
-}
-
-.handoff-action {
-  justify-self: end;
-}
-
-@media (max-width: 1100px) {
-  .hero-section,
-  .split-section,
-  .observability-section,
-  .handoff-section {
+  .hero-shell {
     grid-template-columns: 1fr;
+    align-content: center;
+    gap: 30px;
+    padding-top: 30px;
   }
 
   .hero-copy {
-    min-height: auto;
-    padding: 38px 0 8px;
+    text-align: center;
   }
 
-  .compiler-card {
-    align-self: stretch;
+  .eyebrow,
+  .hero-actions,
+  .capability-row,
+  .value-line {
+    justify-content: center;
+    margin-inline: auto;
   }
 
-  .feature-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .hero-summary {
+    margin-inline: auto;
   }
 
-  .outcome-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .sticky-heading {
-    position: static;
-  }
-
-  .handoff-action {
-    justify-self: start;
+  .hero-visual {
+    width: min(680px, 100%);
+    margin-inline: auto;
   }
 }
 
-@media (max-width: 760px) {
-  .home-console {
-    padding: 64px 10px 72px;
-  }
-
+@media (max-width: 600px) {
   .topbar {
-    padding: 0 10px;
+    padding: 0 14px;
   }
 
-  .brand-path {
+  .brand-copy span,
+  .topbar-meta {
     display: none;
   }
 
-  .status-pill {
-    min-width: 0;
+  .hero-shell {
+    padding: 24px 14px 30px;
   }
 
-  .topbar-link {
+  h1 {
+    font-size: 2.55rem;
+  }
+
+  .value-line {
     display: none;
   }
 
-  .hero-copy h1 {
-    font-size: clamp(40px, 14vw, 62px);
+  .hero-actions {
+    flex-direction: column;
   }
 
-  .hero-lede {
-    font-size: 16px;
-  }
-
-  .hero-metrics {
-    display: grid;
-    grid-template-columns: 1fr;
-  }
-
-  .hero-metrics div,
   .primary-action,
   .secondary-action {
     width: 100%;
   }
 
-  .card-header {
-    align-items: flex-start;
-    flex-direction: column;
+  .agent-track {
+    grid-template-columns: repeat(2, 1fr);
   }
 
-  .pipeline-map,
-  .feature-grid,
-  .outcome-grid,
-  .observability-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .pipeline-map {
-    display: grid;
-    gap: 10px;
-  }
-
-  .pipeline-node:not(:last-child)::after {
+  .track-line {
     display: none;
   }
 
-  .feature-card,
-  .outcome-card {
-    min-height: auto;
+  .output-stack,
+  .visual-footer {
+    grid-template-columns: 1fr;
   }
 
-  .agent-row {
-    grid-template-columns: 15px minmax(0, 1fr);
+  .visual-footer span + span {
+    border-left: 0;
+    border-top: 1px solid #263247;
   }
 
-  .agent-status {
-    grid-column: 2;
-    justify-self: start;
+  .manual-badge {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track-pulse,
+  .agent-stage,
+  .system-state span {
+    animation: none !important;
+  }
+
+  .primary-action,
+  .secondary-action {
+    transition: none;
   }
 }
 </style>
