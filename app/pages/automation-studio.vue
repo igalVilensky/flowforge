@@ -812,6 +812,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   font-size: 16px;
+  overflow-x: hidden;
 }
 
 /* ---------- Header ---------- */
@@ -1284,6 +1285,7 @@ button:disabled {
   color: #f4f7fb;
   font-size: 1.55rem;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .detail-grid {
@@ -1434,6 +1436,11 @@ button:disabled {
   font-size: 0.88rem;
   font-weight: 600;
   text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.source-link svg {
+  flex: 0 0 auto;
 }
 
 .source-link:hover {
@@ -1807,31 +1814,6 @@ button:disabled {
     height: auto;
     border-right: none;
     border-bottom: 1px solid #263247;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  .rail-block {
-    flex: 1 1 100%;
-  }
-
-  .category-list {
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-
-  .category-item {
-    width: auto;
-  }
-
-  .generate-button {
-    width: auto;
-    flex: 1 1 auto;
-  }
-
-  .rail-footnote {
-    flex-basis: 100%;
   }
 
   .detail-grid {
@@ -1878,6 +1860,47 @@ button:disabled {
   .secondary-button {
     width: 100%;
     justify-content: center;
+  }
+
+  /* Keep every tappable control at a comfortable touch-target size. */
+  .primary-button,
+  .secondary-button,
+  .copy-button,
+  .generate-button {
+    min-height: 44px;
+  }
+
+  .card {
+    padding: 18px;
+  }
+
+  .idea-title {
+    font-size: 1.3rem;
+    margin: 14px 0 16px;
+  }
+
+  .detail-grid,
+  .step-list {
+    gap: 9px;
+  }
+}
+
+@media (max-width: 400px) {
+  .results-area {
+    padding: 14px 10px 32px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .tag-list {
+    gap: 5px;
+  }
+
+  .tag {
+    padding: 4px 9px;
+    font-size: 0.76rem;
   }
 }
 </style>
@@ -2415,10 +2438,12 @@ button:disabled {
 
 @media (max-width: 960px) {
   .app-body {
+    grid-template-columns: 1fr;
     padding: 12px;
   }
 
   .control-rail {
+    position: static;
     top: auto;
     height: auto;
     border: 1px solid rgba(145, 166, 255, 0.16);
@@ -2441,6 +2466,7 @@ button:disabled {
 
   .app-body {
     gap: 12px;
+    padding: 10px;
   }
 
   .context-label {
@@ -2458,6 +2484,24 @@ button:disabled {
 
   .modal-backdrop {
     padding: 10px;
+  }
+
+  /* Rail card gets tighter padding so the scrollable chip strip
+     and generate button sit comfortably above the fold. */
+  .control-rail {
+    padding: 14px;
+    gap: 16px;
+  }
+
+  .empty-state {
+    min-height: 300px;
+    padding: 28px 18px;
+  }
+}
+
+@media (max-width: 400px) {
+  .studio-page {
+    padding-top: 112px;
   }
 }
 
